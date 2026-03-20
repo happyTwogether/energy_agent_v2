@@ -5,13 +5,13 @@ API 路由模块。
 通过 SSE 流式推送 Agent 执行过程与结果。
 """
 
-import json
 from typing import AsyncGenerator
 
 from fastapi import APIRouter
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.agent_runner import run_agent_stream
+from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
 from app.models.schemas import ChatRequest, StreamEvent
 
@@ -38,7 +38,7 @@ async def _event_generator(request: ChatRequest) -> AsyncGenerator[dict, None]:
     try:
         logger.info("开始处理请求: messages_count=%d", len(request.messages))
         async for event in run_agent_stream(messages=request.messages):
-            event_data: str = json.dumps(
+            event_data: str = dumps_decimal(
                 {"event_type": event.event_type, "data": event.data},
                 ensure_ascii=False,
             )
@@ -53,7 +53,7 @@ async def _event_generator(request: ChatRequest) -> AsyncGenerator[dict, None]:
         error_event = StreamEvent(event_type="error", data=f"服务器内部错误: {exc}")
         yield {
             "event": error_event.event_type,
-            "data": json.dumps(
+            "data": dumps_decimal(
                 {"event_type": error_event.event_type, "data": error_event.data},
                 ensure_ascii=False,
             ),

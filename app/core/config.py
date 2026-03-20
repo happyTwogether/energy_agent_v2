@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     db_user: str = "user"
     db_password: str = "password"
     db_name: str = "agent_db"
+    db_schema: str = "public"  # PostgreSQL schema，默认 public
+    db_schema_rule: str = "energysavingrules"  # 规则表所在 schema，默认 energysavingrules
 
     @computed_field
     @property
