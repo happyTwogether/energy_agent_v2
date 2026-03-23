@@ -9,7 +9,7 @@ import asyncio
 import inspect
 import json
 from datetime import datetime, timedelta
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, AsyncIterator
 
 from app.core.config import get_settings
 from app.core.json_utils import dumps_decimal
@@ -20,6 +20,27 @@ from app.services.llm_client import LLMError, get_llm_client
 from app.tools.registry import tool_registry
 
 logger = get_logger("agent_runner")
+
+_IDLE_TIMEOUT_SEC = 60  # 连续 60 秒无新 chunk 才认为流挂起
+
+
+async def _stream_with_idle_timeout(
+    agen: AsyncIterator[dict[str, Any]],
+) -> AsyncGenerator[dict[str, Any], None]:
+    """对流式生成器施加逐 chunk 空闲超时。
+
+    仅当两个相邻 chunk 间隔超过 _IDLE_TIMEOUT_SEC 才抛出 asyncio.TimeoutError，
+    活跃流无论总时长多长都不会被中断。
+    """
+    try:
+        while True:
+            try:
+                chunk = await asyncio.wait_for(agen.__anext__(), timeout=_IDLE_TIMEOUT_SEC)
+            except StopAsyncIteration:
+                return
+            yield chunk
+    finally:
+        await agen.aclose()
 
 
 # [APPEND TO SYSTEM_PROMPT_TEMPLATE]
@@ -61,7 +82,10 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 ### query_anomaly（异常指标诊断）
 诊断特定日期是否有核心指标劣化超过10%。
 触发条件：用户询问"异常"、"劣化"、"大幅下降"、"波动"时调用。
-必须提取：dist_name, prod_name, target_date (未提及传昨天)。
+参数提取规则（禁止追问）：
+- dist_name: 提取地市。若用户未明确提及特定地市，直接默认传 "全网"，禁止追问。
+- prod_name: 提取厂家。若用户未明确提及特定厂家，直接默认传 "全网"，禁止追问。
+- target_date: 提取目标诊断日期 (YYYY-MM-DD)，未提及传昨天。
 返回规则：不要罗列全量数据，只用自然语言严重警告劣化的指标及其降幅；若无异常，告知运行平稳。
 
 ### query_energy_param_check（节能参数核查）
@@ -79,17 +103,30 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 查询优先级（至少提供一种查询条件）：
 1. 如果用户提供 CGI，直接用 CGI 查询（最精确，优先使用）
 2. 如果用户提供小区名称，用小区名称查询
-3. 否则需要用户提供区县 + 厂商进行批量查询
+3. 否则需要用户提供地市 + 厂商进行批量查询
 
 必须提取：
-- network_type: 网络类型，可选 "4g"/"5g"/"all"（未提及默认传 "all"）
 - cgi: CGI过滤（可选，优先级最高，格式如 460-00-12345-678）
 - cell_name: 小区名称过滤（可选，如"长沙芙蓉区芙蓉广场-HHH-1"）
-- dist_name: 区县名称（可选，当未提供 cgi/cell_name 时必填）
+- dist_name: 地市名称（可选，当未提供 cgi/cell_name 时必填）
 - prod_name: 厂商名称（可选，当未提供 cgi/cell_name 时必填）
 - check_date: 核查日期（可选，用户未提及时不传，让系统自动计算）
 
 返回规则：工具返回 report_content 直接输出；返回异常记录列表时，总结异常数量和主要问题类型。
+
+### analyze_single_cell_energy（单小区节电深度分析）
+触发条件：用户询问具体某个小区的"节电分析"、"休眠扩展"、"节能收缩"、"高负荷"等详细情况。
+必须提取参数：
+- cgi: 小区全球标识 (必须提取或通过小区名转换，格式 460-00-xxx-xxx)
+- analysis_target: 根据用户意图选择 "all"(全面分析), "expansion"(只问扩展/低业务), "constriction"(只问收缩/负面影响), "load"(只问负荷)。
+返回规则：工具返回 report_content 后，直接原样输出，绝对不要自行删减或总结。
+
+### analyze_batch_cells_energy（批量小区节电诊断）
+触发条件：用户输入地市、区县、厂家，要求进行"批量核查"、"批量分析"。
+必须提取参数：
+- dist_name: 区县名称 (必须提取！若用户只说了地市没说区县，必须追问具体区县，否则数据量过大导致崩溃)
+- prod_name: 厂家名称 (可选，如华为、中兴。若未提及传 "全网")
+返回规则：工具返回 report_content 后，直接原样输出，绝对不要自行删减或总结，确保包含 Excel 下载链接。
 
 ## 回答规则
 1. 工具返回 success=False 且包含"暂未开放" → 告知建设中；其他错误 → 告知原因，绝不编造。
@@ -199,27 +236,87 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                 data={"step": steps, "max_steps": max_steps},
             )
 
-            try:
-                response: dict[str, Any] = await get_llm_client().chat(
-                    messages=messages,
-                    tools=tools if tools else None,
-                )
-            except LLMError as exc:
-                logger.error("LLM 调用失败（第 %d 步）: %s", steps, exc)
-                yield StreamEvent(event_type="error", data=str(exc))
-                return
+            collected_content = ""
+            collected_tool_calls: dict[int, dict] = {}
+            finish_reason: str | None = None
+            _stream_fallback_needed = False
 
-            choice: dict[str, Any] = response["choices"][0]
-            finish_reason: str | None = choice.get("finish_reason")
-            assistant_message: dict[str, Any] = choice["message"]
-            tool_calls: list[dict[str, Any]] | None = assistant_message.get("tool_calls")
+            try:
+                async for chunk in _stream_with_idle_timeout(
+                    get_llm_client().stream_chat(
+                        messages=messages,
+                        tools=tools or None,
+                    )
+                ):
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        choice = choices[0]
+                        finish_reason = choice.get("finish_reason") or finish_reason
+                        delta = choice.get("delta", {})
+
+                        if delta.get("content"):
+                            token_text = delta["content"]
+                            collected_content += token_text
+                            yield StreamEvent(event_type="token", data=token_text)
+
+                        for tc_delta in (delta.get("tool_calls") or []):
+                            idx = tc_delta["index"]
+                            if idx not in collected_tool_calls:
+                                collected_tool_calls[idx] = {
+                                    "id": "",
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                }
+                            if tc_delta.get("id"):
+                                collected_tool_calls[idx]["id"] = tc_delta["id"]
+                            fn = tc_delta.get("function") or {}
+                            if fn.get("name"):
+                                collected_tool_calls[idx]["function"]["name"] = fn["name"]
+                            if fn.get("arguments"):
+                                collected_tool_calls[idx]["function"]["arguments"] += fn["arguments"]
+            except asyncio.TimeoutError:
+                # 30秒无新 chunk → DeepSeek 流式 API 挂起，降级为非流式
+                logger.warning("流式调用挂起（第 %d 步，已等待30秒），降级为非流式调用", steps)
+                _stream_fallback_needed = True
+            except LLMError as exc:
+                # 流式中途连接断开 → 同样降级，比报错更可靠
+                logger.warning("流式调用中断（第 %d 步）: %s，降级为非流式调用", steps, exc)
+                _stream_fallback_needed = True
+
+            if _stream_fallback_needed:
+                try:
+                    fallback_resp = await get_llm_client().chat(
+                        messages=messages, tools=tools or None
+                    )
+                    fb_choice = (fallback_resp.get("choices") or [{}])[0]
+                    finish_reason = fb_choice.get("finish_reason")
+                    fb_msg = fb_choice.get("message") or {}
+                    collected_content = fb_msg.get("content") or collected_content
+                    fb_tool_calls = fb_msg.get("tool_calls") or []
+                    if fb_tool_calls:
+                        collected_tool_calls = {i: tc for i, tc in enumerate(fb_tool_calls)}
+                    logger.info("降级非流式调用成功（第 %d 步）: finish=%s", steps, finish_reason)
+                except LLMError as retry_exc:
+                    logger.error("降级非流式调用也失败（第 %d 步）: %s", steps, retry_exc)
+                    yield StreamEvent(event_type="error", data=str(retry_exc))
+                    return
+
+            tool_calls: list[dict[str, Any]] | None = (
+                list(collected_tool_calls.values()) if collected_tool_calls else None
+            )
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": collected_content or None,
+            }
+            if tool_calls:
+                assistant_message["tool_calls"] = tool_calls
 
             messages.append(assistant_message)
 
             if finish_reason == "stop" and not tool_calls:
-                content: str = assistant_message.get("content", "")
-                logger.info("Agent 最终回答（第 %d 步）: %s", steps, content[:200])
-                yield StreamEvent(event_type="final_answer", data=content)
+                logger.info("Agent 最终回答（第 %d 步）: %s", steps, collected_content[:200])
+                yield StreamEvent(event_type="final_answer", data=collected_content)
                 return
 
             if tool_calls:
@@ -263,24 +360,41 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
 
                 if steps == max_steps:
                     logger.warning("达到最大步数 %d，强制终止", max_steps)
+                    final_collected = ""
+                    _max_step_fallback = False
                     try:
-                        final_response: dict[str, Any] = await get_llm_client().chat(
-                            messages=messages,
-                            tools=None,
-                        )
-                        final_content: str = final_response["choices"][0]["message"].get("content", "")
-                        yield StreamEvent(event_type="final_answer", data=final_content)
-                    except LLMError as exc:
-                        logger.error("最终回答 LLM 调用失败: %s", exc)
-                        yield StreamEvent(event_type="final_answer", data="已达到最大推理步数，请重新提问。")
+                        async for chunk in _stream_with_idle_timeout(
+                            get_llm_client().stream_chat(
+                                messages=messages,
+                                tools=None,
+                            )
+                        ):
+                            choices = chunk.get("choices") or []
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta", {})
+                            if delta.get("content"):
+                                token_text = delta["content"]
+                                final_collected += token_text
+                                yield StreamEvent(event_type="token", data=token_text)
+                    except (asyncio.TimeoutError, LLMError) as exc:
+                        logger.warning("最大步数强制汇总流式失败: %s，降级为非流式", exc)
+                        _max_step_fallback = True
+                    if _max_step_fallback:
+                        try:
+                            fb = await get_llm_client().chat(messages=messages, tools=None)
+                            fb_content = ((fb.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+                            final_collected = fb_content or final_collected
+                        except LLMError:
+                            pass
+                    yield StreamEvent(event_type="final_answer", data=final_collected or "已达到最大推理步数，请重新提问。")
                     return
 
                 continue
 
-            content = assistant_message.get("content", "")
-            if content:
+            if collected_content:
                 logger.info("Agent 返回文本回答（第 %d 步）", steps)
-                yield StreamEvent(event_type="final_answer", data=content)
+                yield StreamEvent(event_type="final_answer", data=collected_content)
                 return
 
         logger.warning("Agent 循环结束，未产生最终回答")

@@ -47,10 +47,13 @@ class LLMClient:
         Returns:
             完整的 kwargs 字典。
         """
+        settings = get_settings()
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "api_key": self.api_key,
+            "max_tokens": settings.llm_max_tokens,
+            "timeout": 180,  # 180秒超时，防止无限等待
         }
         if self.base_url:
             kwargs["api_base"] = self.base_url
@@ -106,9 +109,22 @@ class LLMClient:
         try:
             logger.info("调用 LLM stream_chat: model=%s", self.model)
             response = await litellm.acompletion(**self._build_kwargs(messages, tools, stream=True))
+            chunk_count = 0
             async for chunk in response:
-                yield chunk.model_dump()
-            logger.info("LLM stream_chat 完成")
+                chunk_count += 1
+                data = chunk.model_dump()
+                choices = data.get("choices") or []
+                if not choices:
+                    logger.debug("stream_chat chunk#%d: empty choices, skip", chunk_count)
+                    continue
+                fr = choices[0].get("finish_reason")
+                content = (choices[0].get("delta") or {}).get("content") or ""
+                logger.debug(
+                    "stream_chat chunk#%d: finish=%s content_len=%d",
+                    chunk_count, fr, len(content),
+                )
+                yield data
+            logger.info("LLM stream_chat 完成, 共 %d chunks", chunk_count)
         except Exception as exc:
             logger.error("LLM stream_chat 调用失败: %s", exc, exc_info=True)
             raise LLMError(f"LLM 流式调用失败: {exc}") from exc
