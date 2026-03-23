@@ -113,7 +113,7 @@ async def _fetch_param_check(
         FROM {DB_SCHEMA_RULE}.{table_name}
         WHERE {where_clause}
     """)
-
+    logger.info("SQL: %s", sql)
     try:
         result = await db.execute(sql, params)
         rows = result.mappings().all()
@@ -146,52 +146,71 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
         report_md = f"### 小区({cgi})节能参数配置总体查询情况\n\n"
         report_md += f"**基础信息**：基站 `{enodeb}` | 小区 `{cell}` | 厂家 `{vendor}` | 类型 `{station_type}` | 频段 `{freq}`\n\n"
 
+        # 汇总统计
+        total = len(data)
+        unqualified = len(unqualified_items)
+        qualified = total - unqualified
+
         if not unqualified_items:
             report_md += "**核查结论：✅ 合规**\n"
-            report_md += "- 经核查，该小区各项节能参数均已按照规范要求配置，状态合格。\n"
         else:
-            report_md += "**核查结论：❌ 不合规**\n以下为不合规参数明细：\n\n#### 不合规清单表\n"
-            report_md += "| 参数中文名称 | 参数英文 | 节能技术 | 节能类型 | 现网配置值 | 指导意见值 | 核查结果 | 主观原因 | 客观原因 |\n"
-            report_md += "|---|---|---|---|---|---|---|---|---|\n"
+            report_md += f"**核查结论：❌ 不合规**（共 {total} 项，合格 {qualified} 项，不合规 {unqualified} 项）\n"
 
-            for item in unqualified_items:
-                c_name = item.get('saving_para_name', '-')
-                e_name = item.get('field_name', '-')
-                obj_type = item.get('objtype_name', '-')
-                pwr_type = item.get('powertype_name', '-')
-                cur_val = item.get('saving_para_value', '-')
-                rec_val = item.get('recommend_value', '-')
-                state = item.get('saving_switch_state', '-')
-                sub_rsn = str(item.get('subjective_reason') or '-').replace('\n', ' ')
-                obj_rsn = str(item.get('objective_reason') or '-').replace('\n', ' ')
+        # 所有参数明细表
+        report_md += "\n#### 参数核查明细表\n"
+        report_md += "| 参数中文名称 | 参数英文 | 节能技术 | 节能类型 | 现网配置值 | 指导意见值 | 核查结果 | 主观原因 | 客观原因 |\n"
+        report_md += "|---|---|---|---|---|---|---|---|---|\n"
 
-                report_md += f"| {c_name} | {e_name} | {obj_type} | {pwr_type} | {cur_val} | {rec_val} | {state} | {sub_rsn} | {obj_rsn} |\n"
+        for item in data:
+            c_name = item.get('saving_para_name', '-')
+            e_name = item.get('field_name', '-')
+            obj_type = item.get('objtype_name', '-')
+            pwr_type = item.get('powertype_name', '-')
+            cur_val = item.get('saving_para_value', '-')
+            rec_val = item.get('recommend_value', '-')
+            state = item.get('saving_switch_state', '-')
+            sub_rsn = str(item.get('subjective_reason') or '-').replace('\n', ' ')
+            obj_rsn = str(item.get('objective_reason') or '-').replace('\n', ' ')
+
+            # 合格项标记 ✅，不合格项标记 ❌
+            state_display = f"✅ {state}" if state == "合格" else f"❌ {state}"
+
+            report_md += f"| {c_name} | {e_name} | {obj_type} | {pwr_type} | {cur_val} | {rec_val} | {state_display} | {sub_rsn} | {obj_rsn} |\n"
 
     else:
         # 模式 B：批量查询汇总
         report_md = f"### 节能参数核查汇总报告（{query_label}）\n\n"
 
+        total = len(data)
+        unqualified = len(unqualified_items)
+        qualified = total - unqualified
+
         if not unqualified_items:
             report_md += "**核查结论：✅ 合规**\n"
-            report_md += "- 经核查，所有小区各项节能参数均已按照规范要求配置，状态合格。\n"
         else:
-            report_md += f"**核查结论：❌ 不合规**\n共发现 {len(unqualified_items)} 条不合规参数，明细如下：\n\n#### 不合规清单表\n"
-            report_md += "| CGI | 参数中文名称 | 参数英文 | 节能技术 | 节能类型 | 现网配置值 | 指导意见值 | 核查结果 | 主观原因 | 客观原因 |\n"
-            report_md += "|---|---|---|---|---|---|---|---|---|---|\n"
+            report_md += f"**核查结论：❌ 不合规**（共 {total} 项，合格 {qualified} 项，不合规 {unqualified} 项）\n"
 
-            for item in unqualified_items:
-                item_cgi = item.get('cgi', '-')
-                c_name = item.get('saving_para_name', '-')
-                e_name = item.get('field_name', '-')
-                obj_type = item.get('objtype_name', '-')
-                pwr_type = item.get('powertype_name', '-')
-                cur_val = item.get('saving_para_value', '-')
-                rec_val = item.get('recommend_value', '-')
-                state = item.get('saving_switch_state', '-')
-                sub_rsn = str(item.get('subjective_reason') or '-').replace('\n', ' ')
-                obj_rsn = str(item.get('objective_reason') or '-').replace('\n', ' ')
+        # 所有参数明细表（含CGI列）
+        report_md += "\n#### 参数核查明细表\n"
+        report_md += "| CGI | 参数中文名称 | 参数英文 | 节能技术 | 节能类型 | 现网配置值 | 指导意见值 | 核查结果 | 主观原因 | 客观原因 |\n"
+        report_md += "|---|---|---|---|---|---|---|---|---|---|\n"
 
-                report_md += f"| {item_cgi} | {c_name} | {e_name} | {obj_type} | {pwr_type} | {cur_val} | {rec_val} | {state} | {sub_rsn} | {obj_rsn} |\n"
+        for item in data:
+            item_cgi = item.get('cgi', '-')
+            c_name = item.get('saving_para_name', '-')
+            e_name = item.get('field_name', '-')
+            obj_type = item.get('objtype_name', '-')
+            pwr_type = item.get('powertype_name', '-')
+            cur_val = item.get('saving_para_value', '-')
+            rec_val = item.get('recommend_value', '-')
+            state = item.get('saving_switch_state', '-')
+            sub_rsn = str(item.get('subjective_reason') or '-').replace('\n', ' ')
+            obj_rsn = str(item.get('objective_reason') or '-').replace('\n', ' ')
+
+            # 合格项标记 ✅，不合格项标记 ❌
+            state_display = f"✅ {state}" if state == "合格" else f"❌ {state}"
+
+            report_md += f"| {item_cgi} | {c_name} | {e_name} | {obj_type} | {pwr_type} | {cur_val} | {rec_val} | {state_display} | {sub_rsn} | {obj_rsn} |\n"
 
     return report_md
 
@@ -218,7 +237,7 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
 - check_date: 核查日期 (YYYY-MM-DD，未提及自动计算)
 - cgi: CGI 过滤（可选，优先级最高，如 "460-00-12345-678"）
 - cell_name: 小区名称过滤（可选，如 "长沙芙蓉区芙蓉广场-HHH-1"）
-- dist_name: 区县名称（可选，当未提供 cgi/cell_name 时必填）
+- dist_name: 地市名称（可选，当未提供 cgi/cell_name 时必填）
 - prod_name: 设备厂商（可选，当未提供 cgi/cell_name 时必填）
 
 触发条件: "节能参数核查"、"参数检查"、"配置核查"、"参数合规"。
@@ -243,7 +262,7 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
             },
             "dist_name": {
                 "type": "string",
-                "description": "区县名称（可选，当未提供 cgi/cell_name 时必填）",
+                "description": "地市名称（可选，当未提供 cgi/cell_name 时必填）",
             },
             "prod_name": {
                 "type": "string",

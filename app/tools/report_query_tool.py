@@ -437,7 +437,7 @@ def _generate_report_markdown(
     """使用纯 Python f-string 生成 Markdown 报告。
 
     Args:
-        dist_name: 区县名称。
+        dist_name: 地市名称。
         prod_name: 厂商名称。
         lte_data: 处理后的 4G 数据。
         nr_data: 处理后的 5G 数据。
@@ -653,7 +653,7 @@ def _generate_report_markdown(
 使用 Python 预处理所有单位换算和异常诊断，通过纯 Python 生成标准化 Markdown 报告。
 
 参数说明:
-- dist_name: 区县名称 (如: 朝阳区)
+- dist_name: 地市名称 (如: 长沙市)
 - prod_name: 设备厂商 (如: 华为)
 - date_start: 报告日期 (YYYY-MM-DD)，会暗中前推7天获取基线
 - date_end: 结束日期 (YYYY-MM-DD)，通常与 date_start 相同
@@ -668,7 +668,7 @@ def _generate_report_markdown(
         "properties": {
             "dist_name": {
                 "type": "string",
-                "description": "区县名称",
+                "description": "地市名称",
             },
             "prod_name": {
                 "type": "string",
@@ -696,7 +696,7 @@ async def query_report(
     """查询并生成 4G/5G 网络节耗电分析报告。
 
     Args:
-        dist_name: 区县名称。
+        dist_name: 地市名称。
         prod_name: 设备厂商。
         date_start: 报告日期，会暗中前推7天。
         date_end: 结束日期。

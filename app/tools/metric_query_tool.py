@@ -173,7 +173,7 @@ def _build_conditions(
     """根据过滤参数构建安全条件字符串和参数字典。
 
     Args:
-        dist_name: 区县名称。
+        dist_name: 地市名称。
         prod_name: 设备厂商。
         date_start: 开始日期 (YYYY-MM-DD)。
         date_end: 结束日期 (YYYY-MM-DD)。
@@ -280,7 +280,7 @@ def _build_llm_prompt(
 
     Args:
         metric_desc: 用户描述的指标查询需求。
-        dist_name: 区县名称。
+        dist_name: 地市名称。
         prod_name: 设备厂商。
         date_start: 开始日期。
         date_end: 结束日期。
@@ -290,7 +290,7 @@ def _build_llm_prompt(
     """
     conditions = []
     if dist_name:
-        conditions.append(f"区县: {dist_name}")
+        conditions.append(f"地市: {dist_name}")
     if prod_name:
         conditions.append(f"厂商: {prod_name}")
     if date_start:
@@ -309,7 +309,7 @@ def _build_llm_prompt(
 
 1. {schema}.lte_energy_metrics (4G 能耗指标表)
    - data_date (DATE): 日期
-   - dist_name (VARCHAR): 区县名称
+   - dist_name (VARCHAR): 地市名称
    - prod_name (VARCHAR): 设备厂商
    - cgi (VARCHAR): 小区全局标识
    - cell_name (VARCHAR): 小区名称
@@ -392,8 +392,8 @@ async def _execute_single_query(
 - freeform: 自由探索模式(基于 LLM 生成 SQL)
 
 使用示例:
-1. 模板查询: template_key="lte_summary", dist_name="朝阳区", date_start="2024-01-01"
-2. 自由探索: template_key="freeform", metric_desc="查询各区县平均节电率排名"
+1. 模板查询: template_key="lte_summary", dist_name="长沙市", date_start="2024-01-01"
+2. 自由探索: template_key="freeform", metric_desc="查询各地市平均节电率排名"
 """,
     parameters={
         "type": "object",
@@ -413,7 +413,7 @@ async def _execute_single_query(
             },
             "dist_name": {
                 "type": "string",
-                "description": "区县名称过滤条件",
+                "description": "地市名称过滤条件",
             },
             "prod_name": {
                 "type": "string",
@@ -456,7 +456,7 @@ async def query_metric(
     Args:
         template_key: 模板标识，决定查询模式。
         db: 数据库会话。
-        dist_name: 区县名称过滤。
+        dist_name: 地市名称过滤。
         prod_name: 设备厂商过滤。
         date_start: 开始日期。
         date_end: 结束日期。

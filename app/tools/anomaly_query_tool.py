@@ -6,6 +6,7 @@
 """
 
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import text
@@ -26,6 +27,7 @@ LTE_CORE_METRICS = [
     ("upoctul_dl", "上下行流量(GB)", True),
     ("avg_energy_efficiency", "平均能效(GB/度)", True),
     ("lte_curmonthpower_rate", "节电率(%)", True),
+    ("lte_station_power", "基站总能耗(度)", False),  # 越小越好，新增
     ("single_station_power", "单站能耗(度)", False),  # 越小越好
     ("low_energy_total", "低能效小区数", False),  # 越小越好
 ]
@@ -36,6 +38,7 @@ NR_CORE_METRICS = [
     ("upoctul_dl", "上下行流量(GB)", True),
     ("sa_avg_energy_efficiency", "平均能效(GB/度)", True),
     ("nr_curmonthpower_rate", "节电率(%)", True),
+    ("nr_sa_station_power", "基站总能耗(度)", False),  # 越小越好，新增
     ("single_station_power", "单站能耗(度)", False),  # 越小越好
     ("low_energy_total", "低能效小区数", False),  # 越小越好
 ]
@@ -59,7 +62,7 @@ def _to_float(value: Any) -> float | None:
     """将可能包含百分号或逗号的字符串安全转换为浮点数。
 
     Args:
-        value: 原始值，可能是 int、float、str 或 None。
+        value: 原始值，可能是 int、float、str、Decimal 或 None。
 
     Returns:
         转换后的浮点数，若转换失败则返回 None。
@@ -76,6 +79,9 @@ def _to_float(value: Any) -> float | None:
         except ValueError:
             logger.warning(f"无法将字符串转换为浮点数: {value}")
             return None
+    # 处理 Decimal 类型（SQLAlchemy 从数据库返回的数值类型）
+    if isinstance(value, Decimal):
+        return float(value)
     # 其他类型（如 bool）视作无效
     return None
 
@@ -166,7 +172,7 @@ async def _fetch_lte_data(
 
     Args:
         db: 数据库会话。
-        dist_name: 区县名称。
+        dist_name: 地市名称。
         prod_name: 厂商名称。
         baseline_start: 基线起始日期。
         target_date: 目标日期。
@@ -180,6 +186,7 @@ async def _fetch_lte_data(
             upoctul_dl,
             avg_energy_efficiency,
             lte_curmonthpower_rate,
+            lte_station_power,
             single_station_power,
             low_energy_total
         FROM {DB_SCHEMA}.lte_report_day_collect
@@ -209,7 +216,7 @@ async def _fetch_lte_data(
 
     for row in rows:
         row_dict = dict(row)
-        if row_dict.get("data_date") == target_date:
+        if str(row_dict.get("data_date")) == target_date:
             target_data = row_dict
         else:
             baseline_data.append(row_dict)
@@ -228,7 +235,7 @@ async def _fetch_nr_data(
 
     Args:
         db: 数据库会话。
-        dist_name: 区县名称。
+        dist_name: 地市名称。
         prod_name: 厂商名称。
         baseline_start: 基线起始日期。
         target_date: 目标日期。
@@ -242,6 +249,7 @@ async def _fetch_nr_data(
             upoctul_dl,
             sa_avg_energy_efficiency,
             nr_curmonthpower_rate,
+            nr_sa_station_power,
             single_station_power,
             low_energy_total
         FROM {DB_SCHEMA}.nr_report_day_collect
@@ -271,7 +279,7 @@ async def _fetch_nr_data(
 
     for row in rows:
         row_dict = dict(row)
-        if row_dict.get("data_date") == target_date:
+        if str(row_dict.get("data_date")) == target_date:
             target_data = row_dict
         else:
             baseline_data.append(row_dict)
@@ -285,7 +293,7 @@ async def _fetch_nr_data(
 对比目标日期与过去7天历史基线，找出数值劣化超过10%的核心能效指标。
 
 参数说明:
-- dist_name: 区县名称 (如: 朝阳区)
+- dist_name: 地市名称 (如: 长沙市)
 - prod_name: 设备厂商 (如: 华为)
 - target_date: 目标诊断日期 (YYYY-MM-DD)，未提及传昨天
 
@@ -299,7 +307,7 @@ async def _fetch_nr_data(
         "properties": {
             "dist_name": {
                 "type": "string",
-                "description": "区县名称",
+                "description": "地市名称",
             },
             "prod_name": {
                 "type": "string",
@@ -322,7 +330,7 @@ async def query_anomaly(
     """诊断特定日期是否有核心指标劣化超过10%。
 
     Args:
-        dist_name: 区县名称。
+        dist_name: 地市名称。
         prod_name: 设备厂商。
         target_date: 目标诊断日期 (YYYY-MM-DD)。
         db: 数据库会话。
