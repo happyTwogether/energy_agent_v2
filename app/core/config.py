@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     db_name: str = "agent_db"
     db_schema: str = "public"  # PostgreSQL schema，默认 public
     db_schema_rule: str = "energysavingrules"  # 规则表所在 schema，默认 energysavingrules
+    db_schema_agent: str = "jd_agent"  # 代理表所在 schema，默认 jd_agent
 
     @computed_field
     @property
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
     default_model: str = "gpt-4o-mini"
     log_level: str = "INFO"
     agent_max_steps: int = 5
+    llm_max_tokens: int = 8192  # LLM 最大输出 token 数，防止长报告被截断
     agent_system_prompt: str = (
         "你是一个智能助手，可以通过调用工具来帮助用户完成任务。"
         "请根据用户的问题，判断是否需要使用工具，并给出清晰的回答。"

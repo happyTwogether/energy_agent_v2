@@ -32,3 +32,6 @@ logs/
 
 # Docker
 postgres_data/
+.ace-tool/
+.playwright-mcp/
+.serena/
