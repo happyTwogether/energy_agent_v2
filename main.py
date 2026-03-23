@@ -4,10 +4,14 @@ FastAPI 应用入口模块。
 使用工厂模式创建 FastAPI 实例，集中注册路由、中间件和生命周期事件。
 """
 
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from app.api.routes import router
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -24,6 +28,7 @@ def _register_tools() -> None:
     import app.tools.energy_saving_tool  # noqa: F401
     import app.tools.anomaly_query_tool  # noqa: F401
     import app.tools.energy_param_check_tool  # noqa: F401
+    import app.tools.batch_energy_tool  # noqa: F401
 
 
 @asynccontextmanager
@@ -56,6 +61,14 @@ def create_app() -> FastAPI:
     )
 
     application.include_router(router, prefix="/api/v1")
+
+    # 挂载静态文件目录，提供 Excel 批量报告下载服务
+    os.makedirs("static/exports", exist_ok=True)
+    application.mount("/static", StaticFiles(directory="static"), name="static")
+
+    @application.get("/")
+    async def serve_chat_html() -> FileResponse:
+        return FileResponse(Path(__file__).parent / "chat.html", media_type="text/html")
 
     return application
 
