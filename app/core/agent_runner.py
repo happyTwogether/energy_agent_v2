@@ -21,7 +21,7 @@ from app.tools.registry import tool_registry
 
 logger = get_logger("agent_runner")
 
-_IDLE_TIMEOUT_SEC = 60  # 连续 60 秒无新 chunk 才认为流挂起
+_IDLE_TIMEOUT_SEC = 30  # 连续 30 秒无新 chunk 才认为流挂起
 
 
 async def _stream_with_idle_timeout(
@@ -32,14 +32,42 @@ async def _stream_with_idle_timeout(
     仅当两个相邻 chunk 间隔超过 _IDLE_TIMEOUT_SEC 才抛出 asyncio.TimeoutError，
     活跃流无论总时长多长都不会被中断。
     """
+    queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=1)
+    done_event = asyncio.Event()
+    exc_holder: list[BaseException] = []
+
+    async def _producer() -> None:
+        try:
+            async for chunk in agen:
+                await queue.put(chunk)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as e:
+            exc_holder.append(e)
+        finally:
+            done_event.set()
+            await queue.put(None)
+
+    producer_task = asyncio.create_task(_producer())
     try:
         while True:
             try:
-                chunk = await asyncio.wait_for(agen.__anext__(), timeout=_IDLE_TIMEOUT_SEC)
-            except StopAsyncIteration:
-                return
+                chunk = await asyncio.wait_for(queue.get(), timeout=_IDLE_TIMEOUT_SEC)
+            except asyncio.TimeoutError:
+                raise
+
+            if chunk is None:
+                break
             yield chunk
+
+        if exc_holder:
+            raise exc_holder[0]
     finally:
+        producer_task.cancel()
+        try:
+            await producer_task
+        except asyncio.CancelledError:
+            pass
         await agen.aclose()
 
 
@@ -61,6 +89,7 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 - date_start / date_end: 未提及传 {yesterday}。"今天"传 {current_date}。推算"前天"、"上周X"、"最近N天"。单日查询两者相同。
 - cgi: 仅 freeform 传。格式 460-00-基站号-小区号。
 - metric_desc: freeform 时必填，一句话描述需求。
+- export_excel: 是否导出Excel。触发条件：用户明确要求"导出Excel"、"下载数据"；或查询结果超过50条；或使用 lte_cell_detail / nr_cell_detail 模板时。设为 true 可生成Excel下载链接。
 
 ### query_report（报表生成）
 生成完整节耗电分析报告(Markdown)。
@@ -86,6 +115,7 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 - dist_name: 提取地市。若用户未明确提及特定地市，直接默认传 "全网"，禁止追问。
 - prod_name: 提取厂家。若用户未明确提及特定厂家，直接默认传 "全网"，禁止追问。
 - target_date: 提取目标诊断日期 (YYYY-MM-DD)，未提及传昨天。
+- export_excel: 是否导出Excel。触发条件：用户明确要求"导出Excel"、"下载数据"；或检测结果数据量超过50条。设为 true 可生成Excel下载链接。
 返回规则：不要罗列全量数据，只用自然语言严重警告劣化的指标及其降幅；若无异常，告知运行平稳。
 
 ### query_energy_param_check（节能参数核查）
@@ -111,15 +141,19 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 - dist_name: 地市名称（可选，当未提供 cgi/cell_name 时必填）
 - prod_name: 厂家名称（可选，当未提供 cgi/cell_name 时必填）
 - check_date: 核查日期（可选，用户未提及时不传，让系统自动计算）
+- export_excel: 是否导出Excel。触发条件：用户明确要求"导出Excel"、"下载数据"；或核查结果数据量超过50条。设为 true 可生成Excel下载链接。
 
-返回规则：工具返回 report_content 直接输出；返回异常记录列表时，总结异常数量和主要问题类型。
+返回规则：
+1. 工具返回 report_content 直接输出；返回异常记录列表时，总结异常数量和主要问题类型。
+2. 工具返回 download_url时 ，不直接输出report_content，进行总结，提供下载链接并告知用户可以点击下载完整报告。
+
 
 ### analyze_single_cell_energy（单小区节电深度分析）
 触发条件：用户询问具体某个小区的"节电分析"、"休眠扩展"、"节能收缩"、"高负荷"等详细情况。
 必须提取参数：
 - cgi: 小区全球标识 (必须提取或通过小区名转换，格式 460-00-xxx-xxx)
 - analysis_target: 根据用户意图选择 "all"(全面分析), "expansion"(只问扩展/低业务), "constriction"(只问收缩/负面影响), "load"(只问负荷)。
-返回规则：工具返回 report_content 后，直接原样输出，绝对不要自行删减或总结。
+返回规则：工具返回 report_content 后，直接原样输出，不要自行删减。
 
 ### analyze_batch_cells_energy（批量小区节电诊断）
 触发条件：用户输入地市、区县、厂家，要求进行"批量核查"、"批量分析"。
@@ -133,6 +167,7 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 2. 工具返回 report_content → 直接输出，不二次加工。
 3. 工具返回 data 列表 → 提取关键数据总结，不返回原始 JSON。
 4. 涉及4G和5G的非对比查询 → 分两次调 summary。对比查询 → 调 freeform。
+5. 工具返回包含 download_url → 必须用 Markdown 链接格式输出，如 [点击下载 Excel 报告](download_url)，禁止纯文本输出 URL。
 """
 
 

@@ -39,7 +39,12 @@ class Settings(BaseSettings):
     agent_max_steps: int = 5
     llm_max_tokens: int = 8192  # LLM 最大输出 token 数，防止长报告被截断
     agent_system_prompt: str = (
-        "你是一个智能助手，可以通过调用工具来帮助用户完成任务。"
+        "你是一个智能助手，可以通过调用工具来帮助用户完成任务。\n\n"
+        "## 工具调用规则\n"
+        "当需要使用工具时，请严格按以下格式输出（JSON 格式）：\n"
+        '<tool>{"name": "工具名", "arguments": {"参数1": "值1", "参数2": "值2"}}</tool>\n\n'
+        "示例：查询长沙市的指标\n"
+        '<tool>{"name": "query_metric", "arguments": {"template_key": "lte_summary", "dist_name": "长沙市"}}</tool>\n\n'
         "请根据用户的问题，判断是否需要使用工具，并给出清晰的回答。"
     )
     cors_origins: list[str] = ["*"]
