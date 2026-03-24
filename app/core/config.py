@@ -32,9 +32,9 @@ class Settings(BaseSettings):
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
 
-    llm_api_key: str = "your_api_key_here"
+    llm_api_key: str = ""
     llm_base_url: str = ""
-    default_model: str = "gpt-4o-mini"
+    default_model: str = ""
     log_level: str = "INFO"
     agent_max_steps: int = 5
     llm_max_tokens: int = 8192  # LLM 最大输出 token 数，防止长报告被截断

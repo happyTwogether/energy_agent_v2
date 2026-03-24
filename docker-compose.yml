@@ -1,69 +1,19 @@
+version: '3.8'
+
 services:
-  # ============================================================
-  # PostgreSQL 15 数据库服务
-  # ============================================================
-  db:
-    image: postgres:15-alpine
-    container_name: agent_db
-    env_file:
-      - .env
-    environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
-      TZ: Asia/Shanghai
+  energy:
+    image: energy_agent:v1.0.0
+    container_name: energy
+    restart: always
     ports:
-      - "${DB_PORT}:5432"
+    - "9500:8000"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${DB_USER}", "-d", "${DB_NAME}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  # ============================================================
-  # FastAPI AI Agent 服务（默认使用 development 阶段）
-  # ============================================================
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      # 指定构建 development 阶段，该阶段不 COPY 源码，依赖 volumes 挂载
-      target: development
-    container_name: agent_api
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
+      - /home/sunlu/energy_angent/docker_run:/app
+      - /home/sunlu/energy_angent/docker_runlogs:/app/logs
     environment:
-      # 容器内通过 Docker 网络访问数据库，覆盖 .env 中的 localhost
-      DB_HOST: db
-      DB_PORT: 5432
-      TZ: Asia/Shanghai
-    depends_on:
-      db:
-        condition: service_healthy
+      - TZ=Asia/Shanghai
 
-    # ========== 热更新核心配置 ==========
-    volumes:
-      # 【热更新关键】将宿主机整个项目目录挂载到容器 /app
-      # 宿主机修改任意 .py 文件后，容器内 uvicorn --reload 会自动检测并重启
-      - .:/app
-      # 日志目录持久化（可选）
-      - ./logs:/app/logs
-
-    # 【热更新关键】覆盖容器默认 CMD，强制使用 --reload 参数启动 uvicorn
-    # --reload-dir 限定监听 app/ 目录，避免 .env / logs 等变动触发无效重启
-    command: >
-      uvicorn main:app
-      --host 0.0.0.0
-      --port 8000
-      --reload
-      --reload-dir app
-
-    restart: unless-stopped
-
-volumes:
-  postgres_data:
+networks:
+  default:
+    external: true
+    name: dify110_default
