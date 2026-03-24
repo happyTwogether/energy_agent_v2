@@ -30,6 +30,9 @@ Thumbs.db
 logs/
 *.log
 
+# Docs/Excels
+static/exports/
+
 # Docker
 postgres_data/
 .ace-tool/

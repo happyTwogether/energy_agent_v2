@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.llm_client import get_llm_client, LLMError
 from app.tools.registry import tool_registry
+from app.utils.export_util import export_to_excel
 
 logger = get_logger("metric_query_tool")
 
@@ -387,13 +388,16 @@ async def _execute_single_query(
 - nr_summary: 5G汇总指标查询
 - lte_energy_saving: 4G节电功能生效情况查询
 - nr_energy_saving: 5G节电功能生效情况查询
-- lte_cell_detail: 4G小区级节电明细查询
-- nr_cell_detail: 5G小区级节电明细查询
+- lte_cell_detail: 4G小区级节电明细查询(数据量大，支持导出Excel)
+- nr_cell_detail: 5G小区级节电明细查询(数据量大，支持导出Excel)
 - freeform: 自由探索模式(基于 LLM 生成 SQL)
 
 使用示例:
 1. 模板查询: template_key="lte_summary", dist_name="长沙市", date_start="2024-01-01"
 2. 自由探索: template_key="freeform", metric_desc="查询各地市平均节电率排名"
+3. 导出Excel: template_key="lte_cell_detail", dist_name="长沙市", export_excel=true
+
+Excel导出: 当查询小区级明细或数据量较大时，设置 export_excel=true 可生成Excel下载链接
 """,
     parameters={
         "type": "object",
@@ -435,6 +439,11 @@ async def _execute_single_query(
                 "type": "string",
                 "description": "自由探索模式下的指标查询需求描述",
             },
+            "export_excel": {
+                "type": "boolean",
+                "description": "是否导出为 Excel 文件，数据量较大时建议开启",
+                "default": False,
+            },
         },
         "required": ["template_key"],
     },
@@ -448,6 +457,7 @@ async def query_metric(
     date_end: str | None = None,
     cgi: str | None = None,
     metric_desc: str | None = None,
+    export_excel: bool = False,
 ) -> dict[str, Any]:
     """查询 4G/5G 能耗指标。
 
@@ -522,15 +532,44 @@ async def query_metric(
                     lte_result = await _execute_single_query(db, sql_4g)
                     nr_result = await _execute_single_query(db, sql_5g)
 
-                    return {
+                    # 合并数据用于导出
+                    combined_data = []
+                    for item in lte_result.get("data", []):
+                        item["network_type"] = "4G"
+                        combined_data.append(item)
+                    for item in nr_result.get("data", []):
+                        item["network_type"] = "5G"
+                        combined_data.append(item)
+
+                    # 数据截断逻辑：超过50条时只返回前50条，完整数据走Excel
+                    MAX_RETURN_ITEMS = 50
+                    is_truncated = len(combined_data) > MAX_RETURN_ITEMS
+                    if is_truncated:
+                        logger.info("数据量超过%d条，已截断返回前%d条", MAX_RETURN_ITEMS, MAX_RETURN_ITEMS)
+
+                    result = {
                         "success": True,
                         "template_key": template_key,
                         "is_cross_table": True,
-                        "lte_data": lte_result.get("data", []),
-                        "nr_data": nr_result.get("data", []),
+                        "lte_data": lte_result.get("data", [])[:MAX_RETURN_ITEMS] if len(lte_result.get("data", [])) > MAX_RETURN_ITEMS else lte_result.get("data", []),
+                        "nr_data": nr_result.get("data", [])[:MAX_RETURN_ITEMS] if len(nr_result.get("data", [])) > MAX_RETURN_ITEMS else nr_result.get("data", []),
                         "lte_row_count": lte_result.get("row_count", 0),
                         "nr_row_count": nr_result.get("row_count", 0),
+                        "total_count": len(combined_data),
+                        "returned_count": min(len(combined_data), MAX_RETURN_ITEMS),
+                        "is_truncated": is_truncated,
                     }
+
+                    # Excel 导出逻辑
+                    # 1. 显式要求导出 或 2. 结果超过50条自动导出 或 3. 数据被截断时强制导出
+                    should_export = export_excel or (len(combined_data) > 50) or is_truncated
+                    if should_export and combined_data:
+                        download_url = export_to_excel(combined_data, prefix="metric_query")
+                        if download_url:
+                            result["download_url"] = download_url
+                            result["auto_exported"] = not export_excel  # 标记是否为自动导出
+
+                    return result
 
                 sql = sql_content
 
@@ -542,11 +581,33 @@ async def query_metric(
 
                 result = await _execute_single_query(db, sql)
 
-                return {
+                # 数据截断逻辑：超过50条时只返回前50条，完整数据走Excel
+                MAX_RETURN_ITEMS = 50
+                data = result.get("data", [])
+                is_truncated = len(data) > MAX_RETURN_ITEMS
+                if is_truncated:
+                    result["data"] = data[:MAX_RETURN_ITEMS]
+                    logger.info("数据量超过%d条，已截断返回前%d条", MAX_RETURN_ITEMS, MAX_RETURN_ITEMS)
+
+                response = {
                     "success": True,
                     "template_key": template_key,
                     **result,
+                    "total_count": len(data),
+                    "returned_count": len(result["data"]),
+                    "is_truncated": is_truncated,
                 }
+
+                # Excel 导出逻辑
+                # 1. 显式要求导出 或 2. 结果超过50条自动导出 或 3. 数据被截断时强制导出
+                should_export = export_excel or (len(data) > 50) or is_truncated
+                if should_export and data:
+                    download_url = export_to_excel(data, prefix="metric_query")
+                    if download_url:
+                        response["download_url"] = download_url
+                        response["auto_exported"] = not export_excel  # 标记是否为自动导出
+
+                return response
 
             except LLMError as exc:
                 logger.error("LLM 调用失败: %s", exc)
@@ -577,10 +638,32 @@ async def query_metric(
 
             result = await _execute_single_query(db, sql, params)
 
-            return {
+            # 数据截断逻辑：超过50条时只返回前50条，完整数据走Excel
+            MAX_RETURN_ITEMS = 50
+            data = result.get("data", [])
+            is_truncated = len(data) > MAX_RETURN_ITEMS
+            if is_truncated:
+                result["data"] = data[:MAX_RETURN_ITEMS]
+                logger.info("数据量超过%d条，已截断返回前%d条", MAX_RETURN_ITEMS, MAX_RETURN_ITEMS)
+
+            response = {
                 "template_key": template_key,
                 **result,
+                "total_count": len(data),
+                "returned_count": len(result["data"]),
+                "is_truncated": is_truncated,
             }
+
+            # Excel 导出逻辑
+            # 1. 显式要求导出 或 2. 结果超过50条自动导出 或 3. 数据被截断时强制导出
+            should_export = export_excel or (len(data) > 50) or is_truncated
+            if should_export and data:
+                download_url = export_to_excel(data, prefix=template_key)
+                if download_url:
+                    response["download_url"] = download_url
+                    response["auto_exported"] = not export_excel  # 标记是否为自动导出
+
+            return response
 
     except Exception as exc:
         logger.error("指标查询异常: %s", exc, exc_info=True)

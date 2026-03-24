@@ -17,6 +17,9 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.database import init_db
 
+# Excel 导出目录（与 export_util.py 保持一致）
+EXPORT_DIR = os.path.join(os.getcwd(), "static", "exports")
+
 logger = get_logger("main")
 
 
@@ -69,6 +72,19 @@ def create_app() -> FastAPI:
     @application.get("/")
     async def serve_chat_html() -> FileResponse:
         return FileResponse(Path(__file__).parent / "chat.html", media_type="text/html")
+
+    @application.get("/downloads/{filename}")
+    async def download_excel(filename: str) -> FileResponse:
+        """强制下载 Excel 文件（添加 Content-Disposition: attachment 头）。"""
+        file_path = os.path.join(EXPORT_DIR, filename)
+        if not os.path.exists(file_path):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="文件不存在")
+        return FileResponse(
+            file_path,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
 
     return application
 

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.tools.registry import tool_registry
+from app.utils.export_util import export_to_excel
 
 logger = get_logger("energy_param_check_tool")
 
@@ -102,7 +103,7 @@ async def _fetch_param_check(
             chn_num,
             freq_band,
             saving_para_name,
-            field_name,
+            chn_field_name,
             objtype_name,
             powertype_name,
             saving_para_value,
@@ -125,12 +126,13 @@ async def _fetch_param_check(
         raise
 
 
-def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi: bool) -> str:
+def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi: bool, show_detail: bool = True) -> str:
     """生成节能参数核查 Markdown 报告。
 
     展示逻辑：
     - 合规：仅提示合规数量，不展示详情表格
-    - 不合规：用表格展示不合规参数详情
+    - 不合规且数据量小(show_detail=True)：用表格展示不合规参数详情
+    - 不合规且数据量大(show_detail=False)：仅显示统计摘要，提示下载Excel查看详情
     """
     unqualified_items = [row for row in data if row.get("saving_switch_state") != "合格"]
     qualified_count = len(data) - len(unqualified_items)
@@ -152,8 +154,13 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
             # 全部合规
             report_md += f"**核查结论：✅ 合规**\n\n"
             report_md += f"- 经核查，该小区共 {qualified_count} 项节能参数均符合规范要求，状态合格。\n"
+        elif not show_detail:
+            # 存在不合规项但数据量大，只显示摘要
+            report_md += f"**核查结论：❌ 不合规**\n\n"
+            report_md += f"- 共核查 {len(data)} 项参数，其中合格 {qualified_count} 项，**不合规 {len(unqualified_items)} 项**\n"
+            report_md += f"- 数据量较大，详细明细请查看 Excel 下载文件\n"
         else:
-            # 存在不合规项
+            # 存在不合规项且数据量小，显示明细表格
             report_md += f"**核查结论：❌ 不合规**\n\n"
             report_md += f"- 共核查 {len(data)} 项参数，其中合格 {qualified_count} 项，**不合规 {len(unqualified_items)} 项**\n"
 
@@ -163,8 +170,8 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
             report_md += "|---|---|---|---|---|---|---|---|---|\n"
 
             for item in unqualified_items:
+                e_name = item.get('chn_field_name', '-')
                 c_name = item.get('saving_para_name', '-')
-                e_name = item.get('field_name', '-')
                 obj_type = item.get('objtype_name', '-')
                 pwr_type = item.get('powertype_name', '-')
                 cur_val = item.get('saving_para_value', '-')
@@ -183,8 +190,13 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
             # 全部合规
             report_md += f"**核查结论：✅ 合规**\n\n"
             report_md += f"- 经核查，共 {qualified_count} 项节能参数均符合规范要求，状态合格。\n"
+        elif not show_detail:
+            # 存在不合规项但数据量大，只显示摘要
+            report_md += f"**核查结论：❌ 不合规**\n\n"
+            report_md += f"- 共核查 {len(data)} 项参数，其中合格 {qualified_count} 项，**不合规 {len(unqualified_items)} 项**\n"
+            report_md += f"- 数据量较大，详细明细请查看 Excel 下载文件\n"
         else:
-            # 存在不合规项
+            # 存在不合规项且数据量小，显示明细表格
             report_md += f"**核查结论：❌ 不合规**\n\n"
             report_md += f"- 共核查 {len(data)} 项参数，其中合格 {qualified_count} 项，**不合规 {len(unqualified_items)} 项**\n"
 
@@ -196,7 +208,7 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
             for item in unqualified_items:
                 item_cgi = item.get('cgi', '-')
                 c_name = item.get('saving_para_name', '-')
-                e_name = item.get('field_name', '-')
+                e_name = item.get('chn_field_name', '-')
                 obj_type = item.get('objtype_name', '-')
                 pwr_type = item.get('powertype_name', '-')
                 cur_val = item.get('saving_para_value', '-')
@@ -234,6 +246,16 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
 - cell_name: 小区名称过滤（可选，如 "长沙芙蓉区芙蓉广场-HHH-1"）
 - dist_name: 地市名称（可选，当未提供 cgi/cell_name 时必填）
 - prod_name: 设备厂家（可选，当未提供 cgi/cell_name 时必填）
+- export_excel: 是否导出 Excel 文件（可选，默认 false）
+
+Excel 导出:
+- 设置 export_excel=true 可将不合规参数导出为 Excel 文件
+- 导出内容包含所有不合规参数的明细数据
+- 返回结果中的 download_url 可用于下载
+
+使用示例:
+- "核查长沙华为小区的节能参数，导出 Excel"
+- "检查 CGI 460-00-12345-678 的参数配置，并生成报告"
 
 触发条件: "节能参数核查"、"参数检查"、"配置核查"、"参数合规"。
 
@@ -263,6 +285,11 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
                 "type": "string",
                 "description": "设备厂家（可选，当未提供 cgi/cell_name 时必填）",
             },
+            "export_excel": {
+                "type": "boolean",
+                "description": "是否导出为 Excel 文件",
+                "default": False,
+            },
         },
         "required": [],
     },
@@ -274,6 +301,7 @@ async def query_energy_param_check(
     cell_name: str | None = None,
     dist_name: str | None = None,
     prod_name: str | None = None,
+    export_excel: bool = False,
 ) -> dict[str, Any]:
     """查询小区节能参数核查结果。"""
     date_str = _get_check_date(check_date)
@@ -305,13 +333,23 @@ async def query_energy_param_check(
 
         unqualified_items = [row for row in data if row.get("saving_switch_state") != "合格"]
         is_single_cgi = bool(cgi)
-        report_md = _generate_report(query_label, data, is_single_cgi)
+
+        # 数据截断逻辑：超过50条时只返回前50条，报告不显示明细表格
+        MAX_RETURN_ITEMS = 50
+        is_truncated = len(unqualified_items) > MAX_RETURN_ITEMS
+        if is_truncated:
+            logger.info("数据量超过%d条，报告将只显示摘要", MAX_RETURN_ITEMS)
+
+        # 生成报告，数据量大时不显示明细表格
+        report_md = _generate_report(query_label, data, is_single_cgi, show_detail=not is_truncated)
         logger.info(
             "节能参数核查完成: date=%s, query=%s, total=%d, unqualified=%d",
             date_str, query_label, len(data), len(unqualified_items)
         )
 
-        return {
+        returned_items = unqualified_items[:MAX_RETURN_ITEMS] if is_truncated else unqualified_items
+
+        result = {
             "success": True,
             "check_date": date_str,
             "check_date_display": f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}",
@@ -320,8 +358,21 @@ async def query_energy_param_check(
             "unqualified_count": len(unqualified_items),
             "qualified_count": len(data) - len(unqualified_items),
             "report_content": report_md,
-            "unqualified_items": unqualified_items,
+            "unqualified_items": returned_items,
+            "returned_count": len(returned_items),
+            "is_truncated": is_truncated,
         }
+
+        # Excel 导出逻辑
+        # 1. 显式要求导出 或 2. 不合规结果超过50条自动导出 或 3. 数据被截断时强制导出
+        should_export = export_excel or (len(unqualified_items) > 50) or is_truncated
+        if should_export and unqualified_items:
+            download_url = export_to_excel(unqualified_items, prefix="energy_param_check")
+            if download_url:
+                result["download_url"] = download_url
+                result["auto_exported"] = not export_excel  # 标记是否为自动导出
+
+        return result
 
     except Exception as exc:
         logger.error("节能参数核查异常: %s", exc, exc_info=True)

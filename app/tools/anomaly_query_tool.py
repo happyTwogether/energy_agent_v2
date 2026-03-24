@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.tools.registry import tool_registry
+from app.utils.export_util import export_to_excel
 
 logger = get_logger("anomaly_query_tool")
 
@@ -296,6 +297,16 @@ async def _fetch_nr_data(
 - dist_name: 地市名称 (如: 长沙市)
 - prod_name: 设备厂家 (如: 华为)
 - target_date: 目标诊断日期 (YYYY-MM-DD)，未提及传昨天
+- export_excel: 是否导出 Excel 文件（可选，默认 false）
+
+Excel 导出:
+- 设置 export_excel=true 可将异常指标导出为 Excel 文件
+- 导出内容包含 4G 和 5G 所有异常指标的合并数据
+- 返回结果中的 download_url 可用于下载
+
+使用示例:
+- "诊断长沙市华为昨天的指标异常，导出 Excel"
+- "分析长沙 2025-03-20 的指标波动情况，并生成下载链接"
 
 触发条件: 用户询问"异常"、"劣化"、"大幅下降"、"波动"时调用。
 
@@ -317,6 +328,11 @@ async def _fetch_nr_data(
                 "type": "string",
                 "description": "目标诊断日期 (YYYY-MM-DD)，未提及传昨天",
             },
+            "export_excel": {
+                "type": "boolean",
+                "description": "是否导出为 Excel 文件",
+                "default": False,
+            },
         },
         "required": ["dist_name", "prod_name", "target_date"],
     },
@@ -326,6 +342,7 @@ async def query_anomaly(
     prod_name: str,
     target_date: str,
     db: AsyncSession,
+    export_excel: bool = False,
 ) -> dict[str, Any]:
     """诊断特定日期是否有核心指标劣化超过10%。
 
@@ -367,20 +384,52 @@ async def query_anomaly(
         logger.info("5G指标: %s", nr_target)
         logger.info("5G基线: %s", nr_baseline)
         logger.info("5G异常指标: %s", nr_anomalies)
+
+        # 数据截断逻辑：超过50条时只返回前50条，完整数据走Excel
+        MAX_RETURN_ITEMS = 50
+        combined_anomalies = []
+        for item in lte_anomalies:
+            item["network_type"] = "4G"
+            combined_anomalies.append(item)
+        for item in nr_anomalies:
+            item["network_type"] = "5G"
+            combined_anomalies.append(item)
+
+        is_truncated = len(combined_anomalies) > MAX_RETURN_ITEMS
+        if is_truncated:
+            logger.info("数据量超过%d条，已截断返回前%d条", MAX_RETURN_ITEMS, MAX_RETURN_ITEMS)
+
+        # 截断后的列表
+        returned_lte = lte_anomalies[:MAX_RETURN_ITEMS] if len(lte_anomalies) > MAX_RETURN_ITEMS else lte_anomalies
+        returned_nr = nr_anomalies[:MAX_RETURN_ITEMS] if len(nr_anomalies) > MAX_RETURN_ITEMS else nr_anomalies
+        returned_combined = combined_anomalies[:MAX_RETURN_ITEMS] if is_truncated else combined_anomalies
+
         # 4. 组装返回结果
         result = {
             "success": True,
             "target_date": target_date,
             "baseline_range": f"{baseline_start} ~ {target_date}",
-            "lte_anomalies": lte_anomalies,
-            "nr_anomalies": nr_anomalies,
+            "lte_anomalies": returned_lte,
+            "nr_anomalies": returned_nr,
             "has_anomaly": len(lte_anomalies) > 0 or len(nr_anomalies) > 0,
+            "total_anomaly_count": len(combined_anomalies),
+            "returned_count": len(returned_combined),
+            "is_truncated": is_truncated,
         }
 
         if lte_anomalies:
             result["lte_anomaly_count"] = len(lte_anomalies)
         if nr_anomalies:
             result["nr_anomaly_count"] = len(nr_anomalies)
+
+        # Excel 导出逻辑
+        # 1. 显式要求导出 或 2. 异常结果超过50条自动导出 或 3. 数据被截断时强制导出
+        should_export = export_excel or (len(combined_anomalies) > 50) or is_truncated
+        if should_export and combined_anomalies:
+            download_url = export_to_excel(combined_anomalies, prefix="anomaly_diagnosis")
+            if download_url:
+                result["download_url"] = download_url
+                result["auto_exported"] = not export_excel  # 标记是否为自动导出
 
         logger.info(
             "异常诊断完成: 4G异常%d个, 5G异常%d个",
