@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期管理。"""
     logger.info("AI Agent 微服务启动中...")
     _register_tools()
-    await init_db()
+    # await init_db()
     logger.info("服务已就绪，等待请求")
     yield
     logger.info("AI Agent 微服务正在关闭...")

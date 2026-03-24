@@ -438,7 +438,7 @@ def _generate_report_markdown(
 
     Args:
         dist_name: 地市名称。
-        prod_name: 厂商名称。
+        prod_name: 厂家名称。
         lte_data: 处理后的 4G 数据。
         nr_data: 处理后的 5G 数据。
         lte_anomalies: 4G 异常列表。
@@ -654,7 +654,7 @@ def _generate_report_markdown(
 
 参数说明:
 - dist_name: 地市名称 (如: 长沙市)
-- prod_name: 设备厂商 (如: 华为)
+- prod_name: 设备厂家 (如: 华为)
 - date_start: 报告日期 (YYYY-MM-DD)，会暗中前推7天获取基线
 - date_end: 结束日期 (YYYY-MM-DD)，通常与 date_start 相同
 
@@ -672,7 +672,7 @@ def _generate_report_markdown(
             },
             "prod_name": {
                 "type": "string",
-                "description": "设备厂商",
+                "description": "设备厂家",
             },
             "date_start": {
                 "type": "string",
@@ -697,7 +697,7 @@ async def query_report(
 
     Args:
         dist_name: 地市名称。
-        prod_name: 设备厂商。
+        prod_name: 设备厂家。
         date_start: 报告日期，会暗中前推7天。
         date_end: 结束日期。
         db: 数据库会话。

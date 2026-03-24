@@ -24,7 +24,7 @@ logger = get_logger("energy_saving_tool")
 
 参数说明:
 - dist_name: 区县名称
-- prod_name: 设备厂商
+- prod_name: 设备厂家
 - date_start: 开始日期 (YYYY-MM-DD)
 - date_end: 结束日期 (YYYY-MM-DD)
 - network_type: 网络类型 (4G/5G/ALL)
@@ -40,7 +40,7 @@ logger = get_logger("energy_saving_tool")
             },
             "prod_name": {
                 "type": "string",
-                "description": "设备厂商",
+                "description": "设备厂家",
             },
             "date_start": {
                 "type": "string",
@@ -70,7 +70,7 @@ async def analyze_energy_saving(
 
     Args:
         dist_name: 区县名称。
-        prod_name: 设备厂商。
+        prod_name: 设备厂家。
         date_start: 开始日期。
         date_end: 结束日期。
         network_type: 网络类型 (4G/5G/ALL)。

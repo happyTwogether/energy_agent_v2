@@ -174,7 +174,7 @@ def _build_conditions(
 
     Args:
         dist_name: 地市名称。
-        prod_name: 设备厂商。
+        prod_name: 设备厂家。
         date_start: 开始日期 (YYYY-MM-DD)。
         date_end: 结束日期 (YYYY-MM-DD)。
         cgi: 小区全局标识。
@@ -281,7 +281,7 @@ def _build_llm_prompt(
     Args:
         metric_desc: 用户描述的指标查询需求。
         dist_name: 地市名称。
-        prod_name: 设备厂商。
+        prod_name: 设备厂家。
         date_start: 开始日期。
         date_end: 结束日期。
 
@@ -292,7 +292,7 @@ def _build_llm_prompt(
     if dist_name:
         conditions.append(f"地市: {dist_name}")
     if prod_name:
-        conditions.append(f"厂商: {prod_name}")
+        conditions.append(f"厂家: {prod_name}")
     if date_start:
         conditions.append(f"开始日期: {date_start}")
     if date_end:
@@ -310,7 +310,7 @@ def _build_llm_prompt(
 1. {schema}.lte_energy_metrics (4G 能耗指标表)
    - data_date (DATE): 日期
    - dist_name (VARCHAR): 地市名称
-   - prod_name (VARCHAR): 设备厂商
+   - prod_name (VARCHAR): 设备厂家
    - cgi (VARCHAR): 小区全局标识
    - cell_name (VARCHAR): 小区名称
    - symbol_status (VARCHAR): 节电符号状态(生效/未生效)
@@ -417,7 +417,7 @@ async def _execute_single_query(
             },
             "prod_name": {
                 "type": "string",
-                "description": "设备厂商过滤条件",
+                "description": "设备厂家过滤条件",
             },
             "date_start": {
                 "type": "string",
@@ -457,7 +457,7 @@ async def query_metric(
         template_key: 模板标识，决定查询模式。
         db: 数据库会话。
         dist_name: 地市名称过滤。
-        prod_name: 设备厂商过滤。
+        prod_name: 设备厂家过滤。
         date_start: 开始日期。
         date_end: 结束日期。
         cgi: 小区标识过滤。

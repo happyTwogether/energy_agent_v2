@@ -173,7 +173,7 @@ async def _fetch_lte_data(
     Args:
         db: 数据库会话。
         dist_name: 地市名称。
-        prod_name: 厂商名称。
+        prod_name: 厂家名称。
         baseline_start: 基线起始日期。
         target_date: 目标日期。
 
@@ -236,7 +236,7 @@ async def _fetch_nr_data(
     Args:
         db: 数据库会话。
         dist_name: 地市名称。
-        prod_name: 厂商名称。
+        prod_name: 厂家名称。
         baseline_start: 基线起始日期。
         target_date: 目标日期。
 
@@ -294,7 +294,7 @@ async def _fetch_nr_data(
 
 参数说明:
 - dist_name: 地市名称 (如: 长沙市)
-- prod_name: 设备厂商 (如: 华为)
+- prod_name: 设备厂家 (如: 华为)
 - target_date: 目标诊断日期 (YYYY-MM-DD)，未提及传昨天
 
 触发条件: 用户询问"异常"、"劣化"、"大幅下降"、"波动"时调用。
@@ -311,7 +311,7 @@ async def _fetch_nr_data(
             },
             "prod_name": {
                 "type": "string",
-                "description": "设备厂商",
+                "description": "设备厂家",
             },
             "target_date": {
                 "type": "string",
@@ -331,7 +331,7 @@ async def query_anomaly(
 
     Args:
         dist_name: 地市名称。
-        prod_name: 设备厂商。
+        prod_name: 设备厂家。
         target_date: 目标诊断日期 (YYYY-MM-DD)。
         db: 数据库会话。
 
