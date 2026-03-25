@@ -6,6 +6,7 @@
 """
 
 from functools import lru_cache
+from urllib.parse import quote_plus
 
 from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,8 +28,10 @@ class Settings(BaseSettings):
     @property
     def database_url(self) -> str:
         """自动拼接 SQLAlchemy 异步数据库连接 URL。"""
+        # 对密码进行 URL 编码，处理特殊字符如 @、#、: 等
+        encoded_password = quote_plus(self.db_password)
         return (
-            f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
+            f"postgresql+asyncpg://{self.db_user}:{encoded_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
 
