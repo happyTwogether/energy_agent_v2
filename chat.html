@@ -649,8 +649,10 @@ renderer.link = function({ href, title, text }) {
     textStr = String(text || '');
   }
 
-  const isExport = hrefStr.startsWith('/downloads/');
-  const fullHref = isExport ? BASE_URL + hrefStr : hrefStr;
+  // 检测是否为下载链接（包含 /downloads/）
+  const isExport = hrefStr.includes('/downloads/');
+  // 如果是相对路径，转为完整 URL；否则保持原样
+  const fullHref = (isExport && hrefStr.startsWith('/downloads/')) ? BASE_URL + hrefStr : hrefStr;
   const downloadAttr = isExport ? ' download' : '';
   const titleAttr = title ? ` title="${title}"` : '';
 
@@ -684,10 +686,11 @@ function renderInline(text) {
     .replace(/_([^_\n]+)_/g, '<em>$1</em>')
     .replace(/`([^`\n]+)`/g, (_, c) => `<code>${esc(c)}</code>`)
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, p1, p2) => {
-      // 下载链接：相对路径转为完整 URL，并添加 download 属性
+      // 下载链接：检测是否包含 /downloads/，添加 download 属性
       let href = p2;
-      let isExport = href.startsWith('/downloads/');
-      if (isExport) {
+      let isExport = href.includes('/downloads/');
+      // 如果是相对路径，转为完整 URL
+      if (isExport && href.startsWith('/downloads/')) {
         href = BASE_URL + href;
       }
       let downloadAttr = isExport ? ' download' : '';

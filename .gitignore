@@ -38,3 +38,6 @@ postgres_data/
 .ace-tool/
 .playwright-mcp/
 .serena/
+
+
+README.md

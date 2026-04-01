@@ -7,13 +7,28 @@
 
 import os
 import uuid
+from contextvars import ContextVar
 from datetime import datetime
 
 import pandas as pd
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 
 logger = get_logger("export_util")
+
+# 请求级别的 base_url 上下文变量
+_request_base_url: ContextVar[str | None] = ContextVar("request_base_url", default=None)
+
+
+def set_request_base_url(base_url: str | None) -> None:
+    """设置当前请求的 base_url（由 routes 层调用）。"""
+    _request_base_url.set(base_url)
+
+
+def get_request_base_url() -> str | None:
+    """获取当前请求的 base_url。"""
+    return _request_base_url.get()
 
 # 全局导出目录配置 (与 main.py 保持一致)
 EXPORT_DIR = os.path.join(os.getcwd(), "static", "exports")
@@ -48,8 +63,8 @@ DEFAULT_COLUMN_MAPPING = {
     "metric_name": "指标名称",
     "severity": "严重程度",
     # 参数核查相关
-    "saving_para_name": "参数中文名称",
-    "chn_field_name": "参数英文",
+    "chn_field_name": "参数中文名称",
+    "saving_para_name": "参数英文",
     "objtype_name": "节能技术",
     "powertype_name": "节能类型",
     "saving_para_value": "现网配置值",
@@ -123,7 +138,13 @@ def export_to_excel(
         df.to_excel(file_path, index=False, engine="openpyxl")
 
         logger.info(f"Excel 导出成功: {file_path}, 数据量: {len(df)} 条")
-        return f"/downloads/{filename}"
+
+        # 生成完整下载链接（优先使用请求上下文中的 base_url）
+        relative_url = f"/downloads/{filename}"
+        base_url = get_request_base_url() or get_settings().base_url
+        if base_url:
+            return f"{base_url.rstrip('/')}{relative_url}"
+        return relative_url
 
     except Exception as e:
         logger.error(f"Excel 导出失败: {str(e)}", exc_info=True)

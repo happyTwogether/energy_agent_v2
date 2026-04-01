@@ -116,7 +116,12 @@ async def analyze_batch_cells_energy(
     os.makedirs("static/exports", exist_ok=True)
     filename = f"batch_analysis_{dist_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx"
     file_path = f"static/exports/{filename}"
-    download_url = f"/static/exports/{filename}"
+
+    # 生成完整下载链接（优先使用请求上下文中的 base_url）
+    from app.utils.export_util import get_request_base_url
+    relative_url = f"/downloads/{filename}"
+    base_url = get_request_base_url() or get_settings().base_url
+    download_url = f"{base_url.rstrip('/')}{relative_url}" if base_url else relative_url
 
     # 导出时去掉内部辅助列
     export_df = df.drop(columns=["is_high_load"], errors="ignore")
