@@ -11,6 +11,11 @@ from typing import Any, AsyncGenerator
 
 import litellm
 
+# 禁用 LiteLLM 的回调上报和网络请求（版本检查、使用统计等）
+litellm.success_callback = []
+litellm.failure_callback = []
+litellm.set_verbose = False
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
@@ -179,17 +184,31 @@ class LLMClient:
                         collected_content += content
 
                     # 检查是否是结束 chunk，尝试提取工具调用
-                    if choices[0].get("finish_reason") and collected_content and tools:
+                    finish_reason = choices[0].get("finish_reason")
+                    if finish_reason and collected_content and tools:
                         extracted = _extract_tool_calls_from_content(collected_content)
                         if extracted:
                             logger.info("流式响应中提取到 %d 个工具调用", len(extracted))
-                            # 构造标准格式的 tool_calls chunk
-                            delta["tool_calls"] = [
-                                {"index": i, **tc} for i, tc in enumerate(extracted)
-                            ]
-                            delta["content"] = None
-                            choices[0]["finish_reason"] = "tool_calls"
-                            yield {"choices": choices}
+                            # 构造流式格式的 tool_calls（分多个 chunk 发送，模拟流式行为）
+                            for i, tc in enumerate(extracted):
+                                yield {
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {
+                                            "role": "assistant",
+                                            "tool_calls": [{"index": i, **tc}]
+                                        },
+                                        "finish_reason": None
+                                    }]
+                                }
+                            # 最后发送结束 chunk
+                            yield {
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {},
+                                    "finish_reason": "tool_calls"
+                                }]
+                            }
                             continue
 
                 yield data

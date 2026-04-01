@@ -21,7 +21,7 @@ from app.tools.registry import tool_registry
 
 logger = get_logger("agent_runner")
 
-_IDLE_TIMEOUT_SEC = 30  # 连续 30 秒无新 chunk 才认为流挂起
+_IDLE_TIMEOUT_SEC = 60  # 连续 30 秒无新 chunk 才认为流挂起
 
 
 async def _stream_with_idle_timeout(
@@ -79,7 +79,7 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 
 ## 可用工具
 
-### query_metric（指标查询）
+###工具1：query_metric（指标查询）
 查询4G/5G节能相关指标数据。
 调用前提取参数：
 - template_key（必填）: lte_summary / nr_summary / lte_energy_saving / nr_energy_saving / lte_cell_detail / nr_cell_detail。
@@ -91,11 +91,11 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 - metric_desc: freeform 时必填，一句话描述需求。
 - export_excel: 是否导出Excel。触发条件：用户明确要求"导出Excel"、"下载数据"；或查询结果超过50条；或使用 lte_cell_detail / nr_cell_detail 模板时。设为 true 可生成Excel下载链接。
 
-### query_report（报表生成）
+###工具2： query_report（报表生成）
 生成完整节耗电分析报告(Markdown)。
 触发条件："生成报表"、"出报告"、"报表查询"等。
 
-【参数提取与默认兜底规则（绝对禁止过度追问）】
+【参数提取规则】
 - dist_name: 提取地市。若用户未明确提及特定地市，直接默认传 "全网"，禁止追问。
 - prod_name: 提取厂家。若用户未明确提及特定厂家，直接默认传 "全网"，禁止追问。
 - date_start / date_end: 
@@ -104,10 +104,10 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 
 （使用本工具时需要先把工具返回的内容完整展示给用户。）
 
-### analyze_energy_saving（节电分析）
-触发条件："节电分析"、"节电潜力"。当前直接告知用户建设中。
+###工具3：analyze_energy_saving（节电分析）
+触发条件："节电分析"、"节电潜力"。
 
-### query_anomaly（异常指标诊断）
+###工具4：query_anomaly（异常指标诊断）
 诊断特定日期是否有核心指标劣化超过10%。
 触发条件：用户询问"异常"、"劣化"、"大幅下降"、"波动"时调用。
 参数提取规则（禁止追问）：
@@ -117,16 +117,17 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 - export_excel: 是否导出Excel。触发条件：用户明确要求"导出Excel"、"下载数据"；或检测结果数据量超过50条。设为 true 可生成Excel下载链接。
 返回规则：不要罗列全量数据，只用自然语言严重警告劣化的指标及其降幅；若无异常，告知运行平稳。
 
-### query_energy_param_check（节能参数核查）
+###工具5：query_energy_param_check（节能参数核查）
 查询4G/5G小区节能参数配置核查结果，检查参数是否符合推荐值。
 触发条件：用户提及"节能参数"、"参数核查"、"配置检查"、"参数合规"时调用。
 参数提取规则（禁止追问）：
 - cgi: CGI过滤（可选，优先级最高，格式如 460-00-12345-678）
 - cell_name: 小区名称过滤（可选，如"长沙芙蓉区芙蓉广场-HHH-1"）
-- dist_name: 地市名称（可选，当未提供 cgi/cell_name 时必填）
-- prod_name: 厂家名称（可选，当未提供 cgi/cell_name 时必填）
+- dist_name: 地市名称（可选）
+- prod_name: 厂家名称（可选）
 - check_date: 核查日期（可选，用户未提及时不传，让系统自动计算）
 - export_excel: 是否导出Excel。触发条件：用户明确要求"导出Excel"、"下载数据"；或核查结果数据量超过50条。设为 true 可生成Excel下载链接。
+- 当未提供 cgi/cell_name 时必填dist_name或prod_name
 
 查询优先级（至少提供一种查询条件）：
 1. 如果用户提供 CGI，直接用 CGI 查询（最精确，优先使用）
@@ -138,18 +139,18 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 2. 工具返回 download_url时 ，不直接输出report_content，进行总结，提供下载链接并告知用户可以点击下载完整报告。
 
 
-### analyze_single_cell_energy（单小区节电深度分析）
+###工具6：analyze_single_cell_energy（单小区节电深度分析）
 触发条件：用户询问具体某个小区的"节电分析"、"休眠扩展"、"节能收缩"、"高负荷"等详细情况。
 必须提取参数：
 - cgi: 小区全球标识 (必须提取或通过小区名转换，格式 460-00-xxx-xxx)
 - analysis_target: 根据用户意图选择 "all"(全面分析), "expansion"(只问扩展/低业务), "constriction"(只问收缩/负面影响), "load"(只问负荷)。
 返回规则：工具返回 report_content 后，直接原样输出，不要自行删减。
 
-### analyze_batch_cells_energy（批量小区节电诊断）
+###工具7： analyze_batch_cells_energy（批量小区节电诊断）
 触发条件：用户输入地市、区县、厂家，要求进行"批量核查"、"批量分析"。
 必须提取参数：
-- dist_name: 区县名称 (必须提取！若用户只说了地市没说区县，必须追问具体区县，否则数据量过大导致崩溃)
-- prod_name: 厂家名称 (可选，如华为、中兴。若未提及传 "全网")
+- dist_name: 识别湖南地市(如长沙市，统一补市)，未提及传"全网"。
+- prod_name: 华为/中兴/爱立信/诺基亚，未提及传"全网"。
 返回规则：工具返回 report_content 后，直接原样输出，绝对不要自行删减或总结，确保包含 Excel 下载链接。
 
 ## 回答规则
@@ -318,8 +319,17 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     fb_choice = (fallback_resp.get("choices") or [{}])[0]
                     finish_reason = fb_choice.get("finish_reason")
                     fb_msg = fb_choice.get("message") or {}
-                    collected_content = fb_msg.get("content") or collected_content
+                    fb_content = fb_msg.get("content") or ""
                     fb_tool_calls = fb_msg.get("tool_calls") or []
+
+                    # 【关键修复】输出降级后获取的内容（扣除已输出的部分）
+                    if fb_content and len(fb_content) > len(collected_content):
+                        remaining = fb_content[len(collected_content):]
+                        # 流式输出剩余内容，保持用户体验连贯
+                        for char in remaining:
+                            yield StreamEvent(event_type="token", data=char)
+                        collected_content = fb_content
+
                     if fb_tool_calls:
                         collected_tool_calls = {i: tc for i, tc in enumerate(fb_tool_calls)}
                     logger.info("降级非流式调用成功（第 %d 步）: finish=%s", steps, finish_reason)
@@ -331,6 +341,15 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
             tool_calls: list[dict[str, Any]] | None = (
                 list(collected_tool_calls.values()) if collected_tool_calls else None
             )
+
+            # 【关键修复】如果 LLM 用 <tool> 标签返回工具调用，从 content 中提取
+            if not tool_calls and collected_content:
+                from app.services.llm_client import _extract_tool_calls_from_content
+                extracted = _extract_tool_calls_from_content(collected_content)
+                if extracted:
+                    tool_calls = extracted
+                    logger.info("从 <tool> 标签中提取到 %d 个工具调用", len(tool_calls))
+
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
                 "content": collected_content or None,
@@ -341,8 +360,11 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
             messages.append(assistant_message)
 
             if finish_reason == "stop" and not tool_calls:
-                logger.info("Agent 最终回答（第 %d 步）: %s", steps, collected_content[:200])
-                yield StreamEvent(event_type="final_answer", data=collected_content)
+                # 清理 <tool> 标签
+                import re
+                clean_content = re.sub(r'<tool>\s*\{[\s\S]*?\}\s*</tool>', '', collected_content).strip()
+                logger.info("Agent 最终回答（第 %d 步）: %s", steps, clean_content[:200])
+                yield StreamEvent(event_type="final_answer", data=clean_content)
                 return
 
             if tool_calls:
@@ -410,7 +432,12 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                         try:
                             fb = await get_llm_client().chat(messages=messages, tools=None)
                             fb_content = ((fb.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-                            final_collected = fb_content or final_collected
+                            # 【关键修复】输出降级后获取的内容（扣除已输出的部分）
+                            if fb_content and len(fb_content) > len(final_collected):
+                                remaining = fb_content[len(final_collected):]
+                                for char in remaining:
+                                    yield StreamEvent(event_type="token", data=char)
+                                final_collected = fb_content
                         except LLMError:
                             pass
                     yield StreamEvent(event_type="final_answer", data=final_collected or "已达到最大推理步数，请重新提问。")
