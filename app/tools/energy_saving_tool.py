@@ -1,9 +1,8 @@
 """
-节电分析工具模块（占位实现）。
-
-当前功能暂未开放，数据表建设中。
+节电分析工具模块。
 """
 
+import json
 from typing import Any
 
 from sqlalchemy import text
@@ -17,79 +16,6 @@ from app.tools.registry import tool_registry
 DB_SCHEMA_RULE = get_settings().db_schema_agent
 
 logger = get_logger("energy_saving_tool")
-
-
-@tool_registry.tool(
-    description="""分析 4G/5G 网络节电潜力（该功能暂未开放，数据表建设中）。
-
-参数说明:
-- dist_name: 区县名称
-- prod_name: 设备厂家
-- date_start: 开始日期 (YYYY-MM-DD)
-- date_end: 结束日期 (YYYY-MM-DD)
-- network_type: 网络类型 (4G/5G/ALL)
-
-注意: 当前功能暂未开放，调用将返回建设中提示。
-""",
-    parameters={
-        "type": "object",
-        "properties": {
-            "dist_name": {
-                "type": "string",
-                "description": "区县名称",
-            },
-            "prod_name": {
-                "type": "string",
-                "description": "设备厂家",
-            },
-            "date_start": {
-                "type": "string",
-                "description": "开始日期 (YYYY-MM-DD)",
-            },
-            "date_end": {
-                "type": "string",
-                "description": "结束日期 (YYYY-MM-DD)",
-            },
-            "network_type": {
-                "type": "string",
-                "description": "网络类型 (4G/5G/ALL)",
-            },
-        },
-        "required": ["dist_name", "prod_name", "date_start", "date_end", "network_type"],
-    },
-)
-async def analyze_energy_saving(
-    dist_name: str,
-    prod_name: str,
-    date_start: str,
-    date_end: str,
-    network_type: str,
-    db: AsyncSession,
-) -> dict[str, Any]:
-    """分析 4G/5G 网络节电潜力（占位实现）。
-
-    Args:
-        dist_name: 区县名称。
-        prod_name: 设备厂家。
-        date_start: 开始日期。
-        date_end: 结束日期。
-        network_type: 网络类型 (4G/5G/ALL)。
-        db: 数据库会话。
-
-    Returns:
-        建设中提示字典。
-    """
-    logger.info(
-        "节电分析请求(占位): dist_name=%s, prod_name=%s, network_type=%s",
-        dist_name,
-        prod_name,
-        network_type,
-    )
-
-    return {
-        "success": False,
-        "error": "该功能暂未开放，数据表建设中",
-    }
 
 
 @tool_registry.tool(
@@ -141,9 +67,9 @@ async def analyze_single_cell_energy(
     # ── 高负荷占位符（待底层表增加高负荷标识后替换）──
     is_high_load = False  # TODO: 待底层表增加高负荷标识后替换
 
-    # ── Step 1: 查基础信息与白名单 ──
+    # ── Step 1: 查基础信息（从 jd_cell_expansion_day）──
     base_sql = text(f"""
-        SELECT cell_name, vendor, is_whitelist, reason
+        SELECT cell_name, prod_name, county_name, work_band, cover_type, cover_scen, hour_detail, avg_low_flow_pct
         FROM {DB_SCHEMA_RULE}.jd_cell_expansion_day
         WHERE cgi = :cgi
         LIMIT 1
@@ -158,62 +84,72 @@ async def analyze_single_cell_energy(
         }
 
     cell_name: str = base_row["cell_name"] or cgi
-    is_whitelist: bool = bool(base_row["is_whitelist"])
-    whitelist_reason: str = base_row["reason"] or "无"
+    prod_name: str = base_row["prod_name"] or "-"
+    county_name: str = base_row["county_name"] or "-"
+    work_band: str = base_row["work_band"] or "-"
+    cover_type: str = base_row["cover_type"] or "-"
 
     # 提前计算各 section 是否需要，避免不必要的 DB 查询
     need_expansion = analysis_target in ("all", "expansion")
     need_constriction = analysis_target in ("all", "constriction")
 
-    # ── Step 2: 查休眠扩展小时数据（22:00 ~ 08:00，仅 expansion/all 需要）──
+    # 白名单信息从收缩表获取（仅在需要时查询）
+    is_whitelist: bool = False
+    whitelist_reason: str = "无"
+    if need_constriction or analysis_target == "all":
+        whitelist_sql = text(f"""
+            SELECT is_whitelist, reason
+            FROM {DB_SCHEMA_RULE}.jd_cell_constriction_day
+            WHERE cgi = :cgi
+            LIMIT 1
+        """)
+        whitelist_result = await db.execute(whitelist_sql, {"cgi": cgi})
+        whitelist_row = whitelist_result.mappings().first()
+        if whitelist_row:
+            is_whitelist = bool(whitelist_row["is_whitelist"])
+            whitelist_reason = whitelist_row["reason"] or "无"
+
+    # ── Step 2: 解析 hour_detail 数据（仅 expansion/all 需要）──
     expansion_table_rows: list[str] = []
     param_report: str = ""
     if need_expansion:
-        hour_sql = text(f"""
-            SELECT
-                EXTRACT(HOUR FROM stat_time)::int AS hour_t,
-                flow,
-                ee_shallowsleeptimerru,
-                ee_deepsleeptimerru,
-                ee_supersleeptimerru
-            FROM {DB_SCHEMA_RULE}.jd_cell_detail_hour_nr
-            WHERE cgi = :cgi
-              AND EXTRACT(HOUR FROM stat_time) IN (22,23,0,1,2,3,4,5,6,7,8)
-            ORDER BY stat_time DESC
-            LIMIT 11
-        """)
-        hour_result = await db.execute(hour_sql, {"cgi": cgi})
-        hour_rows = hour_result.mappings().all()
+        # 解析 hour_detail JSON 字段
+        # 格式: [{"hour": 0, "low_flow_pct": 100.00}, ...]
+        # low_flow_pct 表示该小时低业务且零休眠的百分比
+        # 注意：数据库可能返回已解析的 list 对象，或 JSON 字符串
+        hour_detail_raw = base_row.get("hour_detail")
+        logger.info("hour_detail 原始值: type=%s, value=%s", type(hour_detail_raw), hour_detail_raw)
+        hour_map: dict[int, float] = {}  # hour -> low_flow_pct
 
-        # 按 22,23,0..8 顺序构建时间点映射（取最新一行）
-        NIGHT_HOURS = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8]
-        hour_map: dict[int, Any] = {}
-        for row in hour_rows:
-            h = row["hour_t"]
-            if h not in hour_map:
-                hour_map[h] = row
+        hour_detail_list: list[dict] | None = None
+        if hour_detail_raw is not None:
+            if isinstance(hour_detail_raw, list):
+                # 数据库已自动解析为 list
+                hour_detail_list = hour_detail_raw
+            elif isinstance(hour_detail_raw, str):
+                # 需要手动解析 JSON 字符串
+                try:
+                    hour_detail_list = json.loads(hour_detail_raw)
+                except json.JSONDecodeError as e:
+                    logger.warning("解析 hour_detail JSON 失败: %s, 原始值: %s", e, hour_detail_raw)
 
-        for h in NIGHT_HOURS:
-            row = hour_map.get(h)
-            if row:
-                flow_val = float(row["flow"] or 0)
-                shallow = float(row["ee_shallowsleeptimerru"] or 0)
-                deep = float(row["ee_deepsleeptimerru"] or 0)
-                sup = float(row["ee_supersleeptimerru"] or 0)
-                sleep_sum = shallow + deep + sup
+        if hour_detail_list:
+            logger.info("hour_detail 解析成功: %s", hour_detail_list)
+            for item in hour_detail_list:
+                h = item.get("hour")
+                pct = item.get("low_flow_pct", 0)
+                if h is not None:
+                    hour_map[h] = float(pct) if pct else 0.0
 
-                is_low_biz = "是" if flow_val < 500 else "否"
-                is_zero_sleep = "是" if sleep_sum == 0 else "否"
-                suggest = "可扩展" if is_low_biz == "是" and is_zero_sleep == "是" else "不建议"
-            else:
-                sleep_sum = 0.0
-                is_low_biz = "—"
-                is_zero_sleep = "—"
-                suggest = "—"
-
-            expansion_table_rows.append(
-                f"| {h:02d}:00 | {is_low_biz} | {sleep_sum:.0f} | {is_zero_sleep} | {suggest} |"
-            )
+        # 仅展示有数据的时间点（按时间顺序排列）
+        if hour_map:
+            for h in sorted(hour_map.keys()):
+                low_flow_pct = hour_map[h]
+                is_expandable = low_flow_pct >= 100
+                suggest = "可扩展" if is_expandable else "不建议"
+                expansion_table_rows.append(
+                    f"| {h:02d}:00 | {low_flow_pct:.1f}% | {suggest} |"
+                )
 
         # ── Step 4: 内联调用参数核查工具（延迟导入避免模块级循环依赖）──
         try:
@@ -249,14 +185,13 @@ async def analyze_single_cell_energy(
 
     # ── Step 5: 按 analysis_target 动态拼装 Markdown ──
     header = f"### 小区节能/扩展总结（{cell_name} | {cgi}）\n"
-    high_load_str = str(is_high_load)
 
     sections: list[str] = [header]
 
     # 全量报告时添加概览
     if analysis_target == "all":
         sections.append(
-            f"**概览结论**：该小区当前高负荷状态为 `{high_load_str}`。"
+            f"**概览结论**：该小区当前高负荷状态为 `{'高负荷预警小区' if is_high_load else '正常小区'}`。"
             "请参考以下扩展与收缩详情。\n"
         )
 
@@ -264,17 +199,20 @@ async def analyze_single_cell_energy(
     if analysis_target in ("all", "expansion"):
         expansion_section = (
             "#### 一、节能扩展\n"
-            f"**3.1 容量与风险说明**：当前高负荷状态为 `{high_load_str}`。"
+            f"**3.1 容量与风险说明**：当前高负荷状态为 `{'高负荷预警小区' if is_high_load else '正常小区'}`。"
         )
         if is_high_load:
             expansion_section += "（当前高负荷，建议先进行压降处理后再考虑扩展。）"
         expansion_section += "\n\n"
-        expansion_section += (
-            "**3.2 低业务时段与0休眠匹配表**：\n"
-            "| 时间点(时) | 是否低业务(<500M) | 休眠时长累加值(秒) | 是否0休眠 | 扩展建议 |\n"
-            "|---|---|---|---|---|\n"
-        )
-        expansion_section += "\n".join(expansion_table_rows) + "\n\n"
+        if expansion_table_rows:
+            expansion_section += (
+                "**3.2 夜间时段低业务零休眠占比表**：\n"
+                "| 时间点(时) | 低业务零休眠占比 | 扩展建议 |\n"
+                "|---|---|---|\n"
+            )
+            expansion_section += "\n".join(expansion_table_rows) + "\n\n"
+        else:
+            expansion_section += "**3.2 夜间时段低业务零休眠占比表**：暂无数据。\n\n"
         expansion_section += "**3.3 参数核查结论**：\n"
         expansion_section += param_report + "\n"
         sections.append(expansion_section)
@@ -301,7 +239,7 @@ async def analyze_single_cell_energy(
 
     # 仅负荷状态
     if analysis_target == "load":
-        sections.append(f"**高负荷状态**：`{high_load_str}`\n")
+        sections.append(f"**高负荷状态**：`{'高负荷预警小区' if is_high_load else '正常小区'}`\n")
 
     report_md = "\n".join(sections)
 

@@ -9,8 +9,6 @@
 - Markdown 只渲染 Top 10，全量数据走 Excel 下载。
 """
 
-import os
-from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -27,7 +25,7 @@ logger = get_logger("batch_energy_tool")
 DB_SCHEMA_RULE = get_settings().db_schema_agent
 
 # Top 10 预览列（按优先级排列，实际按表中存在的列过滤）
-_PREVIEW_COLS = ["city", "dist_name", "vendor", "cell_name", "cgi"]
+_PREVIEW_COLS = ["county_name", "dist_name", "prod_name", "cell_name", "cgi"]
 
 
 @tool_registry.tool(
@@ -76,15 +74,16 @@ async def analyze_batch_cells_energy(
     bind_params: dict[str, Any] = {"dist_name": dist_name}
 
     if prod_name and prod_name != "全网":
-        where_clauses.append("vendor = :vendor")
-        bind_params["vendor"] = prod_name
+        where_clauses.append("prod_name = :prod_name")
+        bind_params["prod_name"] = prod_name
 
     where_sql = " AND ".join(where_clauses)
+    # jd_cell_expansion_day 没有 is_whitelist/reason 字段，移除这些字段
     batch_sql = text(f"""
-        SELECT city, dist_name, vendor, cell_name, cgi, is_whitelist, reason
+        SELECT county_name, dist_name, prod_name, cell_name, cgi, work_band, cover_type, hour_detail, avg_low_flow_pct
         FROM {DB_SCHEMA_RULE}.jd_cell_expansion_day
         WHERE {where_sql}
-        ORDER BY vendor, cell_name
+        ORDER BY prod_name, cell_name
     """)
 
     result = await db.execute(batch_sql, bind_params)
@@ -107,26 +106,26 @@ async def analyze_batch_cells_energy(
     total_cells = len(df)
     need_load_reduce = int(df["is_high_load"].sum())           # 高负荷小区数（当前全为 0）
     can_expand = total_cells                                    # 可扩展小区（暂以全量估算）
-    # is_whitelist 可能为布尔型或字符串型，兼容两种情况
-    whitelist_count = int(
-        (df["is_whitelist"].astype(str).str.strip().isin(["True", "true", "1", "是"])).sum()
-    )
+    # 白名单信息需从 constriction 表获取，此处暂不统计
+    whitelist_count = 0  # TODO: 需关联 jd_cell_constriction_day 表获取白名单数量
 
     # ── Step 4: 生成 Excel 文件 ──
-    os.makedirs("static/exports", exist_ok=True)
-    filename = f"batch_analysis_{dist_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx"
-    file_path = f"static/exports/{filename}"
-
-    # 生成完整下载链接（优先使用请求上下文中的 base_url）
-    from app.utils.export_util import get_request_base_url
-    relative_url = f"/downloads/{filename}"
-    base_url = get_request_base_url() or get_settings().base_url
-    download_url = f"{base_url.rstrip('/')}{relative_url}" if base_url else relative_url
-
     # 导出时去掉内部辅助列
     export_df = df.drop(columns=["is_high_load"], errors="ignore")
-    export_df.to_excel(file_path, index=False)
-    logger.info("Excel 已生成: %s", file_path)
+    data_list = export_df.to_dict(orient="records")
+
+    # 使用统一的导出工具（自动处理文件名编码问题）
+    from app.utils.export_util import export_to_excel
+    download_url = export_to_excel(data_list, prefix="batch_analysis")
+
+    if not download_url:
+        # 导出失败时返回错误
+        return {
+            "success": False,
+            "report_content": f"Excel 导出失败，请重试。",
+        }
+
+    logger.info("Excel 已生成: %s", download_url)
 
     # ── Step 5: 拼装 Markdown（Top 10 预览）──
     preview_cols = [c for c in _PREVIEW_COLS if c in df.columns]

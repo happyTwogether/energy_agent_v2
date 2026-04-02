@@ -104,10 +104,7 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 
 （使用本工具时需要先把工具返回的内容完整展示给用户。）
 
-###工具3：analyze_energy_saving（节电分析）
-触发条件："节电分析"、"节电潜力"。
-
-###工具4：query_anomaly（异常指标诊断）
+###工具3：query_anomaly（异常指标诊断）
 诊断特定日期是否有核心指标劣化超过10%。
 触发条件：用户询问"异常"、"劣化"、"大幅下降"、"波动"时调用。
 参数提取规则（禁止追问）：
@@ -117,7 +114,7 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 - export_excel: 是否导出Excel。触发条件：用户明确要求"导出Excel"、"下载数据"；或检测结果数据量超过50条。设为 true 可生成Excel下载链接。
 返回规则：不要罗列全量数据，只用自然语言严重警告劣化的指标及其降幅；若无异常，告知运行平稳。
 
-###工具5：query_energy_param_check（节能参数核查）
+###工具4：query_energy_param_check（节能参数核查）
 查询4G/5G小区节能参数配置核查结果，检查参数是否符合推荐值。
 触发条件：用户提及"节能参数"、"参数核查"、"配置检查"、"参数合规"时调用。
 参数提取规则（禁止追问）：
@@ -139,14 +136,14 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 2. 工具返回 download_url时 ，不直接输出report_content，进行总结，提供下载链接并告知用户可以点击下载完整报告。
 
 
-###工具6：analyze_single_cell_energy（单小区节电深度分析）
+###工具5：analyze_single_cell_energy（单小区节电深度分析）
 触发条件：用户询问具体某个小区的"节电分析"、"休眠扩展"、"节能收缩"、"高负荷"等详细情况。
 必须提取参数：
 - cgi: 小区全球标识 (必须提取或通过小区名转换，格式 460-00-xxx-xxx)
 - analysis_target: 根据用户意图选择 "all"(全面分析), "expansion"(只问扩展/低业务), "constriction"(只问收缩/负面影响), "load"(只问负荷)。
 返回规则：工具返回 report_content 后，直接原样输出，不要自行删减。
 
-###工具7： analyze_batch_cells_energy（批量小区节电诊断）
+###工具6：analyze_batch_cells_energy（批量小区节电诊断）
 触发条件：用户输入地市、区县、厂家，要求进行"批量核查"、"批量分析"。
 必须提取参数：
 - dist_name: 识别湖南地市(如长沙市，统一补市)，未提及传"全网"。

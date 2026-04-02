@@ -75,6 +75,13 @@ DEFAULT_COLUMN_MAPPING = {
     "check_time": "核查时间",
     "rru_aau": "RRU/AAU型号",
     "chn_num": "通道数",
+    #节电扩展相关
+    "county_name": "区县",
+    "work_band": "工作频段",
+    "cover_type": "覆盖类型",
+    "cover_scen": "覆盖场景",
+    "hour_detail": "小时级业务分布",
+    "avg_low_flow_pct": "夜间低业务占比",
 }
 
 
