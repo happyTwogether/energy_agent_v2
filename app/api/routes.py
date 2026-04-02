@@ -205,13 +205,18 @@ async def _dify_stream_generator(
                     ),
                 }
 
-        # 保存对话历史（只保留最后一轮 user + assistant）
+        # 保存对话历史（追加而不是覆盖）
         # 清理 <tool> 标签
         clean_answer = re.sub(r'<tool>\s*\{[\s\S]*?\}\s*</tool>', '', collected_answer).strip()
-        _conversations[conversation_id] = [
+        if conversation_id not in _conversations:
+            _conversations[conversation_id] = []
+        _conversations[conversation_id].extend([
             {"role": "user", "content": user_query},
             {"role": "assistant", "content": clean_answer},
-        ]
+        ])
+        # 限制历史长度，保留最近 10 轮对话
+        if len(_conversations[conversation_id]) > 20:
+            _conversations[conversation_id] = _conversations[conversation_id][-20:]
 
         # 发送 message_end
         yield {
@@ -285,11 +290,16 @@ async def _run_blocking(
         elif event.event_type == "error":
             raise Exception(str(event.data))
 
-    # 保存对话历史（只保留最后一轮 user + assistant）
-    _conversations[conversation_id] = [
+    # 保存对话历史（追加而不是覆盖）
+    if conversation_id not in _conversations:
+        _conversations[conversation_id] = []
+    _conversations[conversation_id].extend([
         {"role": "user", "content": user_query},
         {"role": "assistant", "content": collected_answer},
-    ]
+    ])
+    # 限制历史长度，保留最近 10 轮对话
+    if len(_conversations[conversation_id]) > 20:
+        _conversations[conversation_id] = _conversations[conversation_id][-20:]
 
     return {
         "event": "message",
