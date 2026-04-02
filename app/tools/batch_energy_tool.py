@@ -33,7 +33,7 @@ _PREVIEW_COLS = ["county_name", "dist_name", "prod_name", "cell_name", "cgi"]
 
 参数说明:
 - dist_name: 区县名称，必填（如"芙蓉区"）。若用户只提供了地市，必须追问区县！
-- prod_name: 厂家名称，可选（如"华为"、"中兴"）。未提供时传 "全网"，查询所有厂家。
+- prod_name: 厂家名称，可选（如"华为"、"中兴"）。
 
 注意: 数据量较大，必须确保 dist_name 已精确到区县级别。
 """,
@@ -46,7 +46,7 @@ _PREVIEW_COLS = ["county_name", "dist_name", "prod_name", "cell_name", "cgi"]
             },
             "prod_name": {
                 "type": "string",
-                "description": "厂家名称，如'华为'、'中兴'。未提及时传'全网'",
+                "description": "厂家名称，如'华为'、'中兴'。",
             },
         },
         "required": ["dist_name"],

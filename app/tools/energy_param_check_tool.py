@@ -120,10 +120,18 @@ async def _fetch_param_check(
         rows = result.mappings().all()
         return [dict(row) for row in rows]
     except ProgrammingError as exc:
+        # 表不存在或其他 SQL 错误，需要回滚事务才能继续使用
+        await db.rollback()
         if "UndefinedTableError" in str(exc) or "不存在" in str(exc):
             logger.warning("核查表不存在: %s", table_name)
             return []
-        raise
+        logger.error("参数核查 SQL 错误: %s", exc)
+        return []
+    except Exception as exc:
+        # 其他异常也需要回滚
+        await db.rollback()
+        logger.error("参数核查查询异常: %s", exc)
+        return []
 
 
 def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi: bool, show_detail: bool = True) -> str:

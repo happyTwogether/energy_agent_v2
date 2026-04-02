@@ -51,7 +51,7 @@ class Settings(BaseSettings):
         "请根据用户的问题，判断是否需要使用工具，并给出清晰的回答。"
     )
     cors_origins: list[str] = ["*"]
-    base_url: str = ""  # 服务基础URL，用于生成完整下载链接，如 http://localhost:8000 或 http://10.154.14.93:8080
+    base_url: str = ""  # 服务基础URL，用于生成完整下载链接，如 http://localhost:8000
 
     model_config = SettingsConfigDict(
         env_file=".env",
