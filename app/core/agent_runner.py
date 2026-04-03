@@ -23,6 +23,78 @@ logger = get_logger("agent_runner")
 
 _IDLE_TIMEOUT_SEC = 60  # 连续 30 秒无新 chunk 才认为流挂起
 
+# 上下文长度限制配置
+_MAX_TOOL_RESULT_CHARS = 5000  # 单个工具结果最大字符数
+_MAX_TOTAL_CONTEXT_CHARS = 50000  # 总上下文最大字符数（约 15k tokens）
+
+
+def _truncate_tool_result(result: dict[str, Any], max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
+    """截断工具结果，防止上下文过长。"""
+    content = dumps_decimal(result, ensure_ascii=False)
+    if len(content) <= max_chars:
+        return content
+    # 截断并添加提示
+    truncated = content[:max_chars]
+    return f"{truncated}\n\n[...数据已截断，完整结果请查看下载链接...]"
+
+
+def _estimate_context_length(messages: list[dict]) -> int:
+    """估算上下文字符数。"""
+    total = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, str):
+                    total += len(part)
+                elif isinstance(part, dict) and part.get("text"):
+                    total += len(part["text"])
+    return total
+
+
+def _prune_old_messages(messages: list[dict], max_chars: int = _MAX_TOTAL_CONTEXT_CHARS) -> list[dict]:
+    """清理旧消息，保持上下文在限制内。
+
+    保留：system 消息 + 最近几轮对话
+    删除：旧的 tool 结果
+    """
+    if _estimate_context_length(messages) <= max_chars:
+        return messages
+
+    # 分离 system 消息和其他消息
+    system_msg = None
+    other_msgs = []
+    for msg in messages:
+        if msg.get("role") == "system":
+            system_msg = msg
+        else:
+            other_msgs.append(msg)
+
+    # 从旧到新遍历，删除 tool 消息直到满足限制
+    pruned_msgs = []
+    for msg in other_msgs:
+        pruned_msgs.append(msg)
+
+    # 反向遍历，将旧的 tool 消息替换为简短摘要
+    tool_msg_count = 0
+    for i in range(len(pruned_msgs) - 1, -1, -1):
+        if _estimate_context_length([system_msg] + pruned_msgs) <= max_chars:
+            break
+        msg = pruned_msgs[i]
+        if msg.get("role") == "tool":
+            # 将旧的 tool 消息替换为简短提示
+            tool_msg_count += 1
+            pruned_msgs[i] = {
+                "role": "tool",
+                "tool_call_id": msg.get("tool_call_id", ""),
+                "content": "[历史工具结果已清理]",
+            }
+
+    result = [system_msg] + pruned_msgs if system_msg else pruned_msgs
+    return result
+
 
 async def _stream_with_idle_timeout(
     agen: AsyncIterator[dict[str, Any]],
@@ -141,16 +213,85 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 必须提取参数：
 - cgi: 小区全球标识 (必须提取或通过小区名转换，格式 460-00-xxx-xxx)
 - analysis_target: 根据用户意图选择 "all"(全面分析), "expansion"(只问扩展/低业务), "constriction"(只问收缩/负面影响), "load"(只问负荷)。
-返回规则：工具返回 report_content 后，直接原样输出，不要自行删减。
+- stat_time: 统计日期，可选，默认最新日期。
+
+返回规则（工具返回结构化数据 + 表格，需组装报告）：
+1. 先输出标题：小区节能/扩展总结（cell_name | cgi | stat_time）
+2. 根据 analysis_target 输出对应内容：
+   - all: 输出完整报告（概览+扩展+收缩+白名单备注）
+   - expansion: 仅输出扩展分析（容量风险说明+表格+参数核查）
+   - constriction: 仅输出收缩分析（周边影响说明+表格）
+   - load: 仅输出高负荷状态
+3. 表格部分直接使用返回的 expansion_table 或 constriction_table，保证数据准确。
+4. 扩展分析需包含：是否高负荷、低业务时段与休眠情况匹配表（基于15天均值）、参数核查结论。
+   - 表格列：时间点(时)、是否低业务、休眠时长累加值(15天均值)、是否接近0休眠、扩展建议
+   - "是否接近0休眠"：平均休眠时长 < 60秒视为接近0
+5. 收缩分析需包含：周边高负荷影响判断、需收缩时间点表。
+6. 参数核查输出规则：
+   - 若 param_check.is_compliant=true：输出"参数核查结论：✅ 合规"
+   - 若 param_check.is_compliant=false：输出 param_check.report_content（包含不合规明细表）
+7. 白名单信息输出规则（当 is_whitelist=true 时）：
+   - 是否白名单：使用 is_whitelist 字段
+   - 原因说明：使用 whitelist_reason 字段
+   - 节电时间段：使用 jd_starttime ~ jd_endtime（如有）
+   - 风险提示：白名单小区不支持开启该项节能技术，请注意修改风险
+
+输出格式示例（all 模式）：
+### 小区节能/扩展总结（xxx小区 | 460-00-xxx-xx | 2026-03-30）
+
+**概览结论**：该小区当前高负荷状态为 `正常小区/高负荷预警小区`。请参考以下扩展与收缩详情。
+
+#### 一、节能扩展
+**1.1 容量与风险说明**：当前高负荷状态为 `...`。
+**1.2 低业务时段与休眠情况匹配表**：
+（直接输出 expansion_table）
+
+**1.3 参数核查结论**：
+（根据 param_check.is_compliant 输出合规说明或不合规表格）
+
+#### 二、节能收缩
+**2.1 周边200米关联小区高负荷影响判断**：...
+**2.2 需收缩的节能时间点表**：
+（直接输出 constriction_table）
+
+#### 三、特殊情况备注
+**3.1 节电白名单匹配情况**：
+- 是否白名单：{{is_whitelist}}
+- 原因说明：{{whitelist_reason}}
+- 节电时间段：{{jd_starttime}} ~ {{jd_endtime}}（如有）
+- 风险提示：白名单小区不支持开启该项节能技术，请注意修改风险。
 
 ###工具6：analyze_batch_cells_energy（批量小区节电诊断）
-触发条件：用户输入地市、区县、厂家，要求进行"批量核查"、"批量分析"。
-必须提取参数：
-- dist_name: 识别湖南地市(如长沙市，统一补市)，未提及传"全网"。
-- prod_name: 华为/中兴/爱立信/诺基亚，未提及传"全网"。
-返回规则：工具返回 report_content 后，直接原样输出，绝对不要自行删减或总结，确保包含 Excel 下载链接。
+触发条件：用户输入地市、区县、厂家，要求进行"批量核查"、"批量分析"、"批量诊断"。
+参数提取规则：
+- county_name: 区县名称（必填，如"芙蓉区"），若用户未提供区县，提示需要提供。
+- dist_name: 地市名称（可选，如"长沙市"）。
+- prod_name: 厂家名称（可选，如"华为"、"中兴"）。
+- stat_time: 统计日期，可选，默认最新日期。
 
-## 回答规则
+返回规则（工具返回结构化数据，需组装报告）：
+1. 输出标题：批量分析小区节能/扩展总结（query_desc）
+2. 输出概览结论（使用 stats 字段）：
+   - 总计分析小区数量 XX 个
+   - 其中 XX 个需要进行高负荷压降
+   - XX 个可进行休眠时间扩展
+   - XX 个休眠对周边邻近小区造成高负荷压力需要收缩节能时间段
+   - XX 个存在特殊情况白名单需注意修改风险
+3. 提供 Excel 下载链接
+
+输出格式示例：
+### 批量分析小区节能/扩展总结（地市=长沙市 | 区县=芙蓉区）
+
+**概览结论**：
+- 总计分析小区数量 **100** 个。
+- 其中 **5** 个需要进行高负荷压降。
+- **30** 个可进行休眠时间扩展。
+- **8** 个休眠对周边邻近小区造成高负荷压力需要收缩节能时间段。
+- **3** 个存在特殊情况白名单需注意修改风险。
+
+📥 [点击此处下载完整批量分析 Excel 报告](download_url)
+
+## 全局回答规则
 1. 工具返回 success=False 且包含"暂未开放" → 告知建设中；其他错误 → 告知原因，绝不编造。
 2. 工具返回 report_content → 直接输出，不二次加工。
 3. 工具返回 data 列表 → 提取关键数据总结，不返回原始 JSON。
@@ -240,12 +381,13 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
             *messages,
         ]
     else:
-        # 如果已有 system prompt，追加节能分析指引
+        # 如果已有 system prompt，检查是否已包含节能指引，避免重复追加
         original_content = messages[0]["content"]
-        messages[0]["content"] = original_content + ENERGY_SAVING_PROMPT_APPENDIX.format(
-            current_date=current_date,
-            yesterday=yesterday,
-        )
+        if "节能分析助手" not in original_content:
+            messages[0]["content"] = original_content + ENERGY_SAVING_PROMPT_APPENDIX.format(
+                current_date=current_date,
+                yesterday=yesterday,
+            )
     
     steps: int = 0
     tools: list[dict[str, Any]] = tool_registry.get_tools_for_llm()
@@ -254,6 +396,9 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
         while steps < max_steps:
             steps += 1
             logger.info("Agent 第 %d 步开始", steps)
+
+            # 清理旧消息，保持上下文在限制内
+            messages[:] = _prune_old_messages(messages)
 
             yield StreamEvent(
                 event_type="agent_step",
@@ -395,10 +540,12 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     yield StreamEvent(event_type="tool_result", data=result)
 
                     tc_id: str = tool_calls[idx].get("id", f"call_{idx}")
+                    # 截断工具结果，防止上下文过长
+                    truncated_content = _truncate_tool_result(result)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc_id,
-                        "content": dumps_decimal(result, ensure_ascii=False),
+                        "content": truncated_content,
                     })
 
                 logger.info("第 %d 步工具调用完成，共 %d 个工具", steps, len(results))
