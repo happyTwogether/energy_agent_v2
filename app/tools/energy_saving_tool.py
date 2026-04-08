@@ -293,7 +293,7 @@ async def _query_expansion_data(
     )
 
     # ── 参数核查 ──
-    param_check_result = await _query_param_check(db, cgi)
+    param_check_result = await _query_param_check(db, cgi, stat_time.strftime("%Y-%m-%d"))
 
     return {
         "data": expansion_data,
@@ -465,11 +465,11 @@ async def _check_high_load_with_base_info(db: AsyncSession, cgi: str, stat_time:
     }
 
 
-async def _query_param_check(db: AsyncSession, cgi: str) -> dict[str, Any]:
+async def _query_param_check(db: AsyncSession, cgi: str, stat_time: str | None = None) -> dict[str, Any]:
     """调用参数核查工具获取参数合规情况。"""
     try:
         from app.tools.energy_param_check_tool import query_energy_param_check  # noqa: PLC0415
-        result = await query_energy_param_check(cgi=cgi, db=db)
+        result = await query_energy_param_check(cgi=cgi, check_date=stat_time, db=db)
         return {
             "success": result.get("success", False),
             "is_compliant": result.get("is_compliant", True),

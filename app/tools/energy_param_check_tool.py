@@ -3,8 +3,9 @@
 
 查询小区节能参数核查结果，生成标准化 Markdown 报告。
 
-表名规则:
-- 统一表名: {schema}.eng_check_result_YYYYMMDD
+表设计规则:
+- 统一表名: {schema}.eng_check_result
+- 按 check_time 进行分区和日期过滤
 
 日期规则:
 - 用户未传 check_date 时:
@@ -14,7 +15,7 @@
 核心原则: 纯 Python 查询与报告生成，零 LLM 依赖。
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Any
 
 from sqlalchemy import text
@@ -46,14 +47,17 @@ def _get_check_date(user_date: str | None) -> str:
     return check_date
 
 
-def _get_table_name(date_suffix: str) -> str:
-    """获取核查表名。"""
-    return f"eng_check_result_{date_suffix}"
+def _build_check_time_range(check_date: str) -> tuple[datetime, datetime]:
+    """根据核查日期构造 check_time 的闭开区间。"""
+    date_value = datetime.strptime(check_date, "%Y%m%d").date()
+    start_time = datetime.combine(date_value, time.min)
+    end_time = start_time + timedelta(days=1)
+    return start_time, end_time
 
 
 async def _fetch_param_check(
     db: AsyncSession,
-    table_name: str,
+    check_date: str,
     cgi: str | None = None,
     cell_name: str | None = None,
     dist_name: str | None = None,
@@ -66,8 +70,12 @@ async def _fetch_param_check(
     2. cell_name
     3. dist_name + prod_name
     """
-    conditions = ["1=1"]
-    params: dict[str, Any] = {}
+    start_time, end_time = _build_check_time_range(check_date)
+    conditions = ["check_time >= :start_time", "check_time < :end_time"]
+    params: dict[str, Any] = {
+        "start_time": start_time,
+        "end_time": end_time,
+    }
 
     if cgi:
         conditions.append("cgi = :cgi")
@@ -111,10 +119,10 @@ async def _fetch_param_check(
             saving_switch_state,
             subjective_reason,
             objective_reason
-        FROM {DB_SCHEMA_RULE}.{table_name}
+        FROM {DB_SCHEMA_RULE}.eng_check_result
         WHERE {where_clause}
     """)
-    logger.info("SQL: %s", sql)
+    logger.info("参数核查 SQL: %s, params=%s", sql, params)
     try:
         result = await db.execute(sql, params)
         rows = result.mappings().all()
@@ -123,7 +131,7 @@ async def _fetch_param_check(
         # 表不存在或其他 SQL 错误，需要回滚事务才能继续使用
         await db.rollback()
         if "UndefinedTableError" in str(exc) or "不存在" in str(exc):
-            logger.warning("核查表不存在: %s", table_name)
+            logger.warning("核查表不存在: %s.eng_check_result", DB_SCHEMA_RULE)
             return []
         logger.error("参数核查 SQL 错误: %s", exc)
         return []
@@ -235,8 +243,9 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
 
 查询指定日期的节能参数核查数据，分析不合规配置，生成标准化 Markdown 报告。
 
-表名规则:
-- 统一表名: {schema}.eng_check_result_YYYYMMDD
+表设计规则:
+- 统一表名: {schema}.eng_check_result
+- 按 check_time 进行分区和日期过滤
 
 日期规则:
 - 用户未传 check_date 时:
@@ -313,7 +322,6 @@ async def query_energy_param_check(
 ) -> dict[str, Any]:
     """查询小区节能参数核查结果。"""
     date_str = _get_check_date(check_date)
-    table_name = _get_table_name(date_str)
 
     # 构建查询标签（用于日志和批量报告标题）
     query_parts = []
@@ -328,10 +336,10 @@ async def query_energy_param_check(
             query_parts.append(f"prod={prod_name}")
     query_label = ", ".join(query_parts) if query_parts else "全量查询"
 
-    logger.info("节能参数核查: date=%s, %s, table=%s", date_str, query_label, table_name)
+    logger.info("节能参数核查: date=%s, query=%s, table=%s.eng_check_result", date_str, query_label, DB_SCHEMA_RULE)
 
     try:
-        data = await _fetch_param_check(db, table_name, cgi, cell_name, dist_name, prod_name)
+        data = await _fetch_param_check(db, date_str, cgi, cell_name, dist_name, prod_name)
 
         if not data:
             return {
