@@ -6,6 +6,7 @@ API 路由模块。
 """
 
 import json
+import re
 import time
 import uuid
 from typing import Any, AsyncGenerator
@@ -22,7 +23,6 @@ from app.models.schemas import (
     DifyChatRequest,
     StreamEvent,
 )
-from app.utils.export_util import set_request_base_url
 
 logger = get_logger("routes")
 
@@ -31,6 +31,14 @@ router = APIRouter()
 # 内存会话存储: conversation_id -> list[dict]
 # 结构: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
 _conversations: dict[str, list[dict[str, Any]]] = {}
+
+
+def _sanitize_history_answer(answer: str) -> str:
+    """清理历史消息中的工具调用草稿。"""
+    cleaned = re.sub(r'<tool>\s*\{[\s\S]*?\}\s*</tool>', '', answer)
+    cleaned = re.sub(r'```json\s*\{[\s\S]*?$', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\{\s*"name"\s*:\s*"[^"]+"[\s\S]*?$', '', cleaned)
+    return cleaned.strip()
 
 
 @router.get("/health")
@@ -150,7 +158,6 @@ async def _dify_stream_generator(
     - message 事件: {"event": "message", "data": {"task_id": "", "message_id": "", "conversation_id": "", "answer": "", "created_at": 1234567890}}
     - message_end 事件: {"event": "message_end", "data": {"task_id": "", "message_id": "", "conversation_id": "", "metadata": {}}}
     """
-    import re
     try:
         collected_answer = ""
 
@@ -206,8 +213,7 @@ async def _dify_stream_generator(
                 }
 
         # 保存对话历史（追加而不是覆盖）
-        # 清理 <tool> 标签
-        clean_answer = re.sub(r'<tool>\s*\{[\s\S]*?\}\s*</tool>', '', collected_answer).strip()
+        clean_answer = _sanitize_history_answer(collected_answer)
         if conversation_id not in _conversations:
             _conversations[conversation_id] = []
         _conversations[conversation_id].extend([
@@ -291,11 +297,12 @@ async def _run_blocking(
             raise Exception(str(event.data))
 
     # 保存对话历史（追加而不是覆盖）
+    clean_answer = _sanitize_history_answer(collected_answer)
     if conversation_id not in _conversations:
         _conversations[conversation_id] = []
     _conversations[conversation_id].extend([
         {"role": "user", "content": user_query},
-        {"role": "assistant", "content": collected_answer},
+        {"role": "assistant", "content": clean_answer},
     ])
     # 限制历史长度，保留最近 10 轮对话
     if len(_conversations[conversation_id]) > 20:
@@ -351,12 +358,6 @@ async def dify_chat_messages(http_request: Request, req: DifyChatRequest) -> Res
     }
     """
     try:
-        # 从请求头自动获取 base_url
-        host = http_request.headers.get("host", "")
-        scheme = http_request.url.scheme
-        base_url = f"{scheme}://{host}" if host else None
-        set_request_base_url(base_url)
-
         logger.info(
             "收到 Dify 聊天请求: query=%s, conversation_id=%s, response_mode=%s",
             req.query,

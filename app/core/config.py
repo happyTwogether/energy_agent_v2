@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     agent_max_steps: int = 5
     llm_max_tokens: int = 8192  # LLM 最大输出 token 数，防止长报告被截断
+    llm_tool_call_fallback_enabled: bool = True
+    llm_tool_call_strict_mode: bool = True
+    llm_tool_call_retry_on_suspected_draft: bool = True
+    llm_tool_call_debug_log: bool = False
     agent_system_prompt: str = (
         "你是一个智能助手，可以通过调用工具来帮助用户完成任务。\n\n"
         "## 工具调用规则\n"
@@ -51,7 +55,7 @@ class Settings(BaseSettings):
         "请根据用户的问题，判断是否需要使用工具，并给出清晰的回答。"
     )
     cors_origins: list[str] = ["*"]
-    base_url: str = ""  # 服务基础URL，用于生成完整下载链接，如 http://localhost:8000
+    base_url: str = "http://10.159.55.28:9500"  # 服务基础URL
 
     model_config = SettingsConfigDict(
         env_file=".env",

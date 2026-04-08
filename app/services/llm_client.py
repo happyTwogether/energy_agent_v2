@@ -7,6 +7,7 @@ LLM 调用适配层。
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, AsyncGenerator
 
 import litellm
@@ -20,6 +21,58 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 
 logger = get_logger("llm_client")
+
+
+@dataclass(slots=True)
+class ToolCallContentInspection:
+    """文本工具调用检查结果。"""
+
+    tool_calls: list[dict[str, Any]] | None = None
+    suspected_draft: bool = False
+    suspected_tool_name: str | None = None
+
+
+_SUSPECTED_TOOL_PATTERNS = [
+    re.compile(r'```json[\s\S]*?"name"\s*:\s*"(?P<tool>[^"]+)"[\s\S]*?"arguments"\s*:', re.IGNORECASE),
+    re.compile(r'"name"\s*:\s*"(?P<tool>[^"]+)"[\s\S]*?"arguments"\s*:', re.IGNORECASE),
+    re.compile(r'调用\s*`?(?P<tool>[a-zA-Z_][\w]*)`?\s*工具'),
+    re.compile(r'使用\s*`?(?P<tool>[a-zA-Z_][\w]*)`?\s*工具'),
+]
+
+
+def _looks_like_incomplete_json(content: str) -> bool:
+    """判断文本是否像未闭合的 JSON 草稿。"""
+    text = content.strip()
+    if not text:
+        return False
+    return (
+        '"name"' in text
+        and '"arguments"' in text
+        and text.count("{") > text.count("}")
+    )
+
+
+def inspect_tool_call_content(content: str | None) -> ToolCallContentInspection:
+    """检查文本中是否包含合法或疑似的工具调用内容。"""
+    if not content:
+        return ToolCallContentInspection()
+
+    extracted = _extract_tool_calls_from_content(content)
+    if extracted:
+        return ToolCallContentInspection(tool_calls=extracted)
+
+    suspected_tool_name: str | None = None
+    for pattern in _SUSPECTED_TOOL_PATTERNS:
+        match = pattern.search(content)
+        if match:
+            suspected_tool_name = match.groupdict().get("tool")
+            break
+
+    suspected_draft = bool(suspected_tool_name) or _looks_like_incomplete_json(content)
+    return ToolCallContentInspection(
+        suspected_draft=suspected_draft,
+        suspected_tool_name=suspected_tool_name,
+    )
 
 
 def _extract_tool_calls_from_content(content: str | None) -> list[dict[str, Any]] | None:
@@ -58,14 +111,7 @@ def _extract_tool_calls_from_content(content: str | None) -> list[dict[str, Any]
 
 
 def _normalize_response(response: dict[str, Any]) -> dict[str, Any]:
-    """将响应中的 <tool> 标签转换为标准 tool_calls 格式。
-
-    Args:
-        response: LLM 原始响应。
-
-    Returns:
-        标准化的响应字典。
-    """
+    """将响应中的 <tool> 标签转换为标准 tool_calls 格式。"""
     choices = response.get("choices") or []
     if not choices:
         return response
@@ -78,18 +124,22 @@ def _normalize_response(response: dict[str, Any]) -> dict[str, Any]:
     if message.get("tool_calls"):
         return response
 
-    # 从 content 中提取 <tool> 标签
     if content:
-        extracted = _extract_tool_calls_from_content(content)
-        if extracted:
-            logger.debug("从响应中提取到 %d 个工具调用", len(extracted))
-            message["tool_calls"] = extracted
+        inspection = inspect_tool_call_content(content)
+        if inspection.tool_calls:
+            logger.debug("从响应中提取到 %d 个工具调用", len(inspection.tool_calls))
+            message["tool_calls"] = inspection.tool_calls
             message["content"] = None
             if "message" in choice:
                 choice["message"] = message
             else:
                 choice["delta"] = message
             response["choices"] = choices
+        elif inspection.suspected_draft and get_settings().llm_tool_call_debug_log:
+            logger.warning(
+                "检测到疑似工具调用草稿但未形成合法 tool_calls: tool=%s",
+                inspection.suspected_tool_name or "unknown",
+            )
 
     return response
 
@@ -171,6 +221,7 @@ class LLMClient:
             response = await litellm.acompletion(**self._build_kwargs(messages, tools, stream=True))
             chunk_count = 0
             collected_content = ""
+            settings = get_settings()
 
             async for chunk in response:
                 chunk_count += 1
@@ -185,12 +236,12 @@ class LLMClient:
 
                     # 检查是否是结束 chunk，尝试提取工具调用
                     finish_reason = choices[0].get("finish_reason")
-                    if finish_reason and collected_content and tools:
-                        extracted = _extract_tool_calls_from_content(collected_content)
-                        if extracted:
-                            logger.info("流式响应中提取到 %d 个工具调用", len(extracted))
+                    if finish_reason and collected_content and tools and settings.llm_tool_call_fallback_enabled:
+                        inspection = inspect_tool_call_content(collected_content)
+                        if inspection.tool_calls:
+                            logger.info("流式响应中提取到 %d 个工具调用", len(inspection.tool_calls))
                             # 构造流式格式的 tool_calls（分多个 chunk 发送，模拟流式行为）
-                            for i, tc in enumerate(extracted):
+                            for i, tc in enumerate(inspection.tool_calls):
                                 yield {
                                     "choices": [{
                                         "index": 0,
@@ -207,6 +258,27 @@ class LLMClient:
                                     "index": 0,
                                     "delta": {},
                                     "finish_reason": "tool_calls"
+                                }]
+                            }
+                            continue
+                        if inspection.suspected_draft:
+                            if settings.llm_tool_call_debug_log:
+                                logger.warning(
+                                    "流式响应检测到疑似工具调用草稿: tool=%s",
+                                    inspection.suspected_tool_name or "unknown",
+                                )
+                            yield {
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {
+                                        "role": "assistant",
+                                        "content": None,
+                                        "metadata": {
+                                            "suspected_tool_draft": True,
+                                            "suspected_tool_name": inspection.suspected_tool_name,
+                                        },
+                                    },
+                                    "finish_reason": finish_reason,
                                 }]
                             }
                             continue

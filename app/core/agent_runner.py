@@ -8,6 +8,7 @@ Agent 运行时核心模块。
 import asyncio
 import inspect
 import json
+import re
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, AsyncIterator
 
@@ -16,7 +17,11 @@ from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
 from app.models.schemas import StreamEvent
 from app.services.database import get_session_factory
-from app.services.llm_client import LLMError, get_llm_client
+from app.services.llm_client import (
+    LLMError,
+    get_llm_client,
+    inspect_tool_call_content,
+)
 from app.tools.registry import tool_registry
 
 logger = get_logger("agent_runner")
@@ -28,14 +33,47 @@ _MAX_TOOL_RESULT_CHARS = 5000  # 单个工具结果最大字符数
 _MAX_TOTAL_CONTEXT_CHARS = 50000  # 总上下文最大字符数（约 15k tokens）
 
 
-def _truncate_tool_result(result: dict[str, Any], max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
-    """截断工具结果，防止上下文过长。"""
+def _sanitize_tool_draft_text(content: str) -> str:
+    """清理回答中的工具调用草稿。"""
+    cleaned = re.sub(r'<tool>\s*\{[\s\S]*?\}\s*</tool>', '', content)
+    cleaned = re.sub(r'```json\s*\{[\s\S]*?$', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\{\s*"name"\s*:\s*"[^"]+"[\s\S]*?$', '', cleaned)
+    return cleaned.strip()
+
+
+def _is_valid_tool_call(tool_call: dict[str, Any], tools: list[dict[str, Any]]) -> tuple[bool, dict[str, Any] | None, str | None]:
+    """校验工具调用是否具备合法参数。"""
+    function_info = tool_call.get("function") or {}
+    tool_name = function_info.get("name")
+    if not tool_name:
+        return False, None, "工具名缺失"
+
+    try:
+        tool_args = json.loads(function_info.get("arguments", "{}"))
+    except json.JSONDecodeError:
+        return False, None, f"工具 {tool_name} 的参数不是合法 JSON"
+
+    if not isinstance(tool_args, dict) or not tool_args:
+        return False, None, f"工具 {tool_name} 的参数为空"
+
+    tool_schema = next((item for item in tools if item.get("function", {}).get("name") == tool_name), None)
+    if tool_schema:
+        required_fields = tool_schema.get("function", {}).get("parameters", {}).get("required", [])
+        missing_fields = [field for field in required_fields if field not in tool_args or tool_args[field] in (None, "")]
+        if missing_fields:
+            return False, None, f"工具 {tool_name} 缺少必填参数: {', '.join(missing_fields)}"
+
+    return True, tool_args, None
+
+
+def _truncate_tool_result(result: Any, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
+    """截断工具结果，避免单次工具输出撑爆上下文。"""
     content = dumps_decimal(result, ensure_ascii=False)
     if len(content) <= max_chars:
         return content
-    # 截断并添加提示
     truncated = content[:max_chars]
-    return f"{truncated}\n\n[...数据已截断，完整结果请查看下载链接...]"
+    omitted = len(content) - max_chars
+    return f"{truncated}\n...(已截断 {omitted} 个字符)"
 
 
 def _estimate_context_length(messages: list[dict]) -> int:
@@ -188,13 +226,14 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 
 ###工具4：query_energy_param_check（节能参数核查）
 查询4G/5G小区节能参数配置核查结果，检查参数是否符合推荐值。
+数据来源为统一分区表 eng_check_result，通过 check_time 区分日期。
 触发条件：用户提及"节能参数"、"参数核查"、"配置检查"、"参数合规"时调用。
 参数提取规则（禁止追问）：
 - cgi: CGI过滤（可选，优先级最高，格式如 460-00-12345-678）
 - cell_name: 小区名称过滤（可选，如"长沙芙蓉区芙蓉广场-HHH-1"）
 - dist_name: 地市名称（可选）
 - prod_name: 厂家名称（可选）
-- check_date: 核查日期（可选，用户未提及时不传，让系统自动计算）
+- check_date: 核查日期（可选，用户未提及时不传，让系统按 check_time 自动计算查询当天数据）
 - export_excel: 是否导出Excel。触发条件：用户明确要求"导出Excel"、"下载数据"；或核查结果数据量超过50条。设为 true 可生成Excel下载链接。
 - 当未提供 cgi/cell_name 时必填dist_name或prod_name
 
@@ -289,14 +328,14 @@ ENERGY_SAVING_PROMPT_APPENDIX = """
 - **8** 个休眠对周边邻近小区造成高负荷压力需要收缩节能时间段。
 - **3** 个存在特殊情况白名单需注意修改风险。
 
-📥 [点击此处下载完整批量分析 Excel 报告](download_url)
+📥 [点击此处下载完整批量分析 Excel 报告](工具返回的真实 download_url)
 
 ## 全局回答规则
 1. 工具返回 success=False 且包含"暂未开放" → 告知建设中；其他错误 → 告知原因，绝不编造。
 2. 工具返回 report_content → 直接输出，不二次加工。
 3. 工具返回 data 列表 → 提取关键数据总结，不返回原始 JSON。
 4. 涉及4G和5G的非对比查询 → 分两次调 summary。对比查询 → 调 freeform。
-5. 工具返回包含 download_url → 必须用 Markdown 链接格式输出，如 [点击下载 Excel 报告](download_url)，禁止纯文本输出 URL。
+5. 工具返回包含 download_url → 必须读取结果中的真实 `download_url` 字段值，并原样填入 Markdown 链接地址；禁止自行改写、截断或重拼该链接。
 6. 涉及的节能数据，与能耗有关的统一称呼“能耗”，不允许叫“功耗”，且单位为kwh或度。
 """
 
@@ -409,6 +448,8 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
             collected_tool_calls: dict[int, dict] = {}
             finish_reason: str | None = None
             _stream_fallback_needed = False
+            suspected_tool_draft = False
+            suspected_tool_name: str | None = None
 
             try:
                 async for chunk in _stream_with_idle_timeout(
@@ -428,6 +469,11 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                             token_text = delta["content"]
                             collected_content += token_text
                             yield StreamEvent(event_type="token", data=token_text)
+
+                        metadata = delta.get("metadata") or {}
+                        if metadata.get("suspected_tool_draft"):
+                            suspected_tool_draft = True
+                            suspected_tool_name = metadata.get("suspected_tool_name") or suspected_tool_name
 
                         for tc_delta in (delta.get("tool_calls") or []):
                             idx = tc_delta["index"]
@@ -474,23 +520,34 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
 
                     if fb_tool_calls:
                         collected_tool_calls = {i: tc for i, tc in enumerate(fb_tool_calls)}
+                    else:
+                        inspection = inspect_tool_call_content(fb_content)
+                        suspected_tool_draft = inspection.suspected_draft
+                        suspected_tool_name = inspection.suspected_tool_name or suspected_tool_name
                     logger.info("降级非流式调用成功（第 %d 步）: finish=%s", steps, finish_reason)
                 except LLMError as retry_exc:
                     logger.error("降级非流式调用也失败（第 %d 步）: %s", steps, retry_exc)
                     yield StreamEvent(event_type="error", data=str(retry_exc))
                     return
 
+            settings = get_settings()
             tool_calls: list[dict[str, Any]] | None = (
                 list(collected_tool_calls.values()) if collected_tool_calls else None
             )
 
-            # 【关键修复】如果 LLM 用 <tool> 标签返回工具调用，从 content 中提取
-            if not tool_calls and collected_content:
-                from app.services.llm_client import _extract_tool_calls_from_content
-                extracted = _extract_tool_calls_from_content(collected_content)
-                if extracted:
-                    tool_calls = extracted
+            if not tool_calls and collected_content and settings.llm_tool_call_fallback_enabled:
+                inspection = inspect_tool_call_content(collected_content)
+                if inspection.tool_calls:
+                    tool_calls = inspection.tool_calls
                     logger.info("从 <tool> 标签中提取到 %d 个工具调用", len(tool_calls))
+                elif inspection.suspected_draft:
+                    suspected_tool_draft = True
+                    suspected_tool_name = inspection.suspected_tool_name or suspected_tool_name
+                    logger.warning(
+                        "检测到疑似工具调用草稿（第 %d 步）: tool=%s",
+                        steps,
+                        suspected_tool_name or "unknown",
+                    )
 
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
@@ -502,23 +559,57 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
             messages.append(assistant_message)
 
             if finish_reason == "stop" and not tool_calls:
-                # 清理 <tool> 标签
-                import re
-                clean_content = re.sub(r'<tool>\s*\{[\s\S]*?\}\s*</tool>', '', collected_content).strip()
-                logger.info("Agent 最终回答（第 %d 步）: %s", steps, clean_content[:200])
-                yield StreamEvent(event_type="final_answer", data=clean_content)
-                return
+                if suspected_tool_draft and settings.llm_tool_call_retry_on_suspected_draft:
+                    logger.warning(
+                        "疑似工具调用草稿触发非流式补救（第 %d 步）: tool=%s",
+                        steps,
+                        suspected_tool_name or "unknown",
+                    )
+                    try:
+                        retry_resp = await get_llm_client().chat(messages=messages, tools=tools or None)
+                        retry_choice = (retry_resp.get("choices") or [{}])[0]
+                        retry_finish_reason = retry_choice.get("finish_reason")
+                        retry_msg = retry_choice.get("message") or {}
+                        retry_tool_calls = retry_msg.get("tool_calls") or []
+                        retry_content = retry_msg.get("content") or ""
+
+                        if retry_tool_calls:
+                            tool_calls = retry_tool_calls
+                            finish_reason = retry_finish_reason or finish_reason
+                            assistant_message["tool_calls"] = tool_calls
+                            assistant_message["content"] = retry_content or None
+                            messages[-1] = assistant_message
+                            logger.info("疑似工具草稿补救成功（第 %d 步）: tool_calls=%d", steps, len(tool_calls))
+                        else:
+                            clean_content = _sanitize_tool_draft_text(retry_content or collected_content)
+                            fallback_message = clean_content or "本次工具调用未生成有效参数，请重试。"
+                            logger.warning("疑似工具草稿补救失败（第 %d 步），返回安全提示", steps)
+                            yield StreamEvent(event_type="final_answer", data=fallback_message)
+                            return
+                    except LLMError as retry_exc:
+                        logger.error("疑似工具草稿补救异常（第 %d 步）: %s", steps, retry_exc)
+                        yield StreamEvent(event_type="final_answer", data="本次工具调用未生成有效参数，请重试。")
+                        return
+
+                if not tool_calls:
+                    clean_content = _sanitize_tool_draft_text(collected_content)
+                    logger.info("Agent 最终回答（第 %d 步）: %s", steps, clean_content[:200])
+                    yield StreamEvent(event_type="final_answer", data=clean_content)
+                    return
 
             if tool_calls:
                 parsed_calls: list[tuple[str, dict[str, Any]]] = []
 
                 for tc in tool_calls:
-                    func_info: dict[str, Any] = tc["function"]
-                    tool_name: str = func_info["name"]
-                    try:
-                        tool_args: dict[str, Any] = json.loads(func_info.get("arguments", "{}"))
-                    except json.JSONDecodeError:
-                        tool_args = {}
+                    tool_name = (tc.get("function") or {}).get("name") or "unknown"
+                    is_valid, tool_args, error_message = _is_valid_tool_call(tc, tools)
+                    if not is_valid or tool_args is None:
+                        logger.warning("拦截非法工具调用（第 %d 步）: %s", steps, error_message)
+                        yield StreamEvent(
+                            event_type="final_answer",
+                            data=error_message or f"工具 {tool_name} 的参数无效，请重试。",
+                        )
+                        return
 
                     call_info: dict[str, Any] = {"tool": tool_name, "args": tool_args}
                     parsed_calls.append((tool_name, tool_args))
