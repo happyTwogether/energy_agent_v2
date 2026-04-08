@@ -1,13 +1,12 @@
 """
 全局 Excel 导出服务模块。
 
-提供统一的字典列表导出为 Excel 功能，生成可下载的静态文件链接。
+提供统一的字典列表导出为 Excel 功能，基于服务端配置生成可下载的静态文件链接。
 遵循 Facade 模式，封装 pandas 导出逻辑和文件路径管理。
 """
 
 import os
 import uuid
-from contextvars import ContextVar
 from datetime import datetime
 
 import pandas as pd
@@ -16,19 +15,6 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 
 logger = get_logger("export_util")
-
-# 请求级别的 base_url 上下文变量
-_request_base_url: ContextVar[str | None] = ContextVar("request_base_url", default=None)
-
-
-def set_request_base_url(base_url: str | None) -> None:
-    """设置当前请求的 base_url（由 routes 层调用）。"""
-    _request_base_url.set(base_url)
-
-
-def get_request_base_url() -> str | None:
-    """获取当前请求的 base_url。"""
-    return _request_base_url.get()
 
 # 全局导出目录配置 (与 main.py 保持一致)
 EXPORT_DIR = os.path.join(os.getcwd(), "static", "exports")
@@ -91,7 +77,7 @@ def export_to_excel(
     column_mapping: dict[str, str] | None = None,
 ) -> str | None:
     """
-    将字典列表导出为 Excel 文件，并返回相对下载链接。
+    将字典列表导出为 Excel 文件，并返回下载链接。
 
     Args:
         data_list: 从数据库查询出的字典列表数据。
@@ -102,7 +88,7 @@ def export_to_excel(
             - {"cgi": "小区标识"}: 与默认映射合并，传入的优先级更高
 
     Returns:
-        str: 前端可访问的下载 URL (如 "/downloads/energy-report-20250324120000-a1b2c3.xlsx")。
+        str: 前端可访问的下载 URL；若未配置 base_url，则返回相对路径（如 "/downloads/energy-report-20250324120000-a1b2c3.xlsx"）。
         None: 当数据为空或导出失败时返回 None。
 
     Examples:
@@ -146,9 +132,9 @@ def export_to_excel(
 
         logger.info(f"Excel 导出成功: {file_path}, 数据量: {len(df)} 条")
 
-        # 生成完整下载链接（优先使用请求上下文中的 base_url）
+        # 生成完整下载链接（使用服务配置的 base_url；未配置时返回相对路径）
         relative_url = f"/downloads/{filename}"
-        base_url = get_request_base_url() or get_settings().base_url
+        base_url = get_settings().base_url
         if base_url:
             return f"{base_url.rstrip('/')}{relative_url}"
         return relative_url
