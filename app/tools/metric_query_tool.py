@@ -6,6 +6,25 @@
 
 from typing import Any
 
+FILTER_FIELD_ALIASES: dict[str, dict[str, str]] = {
+    "collect": {
+        "dist_name": "dist_name",
+        "prod_name": "prod_name",
+        "freq_band": "freq_band",
+        "site_type": "site_type",
+        "area": "area",
+        "cgi": "cgi",
+    },
+    "detail": {
+        "dist_name": "dist_name",
+        "prod_name": "prod_name",
+        "freq_band": "freq_band",
+        "site_type": "site_type",
+        "area": "area",
+        "cgi": "cgi",
+    },
+}
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -167,6 +186,9 @@ SQL_TEMPLATES: dict[str, dict] = {
 def _build_conditions(
     dist_name: str | None = None,
     prod_name: str | None = None,
+    freq_band: str | None = None,
+    site_type: str | None = None,
+    area: str | None = None,
     date_start: str | None = None,
     date_end: str | None = None,
     cgi: str | None = None,
@@ -176,6 +198,9 @@ def _build_conditions(
     Args:
         dist_name: 地市名称。
         prod_name: 设备厂家。
+        freq_band: 频段。
+        site_type: 站型。
+        area: 区域。
         date_start: 开始日期 (YYYY-MM-DD)。
         date_end: 结束日期 (YYYY-MM-DD)。
         cgi: 小区全局标识。
@@ -193,6 +218,18 @@ def _build_conditions(
     if prod_name:
         conditions.append("prod_name = :prod_name")
         params["prod_name"] = prod_name
+
+    if freq_band:
+        conditions.append("freq_band = :freq_band")
+        params["freq_band"] = freq_band
+
+    if site_type:
+        conditions.append("site_type = :site_type")
+        params["site_type"] = site_type
+
+    if area:
+        conditions.append("area = :area")
+        params["area"] = area
 
     if date_start:
         conditions.append("data_date >= :date_start")
@@ -274,6 +311,9 @@ def _build_llm_prompt(
     metric_desc: str,
     dist_name: str | None = None,
     prod_name: str | None = None,
+    freq_band: str | None = None,
+    site_type: str | None = None,
+    area: str | None = None,
     date_start: str | None = None,
     date_end: str | None = None,
 ) -> str:
@@ -283,6 +323,9 @@ def _build_llm_prompt(
         metric_desc: 用户描述的指标查询需求。
         dist_name: 地市名称。
         prod_name: 设备厂家。
+        freq_band: 频段。
+        site_type: 站型。
+        area: 区域。
         date_start: 开始日期。
         date_end: 结束日期。
 
@@ -294,6 +337,12 @@ def _build_llm_prompt(
         conditions.append(f"地市: {dist_name}")
     if prod_name:
         conditions.append(f"厂家: {prod_name}")
+    if freq_band:
+        conditions.append(f"频段: {freq_band}")
+    if site_type:
+        conditions.append(f"站型: {site_type}")
+    if area:
+        conditions.append(f"区域: {area}")
     if date_start:
         conditions.append(f"开始日期: {date_start}")
     if date_end:
@@ -308,21 +357,77 @@ def _build_llm_prompt(
 
 数据库表结构:
 
-1. {schema}.lte_energy_metrics (4G 能耗指标表)
+1. {schema}.lte_report_day_collect (4G 汇总报表)
+   - data_date (DATE): 日期
+   - dist_name (VARCHAR): 地市名称
+   - prod_name (VARCHAR): 设备厂家
+   - freq_band (VARCHAR): 频段
+   - site_type (VARCHAR): 站型
+   - area (VARCHAR): 区域
+   - logic_station_total (INT): 逻辑站数量
+   - all_cell_total (INT): 总小区数
+   - lte_station_power (DECIMAL): 基站总能耗
+   - bbu_power (DECIMAL): BBU能耗
+   - rru_power (DECIMAL): RRU能耗
+   - avg_energy_efficiency (DECIMAL): 平均能效(GB/千瓦时)
+   - upoctul_dl (DECIMAL): 上下行业务量(GB)
+   - lte_curmonthpower (DECIMAL): 当月节电量
+   - lte_curmonthpower_rate (VARCHAR): 节电率
+   - symdown_effect_hour (DECIMAL): 符号关断生效小时
+   - chandown_effect_hour (DECIMAL): 通道关断生效小时
+   - carrdown_effect_hour (DECIMAL): 载波关断生效小时
+   - deepsleep_effect_hour (DECIMAL): 深度休眠生效小时
+
+2. {schema}.nr_report_day_collect (5G 汇总报表)
+   - data_date (DATE): 日期
+   - dist_name (VARCHAR): 地市名称
+   - prod_name (VARCHAR): 设备厂家
+   - freq_band (VARCHAR): 频段
+   - site_type (VARCHAR): 站型
+   - area (VARCHAR): 区域
+   - logic_station_total (INT): 逻辑站数量
+   - all_cell_total (INT): 总小区数
+   - nr_sa_station_power (DECIMAL): 基站总能耗
+   - sa_bbu_power (DECIMAL): BBU能耗
+   - rru_power (DECIMAL): RRU能耗
+   - sa_avg_energy_efficiency (DECIMAL): 平均能效(GB/千瓦时)
+   - upoctul_dl (DECIMAL): 上下行业务量(GB)
+   - nr_curmonthpower (DECIMAL): 当月节电量
+   - nr_curmonthpower_rate (VARCHAR): 节电率
+   - symdown_effect_hour (DECIMAL): 亚帧静默生效小时
+   - chandown_effect_hour (DECIMAL): 通道静默生效小时
+   - carrdown_effect_hour (DECIMAL): 浅层休眠生效小时
+   - deepsleep_effect_hour (DECIMAL): 深度休眠生效小时
+   - aaurru_supersleep_effect_hour (DECIMAL): 极致休眠生效小时
+
+3. {schema}.lte_report_day_detail (4G 小区级明细)
    - data_date (DATE): 日期
    - dist_name (VARCHAR): 地市名称
    - prod_name (VARCHAR): 设备厂家
    - cgi (VARCHAR): 小区全局标识
-   - cell_name (VARCHAR): 小区名称
-   - symbol_status (VARCHAR): 节电符号状态(生效/未生效)
-   - energy_saving_hours (DECIMAL): 节电生效小时数
-   - energy_saving_rate (DECIMAL): 节电率
-   - energy_consumption_per_cell (DECIMAL): 单小区能耗
-   - traffic_per_cell (DECIMAL): 单小区流量
-   - energy_per_traffic (DECIMAL): 能耗流量比
+   - enbid (VARCHAR): 基站ID
+   - symbol_shutdown_hour (DECIMAL): 符号关断小时
+   - channel_shutdown_hour (DECIMAL): 通道关断小时
+   - carrier_shutdown_hour (DECIMAL): 载波关断小时
+   - deepsleep_hour (DECIMAL): 深度休眠小时
+   - upoctul_dl (DECIMAL): 上下行业务量(GB)
+   - is_low_energy (INT): 是否低能效小区
+   - is_common_mode_station (INT): 是否共模站
 
-2. {schema}.nr_energy_metrics (5G 能耗指标表)
-   - 字段与 lte_energy_metrics 相同
+4. {schema}.nr_report_day_detail (5G 小区级明细)
+   - data_date (DATE): 日期
+   - dist_name (VARCHAR): 地市名称
+   - prod_name (VARCHAR): 设备厂家
+   - cgi (VARCHAR): 小区全局标识
+   - gnbid (VARCHAR): 基站ID
+   - symbol_shutdown_hour (DECIMAL): 亚帧静默小时
+   - channel_shutdown_hour (DECIMAL): 通道静默小时
+   - carrier_shutdown_hour (DECIMAL): 浅层休眠小时
+   - deepsleep_hour (DECIMAL): 深度休眠小时
+   - supersleep_hour (DECIMAL): 极致休眠小时
+   - upoctul_dl (DECIMAL): 上下行业务量(GB)
+   - is_low_energy (INT): 是否低能效小区
+   - is_common_mode_station (INT): 是否共模站
 
 用户需求:
 {metric_desc}
@@ -332,7 +437,7 @@ def _build_llm_prompt(
 
 要求:
 1. 生成的 SQL 必须只包含 SELECT 语句，禁止包含 INSERT、UPDATE、DELETE、DROP 等危险操作
-2. 查询表名必须带 schema 前缀: FROM {schema}.lte_energy_metrics 或 FROM {schema}.nr_energy_metrics
+2. 查询表名必须带 schema 前缀，使用上述 4 张真实业务表
 3. 如果查询涉及 4G 和 5G 双网对比，请分别生成两条 SQL，用以下标记分隔:
    ### SQL_4G ###
    [4G SQL 语句]
@@ -417,11 +522,23 @@ Excel导出: 当查询小区级明细或数据量较大时，设置 export_excel
             },
             "dist_name": {
                 "type": "string",
-                "description": "地市名称过滤条件",
+                "description": "地市名称过滤条件，未传时默认全网",
             },
             "prod_name": {
                 "type": "string",
-                "description": "设备厂家过滤条件",
+                "description": "设备厂家过滤条件，未传时默认全网",
+            },
+            "freq_band": {
+                "type": "string",
+                "description": "频段过滤条件，未传时默认全网",
+            },
+            "site_type": {
+                "type": "string",
+                "description": "站型过滤条件，未传时默认全网",
+            },
+            "area": {
+                "type": "string",
+                "description": "区域过滤条件，未传时默认全网",
             },
             "date_start": {
                 "type": "string",
@@ -453,6 +570,9 @@ async def query_metric(
     db: AsyncSession,
     dist_name: str | None = None,
     prod_name: str | None = None,
+    freq_band: str | None = None,
+    site_type: str | None = None,
+    area: str | None = None,
     date_start: str | None = None,
     date_end: str | None = None,
     cgi: str | None = None,
@@ -468,6 +588,9 @@ async def query_metric(
         db: 数据库会话。
         dist_name: 地市名称过滤。
         prod_name: 设备厂家过滤。
+        freq_band: 频段过滤。
+        site_type: 站型过滤。
+        area: 区域过滤。
         date_start: 开始日期。
         date_end: 结束日期。
         cgi: 小区标识过滤。
@@ -476,11 +599,21 @@ async def query_metric(
     Returns:
         包含查询结果的字典。
     """
+    # 默认值处理
+    dist_name = dist_name or "全网"
+    prod_name = prod_name or "全网"
+    freq_band = freq_band or "全网"
+    site_type = site_type or "全网"
+    area = area or "全网"
+
     logger.info(
-        "指标查询: template_key=%s, dist_name=%s, prod_name=%s, date_range=%s~%s",
+        "指标查询: template_key=%s, dist_name=%s, prod_name=%s, freq_band=%s, site_type=%s, area=%s, date_range=%s~%s",
         template_key,
         dist_name,
         prod_name,
+        freq_band,
+        site_type,
+        area,
         date_start,
         date_end,
     )
@@ -497,6 +630,9 @@ async def query_metric(
                 metric_desc=metric_desc,
                 dist_name=dist_name,
                 prod_name=prod_name,
+                freq_band=freq_band,
+                site_type=site_type,
+                area=area,
                 date_start=date_start,
                 date_end=date_end,
             )
@@ -628,6 +764,9 @@ async def query_metric(
             condition_sql, params = _build_conditions(
                 dist_name=dist_name,
                 prod_name=prod_name,
+                freq_band=freq_band,
+                site_type=site_type,
+                area=area,
                 date_start=date_start,
                 date_end=date_end,
                 cgi=cgi,

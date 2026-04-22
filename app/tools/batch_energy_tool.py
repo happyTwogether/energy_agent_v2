@@ -6,7 +6,7 @@
 """
 
 import json
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -134,8 +134,9 @@ async def analyze_batch_cells_energy(
         expansion_map[cgi] = dict(row)
 
     # ── Step 5: 查询 jd_cell_constriction_day ──
+    # 字段说明：hours=节能收缩时间节点
     constriction_sql = text(f"""
-        SELECT cgi, constriction_hour
+        SELECT cgi, hours
         FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day
         WHERE {where_sql}
     """)
@@ -149,8 +150,25 @@ async def analyze_batch_cells_energy(
         all_cgis.add(cgi)
         if cgi not in constriction_map:
             constriction_map[cgi] = []
-        if row["constriction_hour"] is not None:
-            constriction_map[cgi].append(row["constriction_hour"])
+        if row["hours"] is not None:
+            constriction_map[cgi].append(row["hours"])
+
+    # ── Step 5.5: 查询 jd_cell_pre_hour_busy 统计休眠前高负荷次数 ──
+    # 统计最近7天内每个小区在该表中出现的记录数
+    # 如果有输入日期，使用输入日期作为基准；否则使用当前日期
+    end_date_for_sleep = query_date if stat_time else date.today()
+    start_date_7d = end_date_for_sleep - timedelta(days=7)
+    sleep_count_sql = text(f"""
+        SELECT cgi, COUNT(*) AS sleep_count
+        FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
+        WHERE stat_time >= :start_date
+        GROUP BY cgi
+    """)
+    sleep_count_result = await db.execute(sleep_count_sql, {"start_date": start_date_7d})
+    sleep_count_rows = sleep_count_result.mappings().all()
+
+    # 构建 sleep_count 映射
+    sleep_count_map: dict[str, int] = {row["cgi"]: row["sleep_count"] for row in sleep_count_rows}
 
     # ── Step 6: 合并数据生成表格 ──
     if not all_cgis:
@@ -216,6 +234,9 @@ async def analyze_batch_cells_energy(
         else:
             whitelist_str = "无"
 
+        # 节能收缩：休眠前1周内高负荷次数
+        sleep_count = sleep_count_map.get(cgi, 0)
+
         table_data.append({
             "地市名称": dist,
             "区县名称": county,
@@ -224,10 +245,11 @@ async def analyze_batch_cells_energy(
             "小区名称": cell_name,
             "CGI": cgi,
             "节能扩展：容量与风险说明": capacity_risk,
-            "节能扩展：低业务时段与0休眠匹配表": expandable_str,
+            "节能扩展：低业务时段与0休眠匹配（可扩展时间点）": expandable_str,
             "节能扩展：参数核查结论": saving_switch_state,
-            "节能收缩：周边200米关联小区高负荷受影响时间节点": constriction_str,
-            "特殊情况备注：节电白名单匹配情况": whitelist_str,
+            "节能收缩：周边高负荷受影响时间节点": constriction_str,
+            "节能收缩：休眠前1周内高负荷次数": sleep_count,
+            "特殊情况备注：白名单匹配情况": whitelist_str,
         })
 
     # ── Step 7: 生成 Excel ──

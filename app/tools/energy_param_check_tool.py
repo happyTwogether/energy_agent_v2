@@ -122,7 +122,6 @@ async def _fetch_param_check(
         FROM {DB_SCHEMA_RULE}.eng_check_result
         WHERE {where_clause}
     """)
-    logger.info("参数核查 SQL: %s, params=%s", sql, params)
     try:
         result = await db.execute(sql, params)
         rows = result.mappings().all()

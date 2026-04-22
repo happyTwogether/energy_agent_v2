@@ -22,12 +22,6 @@ logger = get_logger("report_query_tool")
 # 获取数据库 schema，用于构造带 schema 前缀的表名
 DB_SCHEMA = get_settings().db_schema
 
-
-# =============================================================================
-# Logic 1: 纯粹的数学基建 (Helper Functions)
-# =============================================================================
-
-
 def safe_div(a: float | None, b: float | None, decimals: int = 2) -> float:
     """安全除法，若 b 为 0 或 None，返回 0.0。强制转为 float 运算。"""
     try:
@@ -72,16 +66,13 @@ def to_pct(numerator: float | None, denominator: float | None) -> str:
     except (TypeError, ValueError):
         return "0.00%"
 
-
-# =============================================================================
-# Logic 2: 数据查询与处理
-# =============================================================================
-
-
 async def _fetch_lte_data_with_baseline(
     db: AsyncSession,
     dist_name: str,
     prod_name: str,
+    freq_band: str,
+    site_type: str,
+    area: str,
     query_start: str,
     date_end: str,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -90,6 +81,9 @@ async def _fetch_lte_data_with_baseline(
         SELECT * FROM {DB_SCHEMA}.lte_report_day_collect
         WHERE dist_name = :dist_name
           AND prod_name = :prod_name
+          AND freq_band = :freq_band
+          AND site_type = :site_type
+          AND area = :area
           AND data_date BETWEEN :query_start AND :date_end
         ORDER BY data_date DESC
     """)
@@ -99,6 +93,9 @@ async def _fetch_lte_data_with_baseline(
         {
             "dist_name": dist_name,
             "prod_name": prod_name,
+            "freq_band": freq_band,
+            "site_type": site_type,
+            "area": area,
             "query_start": query_start,
             "date_end": date_end,
         },
@@ -119,6 +116,9 @@ async def _fetch_nr_data_with_baseline(
     db: AsyncSession,
     dist_name: str,
     prod_name: str,
+    freq_band: str,
+    site_type: str,
+    area: str,
     query_start: str,
     date_end: str,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -127,6 +127,9 @@ async def _fetch_nr_data_with_baseline(
         SELECT * FROM {DB_SCHEMA}.nr_report_day_collect
         WHERE dist_name = :dist_name
           AND prod_name = :prod_name
+          AND freq_band = :freq_band
+          AND site_type = :site_type
+          AND area = :area
           AND data_date BETWEEN :query_start AND :date_end
         ORDER BY data_date DESC
     """)
@@ -136,6 +139,9 @@ async def _fetch_nr_data_with_baseline(
         {
             "dist_name": dist_name,
             "prod_name": prod_name,
+            "freq_band": freq_band,
+            "site_type": site_type,
+            "area": area,
             "query_start": query_start,
             "date_end": date_end,
         },
@@ -206,25 +212,27 @@ def _process_lte_data(
         "lte_low_efficiency_ratio": to_pct(target_data.get("low_energy_total"), lte_cell_total),
 
         # 节电软关断 - 4G
+        # 总生效小时（原始字段）
+        # 平均生效小时 = 总生效小时 / 总小区数
         "symdown_on": target_data.get("open_symdown_rate") or "0.00%",
         "symdown_effect": target_data.get("symdown_effect_ratio") or "0.00%",
         "symdown_hour": round(target_data.get("symdown_effect_hour") or 0, 1),
-        "symdown_effect_hour": round(target_data.get("symdown_effect_hour") or 0, 1),
+        "symdown_avg_hour": safe_div(target_data.get("symdown_effect_hour"), lte_cell_total, 1),
 
         "chandown_on": target_data.get("open_chandown_rate") or "0.00%",
         "chandown_effect": target_data.get("chandown_effect_ratio") or "0.00%",
         "chandown_hour": round(target_data.get("chandown_effect_hour") or 0, 1),
-        "chandown_effect_hour": round(target_data.get("chandown_effect_hour") or 0, 1),
+        "chandown_avg_hour": safe_div(target_data.get("chandown_effect_hour"), lte_cell_total, 1),
 
         "carrdown_on": target_data.get("open_carrdown_rate") or "0.00%",
         "carrdown_effect": target_data.get("carrdown_effect_ratio") or "0.00%",
         "carrdown_hour": round(target_data.get("carrdown_effect_hour") or 0, 1),
-        "carrdown_effect_hour": round(target_data.get("carrdown_effect_hour") or 0, 1),
+        "carrdown_avg_hour": safe_div(target_data.get("carrdown_effect_hour"), lte_cell_total, 1),
 
         "deepsleep_on": target_data.get("open_deepsleep_rate") or "0.00%",
         "deepsleep_effect": target_data.get("deepsleep_effect_ratio") or "0.00%",
         "deepsleep_hour": round(target_data.get("deepsleep_effect_hour") or 0, 1),
-        "deepsleep_effect_hour": round(target_data.get("deepsleep_effect_hour") or 0, 1),
+        "deepsleep_avg_hour": safe_div(target_data.get("deepsleep_effect_hour"), lte_cell_total, 1),
     }
 
     # 异常诊断 (对比基线 MAX)
@@ -342,30 +350,32 @@ def _process_nr_data(
         "nr_low_efficiency_ratio": to_pct(target_data.get("low_energy_total"), nr_cell_total),
 
         # 节电软关断 - 5G
+        # 总生效小时（原始字段）
+        # 平均生效小时 = 总生效小时 / 总小区数
         "subframe_silence_on": target_data.get("open_symdown_rate") or "0.00%",
         "subframe_silence_effect": target_data.get("symdown_effect_ratio") or "0.00%",
         "subframe_silence_hour": round(target_data.get("symdown_effect_hour") or 0, 1),
-        "subframe_silence_effect_hour": round(target_data.get("symdown_effect_hour") or 0, 1),
+        "subframe_silence_avg_hour": safe_div(target_data.get("symdown_effect_hour"), nr_cell_total, 1),
 
         "channel_silence_on": target_data.get("open_chandown_rate") or "0.00%",
         "channel_silence_effect": target_data.get("chandown_effect_ratio") or "0.00%",
         "channel_silence_hour": round(target_data.get("chandown_effect_hour") or 0, 1),
-        "channel_silence_effect_hour": round(target_data.get("chandown_effect_hour") or 0, 1),
+        "channel_silence_avg_hour": safe_div(target_data.get("chandown_effect_hour"), nr_cell_total, 1),
 
         "shallow_sleep_on": target_data.get("open_carrdown_rate") or "0.00%",
         "shallow_sleep_effect": target_data.get("carrdown_effect_ratio") or "0.00%",
         "shallow_sleep_hour": round(target_data.get("carrdown_effect_hour") or 0, 1),
-        "shallow_sleep_effect_hour": round(target_data.get("carrdown_effect_hour") or 0, 1),
+        "shallow_sleep_avg_hour": safe_div(target_data.get("carrdown_effect_hour"), nr_cell_total, 1),
 
         "deep_sleep_on": target_data.get("open_deepsleep_rate") or "0.00%",
         "deep_sleep_effect": target_data.get("deepsleep_effect_ratio") or "0.00%",
         "deep_sleep_hour": round(target_data.get("deepsleep_effect_hour") or 0, 1),
-        "deep_sleep_effect_hour": round(target_data.get("deepsleep_effect_hour") or 0, 1),
+        "deep_sleep_avg_hour": safe_div(target_data.get("deepsleep_effect_hour"), nr_cell_total, 1),
 
         "extreme_sleep_on": target_data.get("open_supersleep_rate") or "0.00%",
         "extreme_sleep_effect": target_data.get("aaurru_supersleep_effect_ratio") or "0.00%",
         "extreme_sleep_hour": round(target_data.get("aaurru_supersleep_effect_hour") or 0, 1),
-        "extreme_sleep_effect_hour": round(target_data.get("aaurru_supersleep_effect_hour") or 0, 1),
+        "extreme_sleep_avg_hour": safe_div(target_data.get("aaurru_supersleep_effect_hour"), nr_cell_total, 1),
     }
 
     # 异常诊断
@@ -420,15 +430,12 @@ def _process_nr_data(
 
     return processed, anomalies
 
-
-# =============================================================================
-# Logic 3: 纯 Python Markdown 报告生成 (零 LLM 依赖)
-# =============================================================================
-
-
 def _generate_report_markdown(
     dist_name: str,
     prod_name: str,
+    freq_band: str,
+    site_type: str,
+    area: str,
     lte_data: dict[str, Any] | None,
     nr_data: dict[str, Any] | None,
     lte_anomalies: list[str],
@@ -455,7 +462,7 @@ def _generate_report_markdown(
         report_date = lte_data.get("date", "")
 
     lines = []
-    lines.append(f"# {dist_name}-{prod_name}-频段(全网)-站型(全网)-区域(全网)维度4/5G网络节耗电总体情况")
+    lines.append(f"# {dist_name}-{prod_name}-频段({freq_band})-站型({site_type})-区域({area})维度4/5G网络节耗电总体情况")
     lines.append("")
 
     # ========== 一、网络规模介绍 ==========
@@ -471,10 +478,8 @@ def _generate_report_markdown(
             f"5G方面：逻辑站数{nr_data.get('nr_logic_station_total')}个、"
             f"BBU数{nr_data.get('nr_bbu_channel_total')}个、"
             f"小区数{nr_data.get('nr_cell_total')}个、"
-            f"32T+64T高耗电设备小区{nr_high_power_total}个，"
-            f"占全网小区规模占比{nr_data.get('nr_high_power_ratio')}，"
-            f"4/5G共模站数{nr_data.get('commode_station_total')}个，"
-            f"占比{nr_data.get('commode_ratio')}；"
+            f"32T+64T高耗电设备小区{nr_high_power_total}个（占比{nr_data.get('nr_high_power_ratio')}），"
+            f"4/5G共模站数{nr_data.get('commode_station_total')}个（占比{nr_data.get('commode_ratio')}）；"
         )
         lines.append("")
         lines.append("| 日期 | 5G总BBU数 | 5G逻辑站数量 | 可通过网管读取的5G逻辑站数 | 可读电量逻辑站占比 | 5G总小区数 | 32通道5G小区数 | 64通道5G小区数 | 高耗电小区设备占比 | 4/5G共模站数量 | 共模站点占比 |")
@@ -495,8 +500,7 @@ def _generate_report_markdown(
             f"4G方面：逻辑站数{lte_data.get('lte_logic_station_total')}个、"
             f"BBU数{lte_data.get('lte_bbu_channel_total')}个、"
             f"小区数{lte_data.get('lte_cell_total')}个、"
-            f"8T以上高耗电设备小区{lte_data.get('lte_highchannel_cell_total')}个，"
-            f"占全网小区规模占比{lte_data.get('lte_high_power_ratio')}。"
+            f"8T以上高耗电设备小区{lte_data.get('lte_highchannel_cell_total')}个（占比{lte_data.get('lte_high_power_ratio')}）。"
         )
         lines.append("")
         lines.append("| 日期 | LTE总BBU数 | LTE逻辑站数量 | 可通过网管读取的LTE逻辑站数量 | 可读电量逻辑站点比 | LTE总小区数 | 8通道及以上小区数 | 高耗电小区设备占比 |")
@@ -573,26 +577,26 @@ def _generate_report_markdown(
         lines.append("### 5G方面")
         lines.append("")
         lines.append(
-            f"5G方面：亚帧静默全量小区平均生效{nr_data.get('subframe_silence_effect_hour')}小时，"
-            f"通道静默全量小区平均生效{nr_data.get('channel_silence_effect_hour')}小时，"
-            f"浅层休眠全量小区平均生效{nr_data.get('shallow_sleep_effect_hour')}小时，"
-            f"深度休眠全量小区平均生效{nr_data.get('deep_sleep_effect_hour')}小时，"
-            f"极致休眠全量小区平均生效{nr_data.get('extreme_sleep_effect_hour')}小时。"
+            f"5G方面：亚帧静默平均生效{nr_data.get('subframe_silence_avg_hour')}小时/小区，"
+            f"通道静默平均生效{nr_data.get('channel_silence_avg_hour')}小时/小区，"
+            f"浅层休眠平均生效{nr_data.get('shallow_sleep_avg_hour')}小时/小区，"
+            f"深度休眠平均生效{nr_data.get('deep_sleep_avg_hour')}小时/小区，"
+            f"极致休眠平均生效{nr_data.get('extreme_sleep_avg_hour')}小时/小区。"
         )
         lines.append("")
         lines.append("| 日期 | 亚帧静默开启比例 | 亚帧静默生效比例 | 亚帧静默总生效小时 | 亚帧静默平均生效小时 | 通道静默开启比例 | 通道静默生效比例 | 通道静默总生效小时 | 通道静默平均生效小时 | 浅层休眠开启比例 | 浅层休眠生效比例 | 浅层休眠总生效小时 | 浅层休眠平均生效小时 | 深度休眠开启比例 | 深度休眠生效比例 | 深度休眠总生效小时 | 深度休眠平均生效小时 | 极致休眠开启比例 | 极致休眠生效比例 | 极致休眠总生效小时 | 极致休眠平均生效小时 |")
         lines.append("|------|------------------|------------------|--------------------|----------------------|------------------|------------------|--------------------|----------------------|------------------|------------------|--------------------|----------------------|------------------|------------------|--------------------|----------------------|------------------|------------------|--------------------|----------------------|")
         lines.append(
             f"| {report_date} | {nr_data.get('subframe_silence_on')} | {nr_data.get('subframe_silence_effect')} | "
-            f"{nr_data.get('subframe_silence_hour')} | {nr_data.get('subframe_silence_effect_hour')} | "
+            f"{nr_data.get('subframe_silence_hour')} | {nr_data.get('subframe_silence_avg_hour')} | "
             f"{nr_data.get('channel_silence_on')} | {nr_data.get('channel_silence_effect')} | "
-            f"{nr_data.get('channel_silence_hour')} | {nr_data.get('channel_silence_effect_hour')} | "
+            f"{nr_data.get('channel_silence_hour')} | {nr_data.get('channel_silence_avg_hour')} | "
             f"{nr_data.get('shallow_sleep_on')} | {nr_data.get('shallow_sleep_effect')} | "
-            f"{nr_data.get('shallow_sleep_hour')} | {nr_data.get('shallow_sleep_effect_hour')} | "
+            f"{nr_data.get('shallow_sleep_hour')} | {nr_data.get('shallow_sleep_avg_hour')} | "
             f"{nr_data.get('deep_sleep_on')} | {nr_data.get('deep_sleep_effect')} | "
-            f"{nr_data.get('deep_sleep_hour')} | {nr_data.get('deep_sleep_effect_hour')} | "
+            f"{nr_data.get('deep_sleep_hour')} | {nr_data.get('deep_sleep_avg_hour')} | "
             f"{nr_data.get('extreme_sleep_on')} | {nr_data.get('extreme_sleep_effect')} | "
-            f"{nr_data.get('extreme_sleep_hour')} | {nr_data.get('extreme_sleep_effect_hour')} |"
+            f"{nr_data.get('extreme_sleep_hour')} | {nr_data.get('extreme_sleep_avg_hour')} |"
         )
         lines.append("")
 
@@ -601,23 +605,23 @@ def _generate_report_markdown(
         lines.append("### 4G方面")
         lines.append("")
         lines.append(
-            f"4G方面：符号关断全量小区平均生效{lte_data.get('symdown_effect_hour')}小时，"
-            f"通道关断全量小区平均生效{lte_data.get('chandown_effect_hour')}小时，"
-            f"载波关断全量小区平均生效{lte_data.get('carrdown_effect_hour')}小时，"
-            f"深度休眠全量小区平均生效{lte_data.get('deepsleep_effect_hour')}小时。"
+            f"4G方面：符号关断平均生效{lte_data.get('symdown_avg_hour')}小时/小区，"
+            f"通道关断平均生效{lte_data.get('chandown_avg_hour')}小时/小区，"
+            f"载波关断平均生效{lte_data.get('carrdown_avg_hour')}小时/小区，"
+            f"深度休眠平均生效{lte_data.get('deepsleep_avg_hour')}小时/小区。"
         )
         lines.append("")
         lines.append("| 日期 | 符号关断开启比例 | 符号关断生效比例 | 符号关断总生效小时 | 符号关断平均生效小时 | 通道关断开启比例 | 通道关断生效比例 | 通道关断总生效小时 | 通道关断平均生效小时 | 载波关断开启比例 | 载波关断生效比例 | 载波关断总生效小时 | 载波关断平均生效小时 | 深度休眠开启比例 | 深度休眠生效比例 | 深度休眠总生效小时 | 深度休眠平均生效小时 |")
         lines.append("|------|------------------|------------------|--------------------|----------------------|------------------|------------------|--------------------|----------------------|------------------|------------------|--------------------|----------------------|------------------|------------------|--------------------|----------------------|")
         lines.append(
             f"| {report_date} | {lte_data.get('symdown_on')} | {lte_data.get('symdown_effect')} | "
-            f"{lte_data.get('symdown_hour')} | {lte_data.get('symdown_effect_hour')} | "
+            f"{lte_data.get('symdown_hour')} | {lte_data.get('symdown_avg_hour')} | "
             f"{lte_data.get('chandown_on')} | {lte_data.get('chandown_effect')} | "
-            f"{lte_data.get('chandown_hour')} | {lte_data.get('chandown_effect_hour')} | "
+            f"{lte_data.get('chandown_hour')} | {lte_data.get('chandown_avg_hour')} | "
             f"{lte_data.get('carrdown_on')} | {lte_data.get('carrdown_effect')} | "
-            f"{lte_data.get('carrdown_hour')} | {lte_data.get('carrdown_effect_hour')} | "
+            f"{lte_data.get('carrdown_hour')} | {lte_data.get('carrdown_avg_hour')} | "
             f"{lte_data.get('deepsleep_on')} | {lte_data.get('deepsleep_effect')} | "
-            f"{lte_data.get('deepsleep_hour')} | {lte_data.get('deepsleep_effect_hour')} |"
+            f"{lte_data.get('deepsleep_hour')} | {lte_data.get('deepsleep_avg_hour')} |"
         )
         lines.append("")
 
@@ -640,12 +644,6 @@ def _generate_report_markdown(
 
     return "\n".join(lines)
 
-
-# =============================================================================
-# 工具注册
-# =============================================================================
-
-
 @tool_registry.tool(
     description="""生成 4G/5G 网络节耗电分析报告。
 
@@ -653,10 +651,13 @@ def _generate_report_markdown(
 使用 Python 预处理所有单位换算和异常诊断，通过纯 Python 生成标准化 Markdown 报告。
 
 参数说明:
-- dist_name: 地市名称 (如: 长沙市)
-- prod_name: 设备厂家 (如: 华为)
-- date_start: 报告日期 (YYYY-MM-DD)，会暗中前推7天获取基线
-- date_end: 结束日期 (YYYY-MM-DD)，通常与 date_start 相同
+- dist_name: 地市名称 (如: 长沙市)，未传时默认"全网"
+- prod_name: 设备厂家 (如: 华为)，未传时默认"全网"
+- freq_band: 频段 (如: 700M)，未传时默认"全网"
+- site_type: 站型，未传时默认"全网"
+- area: 区域，未传时默认"全网"
+- date_start: 报告日期 (YYYY-MM-DD)，会暗中前推7天获取基线，未传时默认昨天
+- date_end: 结束日期 (YYYY-MM-DD)，通常与 date_start 相同，未传时默认与 date_start 相同
 
 触发条件: "生成报表"、"出报告"、"报表查询"。
 
@@ -668,47 +669,76 @@ def _generate_report_markdown(
         "properties": {
             "dist_name": {
                 "type": "string",
-                "description": "地市名称",
+                "description": "地市名称，未传时默认全网",
             },
             "prod_name": {
                 "type": "string",
-                "description": "设备厂家",
+                "description": "设备厂家，未传时默认全网",
+            },
+            "freq_band": {
+                "type": "string",
+                "description": "频段，未传时默认全网",
+            },
+            "site_type": {
+                "type": "string",
+                "description": "站型，未传时默认全网",
+            },
+            "area": {
+                "type": "string",
+                "description": "区域，未传时默认全网",
             },
             "date_start": {
                 "type": "string",
-                "description": "报告日期 (YYYY-MM-DD)，会暗中前推7天获取基线",
+                "description": "报告日期 (YYYY-MM-DD)，会暗中前推7天获取基线，未传时默认昨天",
             },
             "date_end": {
                 "type": "string",
-                "description": "结束日期 (YYYY-MM-DD)",
+                "description": "结束日期 (YYYY-MM-DD)，未传时默认与 date_start 相同",
             },
         },
-        "required": ["dist_name", "prod_name", "date_start", "date_end"],
+        "required": [],
     },
 )
 async def query_report(
-    dist_name: str,
-    prod_name: str,
-    date_start: str,
-    date_end: str,
     db: AsyncSession,
+    dist_name: str | None = None,
+    prod_name: str | None = None,
+    freq_band: str | None = None,
+    site_type: str | None = None,
+    area: str | None = None,
+    date_start: str | None = None,
+    date_end: str | None = None,
 ) -> dict[str, Any]:
     """查询并生成 4G/5G 网络节耗电分析报告。
 
     Args:
-        dist_name: 地市名称。
-        prod_name: 设备厂家。
-        date_start: 报告日期，会暗中前推7天。
-        date_end: 结束日期。
         db: 数据库会话。
+        dist_name: 地市名称，未传时默认全网。
+        prod_name: 设备厂家，未传时默认全网。
+        freq_band: 频段，未传时默认全网。
+        site_type: 站型，未传时默认全网。
+        area: 区域，未传时默认全网。
+        date_start: 报告日期，会暗中前推7天，未传时默认昨天。
+        date_end: 结束日期，未传时默认与 date_start 相同。
 
     Returns:
         包含报告和数据的字典。
     """
+    dist_name = dist_name or "全网"
+    prod_name = prod_name or "全网"
+    freq_band = freq_band or "全网"
+    site_type = site_type or "全网"
+    area = area or "全网"
+    date_start = date_start or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    date_end = date_end or date_start
+
     logger.info(
-        "报表查询: dist_name=%s, prod_name=%s, date_range=%s~%s",
+        "报表查询: dist_name=%s, prod_name=%s, freq_band=%s, site_type=%s, area=%s, date_range=%s~%s",
         dist_name,
         prod_name,
+        freq_band,
+        site_type,
+        area,
         date_start,
         date_end,
     )
@@ -723,10 +753,10 @@ async def query_report(
 
         # 2. 拉取原始数据（目标日 + 基线）
         lte_target_raw, lte_baseline_raw = await _fetch_lte_data_with_baseline(
-            db, dist_name, prod_name, query_start, date_end
+            db, dist_name, prod_name, freq_band, site_type, area, query_start, date_end
         )
         nr_target_raw, nr_baseline_raw = await _fetch_nr_data_with_baseline(
-            db, dist_name, prod_name, query_start, date_end
+            db, dist_name, prod_name, freq_band, site_type, area, query_start, date_end
         )
 
         if not lte_target_raw and not nr_target_raw:
@@ -743,6 +773,9 @@ async def query_report(
         report_markdown = _generate_report_markdown(
             dist_name=dist_name,
             prod_name=prod_name,
+            freq_band=freq_band,
+            site_type=site_type,
+            area=area,
             lte_data=lte_data,
             nr_data=nr_data,
             lte_anomalies=lte_anomalies,
@@ -753,6 +786,9 @@ async def query_report(
             "success": True,
             "dist_name": dist_name,
             "prod_name": prod_name,
+            "freq_band": freq_band,
+            "site_type": site_type,
+            "area": area,
             "date_start": date_start,
             "date_end": date_end,
             "baseline_range": f"{query_start} ~ {date_end}",

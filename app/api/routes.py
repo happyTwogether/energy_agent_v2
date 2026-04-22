@@ -34,10 +34,30 @@ _conversations: dict[str, list[dict[str, Any]]] = {}
 
 
 def _sanitize_history_answer(answer: str) -> str:
-    """清理历史消息中的工具调用草稿。"""
-    cleaned = re.sub(r'<tool>\s*\{[\s\S]*?\}\s*</tool>', '', answer)
-    cleaned = re.sub(r'```json\s*\{[\s\S]*?$', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\{\s*"name"\s*:\s*"[^"]+"[\s\S]*?$', '', cleaned)
+    """清理历史消息中的工具调用痕迹。"""
+    if not answer:
+        return ""
+
+    cleaned = answer
+
+    # 1. 清理 <tool> 标签
+    if "<tool>" in cleaned and "</tool>" in cleaned:
+        cleaned = re.sub(r"<tool>\s*\{[\s\S]*?\}\s*</tool>", "", cleaned)
+
+    # 2. 清理 JSON 代码块
+    json_block_start = re.search(r"```json\s*\{", cleaned, flags=re.IGNORECASE)
+    if json_block_start:
+        cleaned = cleaned[:json_block_start.start()]
+
+    # 3. 清理工具调用 JSON 开头
+    tool_json_start = re.search(r"\{\s*\"name\"\s*:\s*\"[^\"]+\"", cleaned)
+    if tool_json_start:
+        cleaned = cleaned[:tool_json_start.start()]
+
+    # 4. 清理工具调用相关的文字表述
+    cleaned = re.sub(r"我(调用|使用)\s*\w+\s*工具[，,。]?\s*", "", cleaned)
+    cleaned = re.sub(r"通过\s*\w+\s*工具\s*(查询|获取|调取)[到]?[，,。]?\s*", "查询到", cleaned)
+
     return cleaned.strip()
 
 
@@ -128,7 +148,12 @@ def _build_messages_from_dify(
     history = _conversations.get(conversation_id, [])
 
     # 构造 system prompt（包含 inputs 上下文）
-    system_content = "你是一个4G/5G网络节能分析助手。"
+    system_content = (
+        "你是一个4G/5G网络节能分析助手。"
+        "对于 query_report、query_metric、query_anomaly 这类查询，若用户未明确提及地市/厂家/日期，"
+        "必须静默使用默认值直接调用工具，禁止追问确认。"
+        "其中 query_report 未提及日期时默认昨天，未提及厂家时默认全网。"
+    )
     if request.inputs:
         system_content += f"\n\n用户上下文信息：{json.dumps(request.inputs, ensure_ascii=False)}"
 
@@ -257,47 +282,30 @@ async def _run_blocking(
     messages: list[dict[str, Any]],
     user_query: str,
 ) -> dict[str, Any]:
-    """Blocking 模式：等待完整响应后返回。
-
-    Dify Blocking 响应格式：
-    {
-        "event": "message",
-        "message_id": "xxx",
-        "conversation_id": "xxx",
-        "mode": "chat",
-        "answer": "xxx",
-        "task_id": "xxx",
-        "created_at": 1234567890,
-        "metadata": {},
-        "usage": {
-            "prompt_tokens": 100,
-            "prompt_unit_price": "0.001",
-            "prompt_price_unit": "0.001",
-            "prompt_total_price": "0.1",
-            "completion_tokens": 50,
-            "completion_unit_price": "0.002",
-            "completion_price_unit": "0.002",
-            "completion_total_price": "0.1",
-            "total_tokens": 150,
-            "total_price": "0.2",
-            "currency": "USD",
-            "latency": 1.23
-        }
-    }
-    """
+    """Dify Blocking 响应格式。"""
     collected_answer = ""
+    token_count = 0
 
     async for event in run_agent_stream(messages=messages):
         if event.event_type == "token":
-            collected_answer += str(event.data)
+            token_count += 1
         elif event.event_type == "final_answer":
-            # final_answer 包含完整回答，直接使用
+            # blocking 模式只消费最终答案，避免重复拼接大量 token
             collected_answer = str(event.data)
+            logger.info(
+                "blocking 收到 final_answer: len=%d, token_count=%d",
+                len(collected_answer),
+                token_count,
+            )
+            break
         elif event.event_type == "error":
             raise Exception(str(event.data))
 
-    # 保存对话历史（追加而不是覆盖）
+    logger.info("blocking 开始清洗答案: len=%d", len(collected_answer))
     clean_answer = _sanitize_history_answer(collected_answer)
+    logger.info("blocking 清洗答案完成: raw_len=%d, clean_len=%d", len(collected_answer), len(clean_answer))
+
+    # 保存对话历史（追加而不是覆盖）
     if conversation_id not in _conversations:
         _conversations[conversation_id] = []
     _conversations[conversation_id].extend([
@@ -307,7 +315,9 @@ async def _run_blocking(
     # 限制历史长度，保留最近 10 轮对话
     if len(_conversations[conversation_id]) > 20:
         _conversations[conversation_id] = _conversations[conversation_id][-20:]
+    logger.info("blocking 保存历史完成: conversation_id=%s, history_size=%d", conversation_id, len(_conversations[conversation_id]))
 
+    logger.info("blocking 准备返回响应: message_id=%s, answer_len=%d", message_id, len(collected_answer))
     return {
         "event": "message",
         "task_id": task_id,
@@ -394,7 +404,16 @@ async def dify_chat_messages(http_request: Request, req: DifyChatRequest) -> Res
                 messages=messages,
                 user_query=req.query,
             )
-            return JSONResponse(content=result)
+            logger.info("blocking 已生成结果，准备序列化: message_id=%s", message_id)
+            payload = dumps_decimal(result, ensure_ascii=False)
+            logger.info(
+                "blocking 序列化完成: message_id=%s, bytes=%d",
+                message_id,
+                len(payload.encode("utf-8")),
+            )
+            response = Response(content=payload, media_type="application/json")
+            logger.info("blocking Response 已构造: message_id=%s", message_id)
+            return response
 
     except Exception as exc:
         logger.error("Dify 聊天接口异常: %s", exc, exc_info=True)

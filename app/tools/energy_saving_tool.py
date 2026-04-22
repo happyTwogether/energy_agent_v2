@@ -328,8 +328,9 @@ async def _query_constriction_data(
     关联 jd_cell_around 获取周边高负荷证据。
     """
     # 查询收缩数据（包含基础信息）
+    # 字段说明：hours=节能收缩时间节点, around_cgi=影响源小区, around_cgi_cell_name=影响源小区名
     constriction_sql = text(f"""
-        SELECT constriction_hour, reason, constriction_cgi, constriction_cgi_name,
+        SELECT hours, reason, around_cgi, around_cgi_cell_name,
                is_whitelist, cell_name, dist_name, county_name, prod_name, gnb_name
         FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day
         WHERE cgi = :cgi AND stat_time = :stat_time
@@ -380,10 +381,10 @@ async def _query_constriction_data(
                 break
 
     for row in constriction_rows:
-        hour = row["constriction_hour"]
+        hour = row["hours"]
         reason = row["reason"] or "—"
-        related_cgi = row["constriction_cgi"] or "—"
-        related_name = row["constriction_cgi_name"] or "—"
+        related_cgi = row["around_cgi"] or "—"
+        related_name = row["around_cgi_cell_name"] or "—"
 
         # 获取证据字段
         around_info = around_high_load_map.get(related_cgi, {})
