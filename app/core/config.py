@@ -45,15 +45,7 @@ class Settings(BaseSettings):
     llm_tool_call_strict_mode: bool = True
     llm_tool_call_retry_on_suspected_draft: bool = True
     llm_tool_call_debug_log: bool = False
-    agent_system_prompt: str = (
-        "你是一个智能助手，可以通过调用工具来帮助用户完成任务。\n\n"
-        "## 工具调用规则\n"
-        "当需要使用工具时，请严格按以下格式输出（JSON 格式）：\n"
-        '<tool>{"name": "工具名", "arguments": {"参数1": "值1", "参数2": "值2"}}</tool>\n\n'
-        "示例：查询长沙市的指标\n"
-        '<tool>{"name": "query_metric", "arguments": {"template_key": "lte_summary", "dist_name": "长沙市"}}</tool>\n\n'
-        "请根据用户的问题，判断是否需要使用工具，并给出清晰的回答。"
-    )
+    agent_system_prompt: str = ""
     cors_origins: list[str] = ["*"]
     base_url: str = "http://10.159.55.28:9500"  # 服务基础URL
 

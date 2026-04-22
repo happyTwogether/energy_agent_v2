@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
 from app.models.schemas import StreamEvent
+from app.prompts import ENERGY_SAVING_PROMPT_APPENDIX
 from app.services.database import get_session_factory
 from app.services.llm_client import (
     LLMError,
@@ -39,6 +40,65 @@ def _sanitize_tool_draft_text(content: str) -> str:
     cleaned = re.sub(r'```json\s*\{[\s\S]*?$', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\{\s*"name"\s*:\s*"[^"]+"[\s\S]*?$', '', cleaned)
     return cleaned.strip()
+
+
+def _build_system_prompt(
+    context_text: str | None = None,
+) -> str:
+    """统一构建 system prompt。"""
+    settings = get_settings()
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    system_prompt = settings.agent_system_prompt + ENERGY_SAVING_PROMPT_APPENDIX.format(
+        current_date=current_date,
+        yesterday=yesterday,
+    )
+
+    if context_text:
+        system_prompt += f"\n\n# User Context\n{context_text}"
+
+    return system_prompt
+
+
+def _normalize_messages_with_system_prompt(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """统一规范消息列表，确保仅由运行时注入 system prompt。"""
+    normalized_messages = [dict(message) for message in messages]
+    system_message = normalized_messages[0] if normalized_messages and normalized_messages[0].get("role") == "system" else None
+    other_messages = normalized_messages[1:] if system_message else normalized_messages
+    context_text = None
+    if system_message:
+        system_content = str(system_message.get("content") or "")
+        if system_content.strip():
+            context_text = system_content.strip()
+    return [{"role": "system", "content": _build_system_prompt(context_text)}, *other_messages]
+
+
+def _extract_direct_answer_from_tool_result(result: dict[str, Any]) -> str | None:
+    """从工具结果中提取可直接返回给用户的最终答案。"""
+    payload = result.get("result")
+    if not isinstance(payload, dict):
+        return None
+
+    if payload.get("success") is False:
+        return None
+
+    report_content = payload.get("report_content")
+    if not isinstance(report_content, str) or not report_content.strip():
+        return None
+
+    direct_answer = report_content.strip()
+    download_url = payload.get("download_url")
+    if isinstance(download_url, str) and download_url.strip():
+        direct_answer += f"\n\n📥 [点击下载文件]({download_url.strip()})"
+
+    return direct_answer
+
+
+def _is_direct_answer_eligible(results: list[dict[str, Any]]) -> bool:
+    """判断工具结果是否适合跳过二次 LLM 总结而直接返回。"""
+    if len(results) != 1:
+        return False
+    return _extract_direct_answer_from_tool_result(results[0]) is not None
 
 
 def _is_valid_tool_call(tool_call: dict[str, Any], tools: list[dict[str, Any]]) -> tuple[bool, dict[str, Any] | None, str | None]:
@@ -181,165 +241,6 @@ async def _stream_with_idle_timeout(
         await agen.aclose()
 
 
-# [APPEND TO SYSTEM_PROMPT_TEMPLATE]
-# 动态追加到 System Prompt 的节能分析助手指引
-ENERGY_SAVING_PROMPT_APPENDIX = """
-你是一个4G/5G网络节能分析助手，帮助用户查询网络指标、生成报表和分析节电潜力。
-今天日期：{current_date}，昨天日期：{yesterday}
-
-## 可用工具
-
-###工具1：query_metric（指标查询）
-查询4G/5G节能相关指标数据。
-调用前提取参数：
-- template_key（必填）: lte_summary / nr_summary / lte_energy_saving / nr_energy_saving / lte_cell_detail / nr_cell_detail。
-  * 若用户给特定cgi、只查个别字段、对比4/5G、或求TOP排序，传 freeform。
-- dist_name: 识别湖南地市(如长沙市，统一补市)，未提及传"全网"。
-- prod_name: 华为/中兴/爱立信/诺基亚，未提及传"全网"。
-- date_start / date_end: 未提及传 {yesterday}。"今天"传 {current_date}。推算"前天"、"上周X"、"最近N天"。单日查询两者相同。
-- cgi: 仅 freeform 传。格式 460-00-基站号-小区号。
-- metric_desc: freeform 时必填，一句话描述需求。
-- export_excel: 是否导出Excel。触发条件：用户明确要求"导出Excel"、"下载数据"；或查询结果超过50条；或使用 lte_cell_detail / nr_cell_detail 模板时。设为 true 可生成Excel下载链接。
-
-###工具2： query_report（报表生成）
-生成完整节耗电分析报告(Markdown)。
-触发条件："生成报表"、"出报告"、"报表查询"等。
-
-【参数提取规则】
-- dist_name: 提取地市。若用户未明确提及特定地市，直接默认传 "全网"，禁止追问。
-- prod_name: 提取厂家。若用户未明确提及特定厂家，直接默认传 "全网"，禁止追问。
-- date_start / date_end: 
-  * 若用户只提供了一个具体日期（如"2025年12月14日"、"昨天"），则 date_start 和 date_end 均传该同一日期，**绝对禁止追问结束日期**。
-  * 若用户完全未提及时间，则两者均默认传 {yesterday}。
-
-（使用本工具时需要先把工具返回的内容完整展示给用户。）
-
-###工具3：query_anomaly（异常指标诊断）
-诊断特定日期是否有核心指标劣化超过10%。
-触发条件：用户询问"异常"、"劣化"、"大幅下降"、"波动"时调用。
-参数提取规则（禁止追问）：
-- dist_name: 提取地市。若用户未明确提及特定地市，直接默认传 "全网"，禁止追问。
-- prod_name: 提取厂家。若用户未明确提及特定厂家，直接默认传 "全网"，禁止追问。
-- target_date: 提取目标诊断日期 (YYYY-MM-DD)，未提及传昨天。
-- export_excel: 是否导出Excel。触发条件：用户明确要求"导出Excel"、"下载数据"；或检测结果数据量超过50条。设为 true 可生成Excel下载链接。
-返回规则：不要罗列全量数据，只用自然语言严重警告劣化的指标及其降幅；若无异常，告知运行平稳。
-
-###工具4：query_energy_param_check（节能参数核查）
-查询4G/5G小区节能参数配置核查结果，检查参数是否符合推荐值。
-数据来源为统一分区表 eng_check_result，通过 check_time 区分日期。
-触发条件：用户提及"节能参数"、"参数核查"、"配置检查"、"参数合规"时调用。
-参数提取规则（禁止追问）：
-- cgi: CGI过滤（可选，优先级最高，格式如 460-00-12345-678）
-- cell_name: 小区名称过滤（可选，如"长沙芙蓉区芙蓉广场-HHH-1"）
-- dist_name: 地市名称（可选）
-- prod_name: 厂家名称（可选）
-- check_date: 核查日期（可选，用户未提及时不传，让系统按 check_time 自动计算查询当天数据）
-- export_excel: 是否导出Excel。触发条件：用户明确要求"导出Excel"、"下载数据"；或核查结果数据量超过50条。设为 true 可生成Excel下载链接。
-- 当未提供 cgi/cell_name 时必填dist_name或prod_name
-
-查询优先级（至少提供一种查询条件）：
-1. 如果用户提供 CGI，直接用 CGI 查询（最精确，优先使用）
-2. 如果用户提供小区名称，用小区名称查询
-3. 否则需要用户提供地市或厂家进行批量查询
-
-返回规则：
-1. 工具返回 report_content 直接输出；返回异常记录列表时，总结异常数量和主要问题类型。
-2. 工具返回 download_url时 ，不直接输出report_content，进行总结，提供下载链接并告知用户可以点击下载完整报告。
-
-
-###工具5：analyze_single_cell_energy（单小区节电深度分析）
-触发条件：用户询问具体某个小区的"节电分析"、"休眠扩展"、"节能收缩"、"高负荷"等详细情况。
-必须提取参数：
-- cgi: 小区全球标识 (必须提取或通过小区名转换，格式 460-00-xxx-xxx)
-- analysis_target: 根据用户意图选择 "all"(全面分析), "expansion"(只问扩展/低业务), "constriction"(只问收缩/负面影响), "load"(只问负荷)。
-- stat_time: 统计日期，可选，默认最新日期。
-
-返回规则（工具返回结构化数据 + 表格，需组装报告）：
-1. 先输出标题：小区节能/扩展总结（cell_name | cgi | stat_time）
-2. 根据 analysis_target 输出对应内容：
-   - all: 输出完整报告（概览+扩展+收缩+白名单备注）
-   - expansion: 仅输出扩展分析（容量风险说明+表格+参数核查）
-   - constriction: 仅输出收缩分析（周边影响说明+表格）
-   - load: 仅输出高负荷状态
-3. 表格部分直接使用返回的 expansion_table 或 constriction_table，保证数据准确。
-4. 扩展分析需包含：是否高负荷、低业务时段与休眠情况匹配表（基于15天均值）、参数核查结论。
-   - 表格列：时间点(时)、是否低业务、休眠时长累加值(15天均值)、是否接近0休眠、扩展建议
-   - "是否接近0休眠"：平均休眠时长 < 60秒视为接近0
-5. 收缩分析需包含：周边高负荷影响判断、需收缩时间点表。
-6. 参数核查输出规则：
-   - 若 param_check.is_compliant=true：输出"参数核查结论：✅ 合规"
-   - 若 param_check.is_compliant=false：输出 param_check.report_content（包含不合规明细表）
-7. 白名单信息输出规则（当 is_whitelist=true 时）：
-   - 是否白名单：使用 is_whitelist 字段
-   - 原因说明：使用 whitelist_reason 字段
-   - 节电时间段：使用 jd_starttime ~ jd_endtime（如有）
-   - 风险提示：白名单小区不支持开启该项节能技术，请注意修改风险
-
-输出格式示例（all 模式）：
-### 小区节能/扩展总结（xxx小区 | 460-00-xxx-xx | 2026-03-30）
-
-**概览结论**：该小区当前高负荷状态为 `正常小区/高负荷预警小区`。请参考以下扩展与收缩详情。
-
-#### 一、节能扩展
-**1.1 容量与风险说明**：当前高负荷状态为 `...`。
-**1.2 低业务时段与休眠情况匹配表**：
-（直接输出 expansion_table）
-
-**1.3 参数核查结论**：
-（根据 param_check.is_compliant 输出合规说明或不合规表格）
-
-#### 二、节能收缩
-**2.1 周边200米关联小区高负荷影响判断**：...
-**2.2 需收缩的节能时间点表**：
-（直接输出 constriction_table）
-
-#### 三、特殊情况备注
-**3.1 节电白名单匹配情况**：
-- 是否白名单：{{is_whitelist}}
-- 原因说明：{{whitelist_reason}}
-- 节电时间段：{{jd_starttime}} ~ {{jd_endtime}}（如有）
-- 风险提示：白名单小区不支持开启该项节能技术，请注意修改风险。
-
-###工具6：analyze_batch_cells_energy（批量小区节电诊断）
-触发条件：用户输入地市、区县、厂家，要求进行"批量核查"、"批量分析"、"批量诊断"。
-参数提取规则：
-- county_name: 区县名称（必填，如"芙蓉区"），若用户未提供区县，提示需要提供。
-- dist_name: 地市名称（可选，如"长沙市"）。
-- prod_name: 厂家名称（可选，如"华为"、"中兴"）。
-- stat_time: 统计日期，可选，默认最新日期。
-
-返回规则（工具返回结构化数据，需组装报告）：
-1. 输出标题：批量分析小区节能/扩展总结（query_desc）
-2. 输出概览结论（使用 stats 字段）：
-   - 总计分析小区数量 XX 个
-   - 其中 XX 个需要进行高负荷压降
-   - XX 个可进行休眠时间扩展
-   - XX 个休眠对周边邻近小区造成高负荷压力需要收缩节能时间段
-   - XX 个存在特殊情况白名单需注意修改风险
-3. 提供 Excel 下载链接
-
-输出格式示例：
-### 批量分析小区节能/扩展总结（地市=长沙市 | 区县=芙蓉区）
-
-**概览结论**：
-- 总计分析小区数量 **100** 个。
-- 其中 **5** 个需要进行高负荷压降。
-- **30** 个可进行休眠时间扩展。
-- **8** 个休眠对周边邻近小区造成高负荷压力需要收缩节能时间段。
-- **3** 个存在特殊情况白名单需注意修改风险。
-
-📥 [点击此处下载完整批量分析 Excel 报告](工具返回的真实 download_url)
-
-## 全局回答规则
-1. 工具返回 success=False 且包含"暂未开放" → 告知建设中；其他错误 → 告知原因，绝不编造。
-2. 工具返回 report_content → 直接输出，不二次加工。
-3. 工具返回 data 列表 → 提取关键数据总结，不返回原始 JSON。
-4. 涉及4G和5G的非对比查询 → 分两次调 summary。对比查询 → 调 freeform。
-5. 工具返回包含 download_url → 必须读取结果中的真实 `download_url` 字段值，并原样填入 Markdown 链接地址；禁止自行改写、截断或重拼该链接。
-6. 涉及的节能数据，与能耗有关的统一称呼“能耗”，不允许叫“功耗”，且单位为kwh或度。
-"""
-
-
 async def _execute_tool(
     tool_name: str,
     tool_args: dict[str, Any],
@@ -395,7 +296,7 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
     5. 达到最大步数时强制终止
 
     Args:
-        messages: 对话消息列表，OpenAI 格式。必须包含 system 消息或自动添加。
+        messages: 对话消息列表，OpenAI 格式。运行时会统一重建 system 消息。
 
     Yields:
         StreamEvent: 每个执行步骤对应的流式事件。
@@ -403,30 +304,7 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
     settings = get_settings()
     max_steps: int = settings.agent_max_steps
 
-    # 计算动态日期
-    current_date = datetime.now().strftime("%Y-%m-%d")
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-
-    # 构建增强版 system prompt（动态注入时间 + 追加节能分析指引）
-    enhanced_system_prompt = settings.agent_system_prompt + ENERGY_SAVING_PROMPT_APPENDIX.format(
-        current_date=current_date,
-        yesterday=yesterday,
-    )
-
-    # 确保有 system prompt
-    if not messages or messages[0].get("role") != "system":
-        messages = [
-            {"role": "system", "content": enhanced_system_prompt},
-            *messages,
-        ]
-    else:
-        # 如果已有 system prompt，检查是否已包含节能指引，避免重复追加
-        original_content = messages[0]["content"]
-        if "节能分析助手" not in original_content:
-            messages[0]["content"] = original_content + ENERGY_SAVING_PROMPT_APPENDIX.format(
-                current_date=current_date,
-                yesterday=yesterday,
-            )
+    messages = _normalize_messages_with_system_prompt(messages)
     
     steps: int = 0
     tools: list[dict[str, Any]] = tool_registry.get_tools_for_llm()
@@ -640,6 +518,13 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     })
 
                 logger.info("第 %d 步工具调用完成，共 %d 个工具", steps, len(results))
+
+                if _is_direct_answer_eligible(results):
+                    direct_answer = _extract_direct_answer_from_tool_result(results[0])
+                    if direct_answer:
+                        logger.info("第 %d 步命中工具结果直出: tool=%s, answer_len=%d", steps, results[0].get("tool"), len(direct_answer))
+                        yield StreamEvent(event_type="final_answer", data=direct_answer)
+                        return
 
                 if steps == max_steps:
                     logger.warning("达到最大步数 %d，强制终止", max_steps)
