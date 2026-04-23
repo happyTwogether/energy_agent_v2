@@ -8,7 +8,7 @@
 - jd_cell_around: 周边小区高负荷信息
 """
 
-import json
+import asyncio
 from datetime import datetime
 from typing import Any
 
@@ -22,10 +22,6 @@ from app.tools.registry import tool_registry
 DB_SCHEMA_AGENT = get_settings().db_schema_agent
 
 logger = get_logger("energy_saving_tool")
-
-# 阈值配置
-# 低业务阈值：上下行流量和（单位：MB），小于此值为低业务
-LOW_TRAFFIC_THRESHOLD_MB: float = 500.0
 
 # 周边小区距离阈值（单位：米）
 AROUND_DISTANCE_THRESHOLD: float = 200.0
@@ -84,10 +80,12 @@ async def analyze_single_cell_energy(
     if stat_time:
         query_date = _parse_stat_time(stat_time)
     else:
-        # 查询最新日期
+        # 查询各表的最新日期，取最小值确保所有表都有数据
         latest_sql = text(f"""
-            SELECT MAX(stat_time) as max_date
-            FROM {DB_SCHEMA_AGENT}.jd_cell_detail_hour_nr
+            SELECT LEAST(
+                (SELECT MAX(stat_time) FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day),
+                (SELECT MAX(stat_time) FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day)
+            ) as max_date
         """)
         latest_result = await db.execute(latest_sql)
         latest_row = latest_result.mappings().first()
@@ -105,13 +103,35 @@ async def analyze_single_cell_energy(
         "stat_time": display_date,
     }
 
-    # ── Step 2: 扩展分析（查询 jd_cell_expansion_day）──
+    # ── Step 2 & 3: 并行执行扩展分析、收缩分析、参数核查 ──
+    tasks = []
+    task_names = []
+
     if need_expansion:
-        expansion_result = await _query_expansion_data(db, cgi, query_date)
+        tasks.append(_query_expansion_data(db, cgi, query_date))
+        task_names.append("expansion")
+
+    if need_constriction:
+        tasks.append(_query_constriction_data(db, cgi, query_date))
+        task_names.append("constriction")
+
+    # 参数核查也加入并行（扩展分析需要）
+    if need_expansion:
+        tasks.append(_query_param_check(db, cgi, display_date))
+        task_names.append("param_check")
+
+    # 并行执行所有查询
+    results = await asyncio.gather(*tasks) if tasks else []
+    results_map = dict(zip(task_names, results))
+
+    # 处理扩展分析结果
+    if "expansion" in results_map:
+        expansion_result = results_map["expansion"]
         result["expansion_data"] = expansion_result["data"]
         result["expansion_table"] = expansion_result["table"]
-        result["is_high_load"] = expansion_result["is_high_load"]
-        result["param_check"] = expansion_result["param_check"]
+        result["high_load_type"] = expansion_result.get("high_load_type", "否")
+        # 参数核查结果
+        result["param_check"] = results_map.get("param_check", {"is_compliant": True})
         # 节电信息 & 白名单信息（统一从扩展表获取）
         result["jd_type"] = expansion_result.get("jd_type")
         result["jd_reason"] = expansion_result.get("reason")
@@ -125,9 +145,9 @@ async def analyze_single_cell_energy(
         result["county_name"] = expansion_result.get("county_name") or "-"
         result["prod_name"] = expansion_result.get("prod_name") or "-"
 
-    # ── Step 3: 收缩分析（查询 jd_cell_constriction_day + jd_cell_around）──
-    if need_constriction:
-        constriction_result = await _query_constriction_data(db, cgi, query_date)
+    # 处理收缩分析结果
+    if "constriction" in results_map:
+        constriction_result = results_map["constriction"]
         result["constriction_data"] = constriction_result["data"]
         result["constriction_table"] = constriction_result["table"]
         # 基础信息（如果扩展分析没查，从收缩结果获取）
@@ -143,7 +163,7 @@ async def analyze_single_cell_energy(
     # ── Step 4: 仅负荷状态 ──
     if need_load and not need_expansion:
         load_info = await _check_high_load_with_base_info(db, cgi, query_date)
-        result["is_high_load"] = load_info.get("is_high_load", False)
+        result["high_load_type"] = load_info.get("high_load_type", "否")
         # 基础信息
         if "cell_name" not in result:
             result["cell_name"] = load_info.get("cell_name") or cgi
@@ -158,6 +178,7 @@ async def analyze_single_cell_energy(
     result.setdefault("prod_name", "-")
     result.setdefault("is_whitelist", False)
     result.setdefault("whitelist_reason", "无")
+    result.setdefault("high_load_type", "否")
 
     return result
 
@@ -169,22 +190,44 @@ async def _query_expansion_data(
     """查询扩展分析数据。
 
     数据来源：
-    - jd_cell_expansion_day: 高负荷状态、白名单信息、节电时间段
-    - jd_cell_detail_hour_nr: 15天聚合数据生成表格
+    - jd_cell_expansion_day: 低业务时段预计算结果
+    - jd_cell_detail_hour_nr: 休眠时长数据
     """
     from datetime import timedelta
 
-    # ── 1. 从 jd_cell_expansion_day 获取高负荷状态和白名单信息 ──
-    expansion_sql = text(f"""
-        SELECT is_highload, jd_type, reason, starttime, endtime, is_whitelist,
-               cell_name, dist_name, county_name, prod_name, gnb_name
-        FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
-        WHERE cgi = :cgi AND stat_time = :stat_time
-    """)
-    expansion_result = await db.execute(expansion_sql, {"cgi": cgi, "stat_time": stat_time})
-    expansion_row = expansion_result.mappings().first()
+    # 并行查询：基础信息 + 休眠时长
+    async def _query_base_info():
+        expansion_sql = text(f"""
+            SELECT is_highload, jd_type, reason, starttime, endtime, is_whitelist,
+                   cell_name, dist_name, county_name, prod_name, hour_detail
+            FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
+            WHERE cgi = :cgi AND stat_time = :stat_time
+        """)
+        result = await db.execute(expansion_sql, {"cgi": cgi, "stat_time": stat_time})
+        return result.mappings().first()
 
-    is_high_load = False
+    async def _query_sleep_data():
+        night_hours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 22, 23]
+        start_date = stat_time - timedelta(days=14)
+        sleep_sql = text(f"""
+            SELECT hours,
+                   AVG(ee_shallowsleeptimerru + ee_deepsleeptimerru + ee_supersleeptimerru) as avg_sleep_sum
+            FROM {DB_SCHEMA_AGENT}.jd_cell_detail_hour_nr
+            WHERE cgi = :cgi
+              AND stat_time >= :start_date
+              AND stat_time <= :end_date
+              AND hours = ANY(:night_hours)
+            GROUP BY hours
+            ORDER BY hours
+        """)
+        result = await db.execute(sleep_sql, {
+            "cgi": cgi, "start_date": start_date, "end_date": stat_time, "night_hours": night_hours
+        })
+        return result.mappings().all()
+
+    base_row, sleep_rows = await asyncio.gather(_query_base_info(), _query_sleep_data())
+
+    high_load_type = "否"
     jd_type = None
     reason = None
     starttime = None
@@ -194,64 +237,37 @@ async def _query_expansion_data(
     dist_name = None
     county_name = None
     prod_name = None
-    gnb_name = None
+    hour_detail = []
 
-    if expansion_row:
-        is_highload_raw = expansion_row.get("is_highload")
-        is_high_load = is_highload_raw == "是" if is_highload_raw else False
-        jd_type = expansion_row.get("jd_type")
-        reason = expansion_row.get("reason")
-        starttime = expansion_row.get("starttime")
-        endtime = expansion_row.get("endtime")
-        is_whitelist = bool(expansion_row.get("is_whitelist"))
-        cell_name = expansion_row.get("cell_name")
-        dist_name = expansion_row.get("dist_name")
-        county_name = expansion_row.get("county_name")
-        prod_name = expansion_row.get("prod_name")
-        gnb_name = expansion_row.get("gnb_name")
+    if base_row:
+        is_highload_raw = base_row.get("is_highload") or "否"
+        high_load_type = is_highload_raw
+        jd_type = base_row.get("jd_type")
+        reason = base_row.get("reason")
+        starttime = base_row.get("starttime")
+        endtime = base_row.get("endtime")
+        is_whitelist = bool(base_row.get("is_whitelist"))
+        cell_name = base_row.get("cell_name")
+        dist_name = base_row.get("dist_name")
+        county_name = base_row.get("county_name")
+        prod_name = base_row.get("prod_name")
+        hour_detail = _parse_hour_detail(base_row.get("hour_detail"))
 
-    # ── 2. 从 jd_cell_detail_hour_nr 获取15天聚合数据（仅夜间时段）──
-    # 夜间时段：22:00-08:00
-    night_hours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 22, 23]
+    # 构建休眠时长映射
+    sleep_map: dict[int, float] = {row["hours"]: row["avg_sleep_sum"] or 0 for row in sleep_rows}
 
-    start_date = stat_time - timedelta(days=14)
-    detail_sql = text(f"""
-        SELECT hours,
-               AVG(pdcp_upoctdl) as avg_traffic_dl,
-               AVG(pdcp_upoctul) as avg_traffic_ul,
-               AVG(ee_shallowsleeptimerru + ee_deepsleeptimerru + ee_supersleeptimerru) as avg_sleep_sum,
-               COUNT(*) as sample_count
-        FROM {DB_SCHEMA_AGENT}.jd_cell_detail_hour_nr
-        WHERE cgi = :cgi
-          AND stat_time >= :start_date
-          AND stat_time <= :end_date
-          AND hours = ANY(:night_hours)
-        GROUP BY hours
-        ORDER BY hours
-    """)
-    detail_result = await db.execute(detail_sql, {
-        "cgi": cgi, "start_date": start_date, "end_date": stat_time, "night_hours": night_hours
-    })
-    detail_rows = detail_result.mappings().all()
-
+    # 从 hour_detail 生成表格数据，合并休眠时长
     expansion_data: list[dict[str, Any]] = []
 
-    for row in detail_rows:
-        hour = row["hours"]
-        sample_count = row["sample_count"] or 0
+    for item in hour_detail:
+        hour = item.get("hour")
+        low_flow_pct = item.get("low_flow_pct", 0)
 
-        # 计算平均流量和（单位：GB → 转换为 MB）
-        avg_traffic_dl_mb = (row["avg_traffic_dl"] or 0) * 1024
-        avg_traffic_ul_mb = (row["avg_traffic_ul"] or 0) * 1024
-        avg_traffic_total_mb = avg_traffic_dl_mb + avg_traffic_ul_mb
+        # 低业务判断：低业务占比 > 50%
+        is_low_business = low_flow_pct > 50
 
-        # 判断是否低业务（基于15天平均值）
-        is_low_business = avg_traffic_total_mb < LOW_TRAFFIC_THRESHOLD_MB
-
-        # 计算平均休眠时长（秒）
-        avg_sleep_sum = row["avg_sleep_sum"] or 0
-
-        # 判断是否接近0休眠（平均值 < 60秒视为接近0）
+        # 休眠时长（秒）
+        avg_sleep_sum = sleep_map.get(hour, 0)
         is_zero_sleep = avg_sleep_sum < 60
 
         # 扩展建议
@@ -259,16 +275,13 @@ async def _query_expansion_data(
             suggestion = "可扩展"
         elif not is_low_business:
             suggestion = "不建议（非低业务）"
-        elif not is_zero_sleep:
-            suggestion = "不建议（已有休眠）"
         else:
-            suggestion = "不建议"
+            suggestion = "不建议（已有休眠）"
 
         expansion_data.append({
             "hour": hour,
-            "sample_count": sample_count,
+            "low_flow_pct": low_flow_pct,
             "is_low_business": is_low_business,
-            "avg_traffic_total_mb": round(avg_traffic_total_mb, 2),
             "avg_sleep_seconds": round(avg_sleep_sum, 0),
             "avg_sleep_display": _format_sleep_duration(int(avg_sleep_sum)),
             "is_zero_sleep": is_zero_sleep,
@@ -280,40 +293,32 @@ async def _query_expansion_data(
     for item in expansion_data:
         table_rows.append(
             f"| {item['hour']:02d}:00 | {'是' if item['is_low_business'] else '否'} | "
-            f"{item['avg_sleep_display']} | {'是' if item['is_zero_sleep'] else '否'} | "
-            f"{item['suggestion']} |"
+            f"{item['low_flow_pct']:.1f}% | {item['avg_sleep_display']} | "
+            f"{'是' if item['is_zero_sleep'] else '否'} | {item['suggestion']} |"
         )
 
     table_md = (
-        "| 时间点(时) | 是否低业务 | 休眠时长累加值(15天均值) | 是否接近0休眠 | 扩展建议 |\n"
-        "|---|---|---|---|---|\n"
+        "| 时间点(时) | 是否低业务 | 低业务占比 | 休眠时长(15天均值) | 是否0休眠 | 扩展建议 |\n"
+        "|---|---|---|---|---|---|\n"
         + "\n".join(table_rows)
         if table_rows
-        else "| — | 暂无数据 | — | — | — |"
+        else "| — | 暂无数据 | — | — | — | — |"
     )
-
-    # ── 参数核查 ──
-    param_check_result = await _query_param_check(db, cgi, stat_time.strftime("%Y-%m-%d"))
 
     return {
         "data": expansion_data,
         "table": table_md,
-        "is_high_load": is_high_load,
-        "param_check": param_check_result,
+        "high_load_type": high_load_type,
         "jd_type": jd_type,
         "reason": reason,
         "starttime": starttime.strftime("%Y-%m-%d") if starttime else None,
         "endtime": endtime.strftime("%Y-%m-%d") if endtime else None,
         "is_whitelist": is_whitelist,
-        "aggregation_days": 15,
-        "start_date": start_date.strftime("%Y-%m-%d"),
-        "end_date": stat_time.strftime("%Y-%m-%d"),
         # 基础信息
         "cell_name": cell_name,
         "dist_name": dist_name,
         "county_name": county_name,
         "prod_name": prod_name,
-        "gnb_name": gnb_name,
     }
 
 
@@ -328,32 +333,27 @@ async def _query_constriction_data(
     关联 jd_cell_around 获取周边高负荷证据。
     """
     # 查询收缩数据（包含基础信息）
-    # 字段说明：hours=节能收缩时间节点, around_cgi=影响源小区, around_cgi_cell_name=影响源小区名
     constriction_sql = text(f"""
         SELECT hours, reason, around_cgi, around_cgi_cell_name,
-               is_whitelist, cell_name, dist_name, county_name, prod_name, gnb_name
+               is_whitelist, cell_name, dist_name, county_name, prod_name
         FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day
         WHERE cgi = :cgi AND stat_time = :stat_time
     """)
     constriction_result = await db.execute(constriction_sql, {"cgi": cgi, "stat_time": stat_time})
     constriction_rows = constriction_result.mappings().all()
 
-    # 查询周边小区高负荷信息
+    # 查询周边小区距离信息（用于证据字段）
     around_sql = text(f"""
-        SELECT around_cgi, around_cgi_network_type, distance, is_high_load
+        SELECT around_cgi, distance
         FROM {DB_SCHEMA_AGENT}.jd_cell_around
         WHERE cgi = :cgi AND distance <= :distance_threshold
     """)
     around_result = await db.execute(around_sql, {"cgi": cgi, "distance_threshold": AROUND_DISTANCE_THRESHOLD})
     around_rows = around_result.mappings().all()
 
-    # 构建周边高负荷映射
-    around_high_load_map = {
-        row["around_cgi"]: {
-            "network_type": row.get("around_cgi_network_type", "-"),
-            "distance": row["distance"],
-            "is_high_load": bool(row.get("is_high_load", 0)),
-        }
+    # 构建周边小区距离映射
+    around_distance_map: dict[str, float] = {
+        row["around_cgi"]: row["distance"]
         for row in around_rows
     }
 
@@ -364,7 +364,6 @@ async def _query_constriction_data(
     dist_name = None
     county_name = None
     prod_name = None
-    gnb_name = None
 
     if constriction_rows:
         is_whitelist = bool(constriction_rows[0].get("is_whitelist"))
@@ -373,8 +372,7 @@ async def _query_constriction_data(
         dist_name = constriction_rows[0].get("dist_name")
         county_name = constriction_rows[0].get("county_name")
         prod_name = constriction_rows[0].get("prod_name")
-        gnb_name = constriction_rows[0].get("gnb_name")
-        # 白名单原因可能在多条记录中，取第一条有值的
+        # 白名单原因：取第一条有 reason 值的记录
         for row in constriction_rows:
             if row.get("reason"):
                 whitelist_reason = row["reason"]
@@ -382,24 +380,17 @@ async def _query_constriction_data(
 
     for row in constriction_rows:
         hour = row["hours"]
-        reason = row["reason"] or "—"
+        # 触发收缩原因：固定文案（hours 是收缩节点，说明该时间点节电导致周边小区高负荷）
+        reason = "该时间点节电导致周边小区高负荷"
         related_cgi = row["around_cgi"] or "—"
         related_name = row["around_cgi_cell_name"] or "—"
 
-        # 获取证据字段
-        around_info = around_high_load_map.get(related_cgi, {})
-        evidence = "—"
-        if around_info:
-            if around_info.get("is_high_load"):
-                evidence = f"高负荷=是，距离{around_info.get('distance', 0):.0f}米"
-            else:
-                evidence = f"高负荷=否，距离{around_info.get('distance', 0):.0f}米"
+        # 获取距离信息用于证据字段
+        distance = around_distance_map.get(related_cgi, 0)
+        evidence = f"该时段高负荷=是，距离{distance:.0f}米"
 
-        # 收缩建议
-        if around_info.get("is_high_load"):
-            suggestion = "剔除"
-        else:
-            suggestion = "观察"
+        # 收缩建议：既然 hours 是收缩节点，周边肯定高负荷，建议收缩节电
+        suggestion = "收缩节电"
 
         constriction_data.append({
             "constriction_hour": hour,
@@ -413,9 +404,11 @@ async def _query_constriction_data(
     # 生成表格
     table_rows = []
     for item in constriction_data:
+        # 关联小区显示格式：小区名称(CGI)
+        related_display = f"{item['related_cell_name']}({item['related_cgi']})" if item['related_cgi'] != "—" else "—"
         table_rows.append(
             f"| {item['constriction_hour'] or '—'} | {item['reason']} | "
-            f"{item['related_cell_name']}({item['related_cgi']}) | "
+            f"{related_display} | "
             f"{item['evidence']} | {item['suggestion']} |"
         )
 
@@ -438,14 +431,13 @@ async def _query_constriction_data(
         "dist_name": dist_name,
         "county_name": county_name,
         "prod_name": prod_name,
-        "gnb_name": gnb_name,
     }
 
 
 async def _check_high_load_with_base_info(db: AsyncSession, cgi: str, stat_time: datetime) -> dict[str, Any]:
-    """检查小区是否高负荷，同时获取基础信息（从 jd_cell_expansion_day 表查询）。"""
+    """检查小区是否高负荷，同时获取基础信息。"""
     sql = text(f"""
-        SELECT is_highload, cell_name, dist_name, county_name, prod_name, gnb_name
+        SELECT is_highload, cell_name, dist_name, county_name, prod_name
         FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
         WHERE cgi = :cgi AND stat_time = :stat_time
     """)
@@ -453,16 +445,14 @@ async def _check_high_load_with_base_info(db: AsyncSession, cgi: str, stat_time:
     row = result.mappings().first()
 
     if not row:
-        return {"is_high_load": False}
+        return {"high_load_type": "否"}
 
-    is_highload_raw = row.get("is_highload")
     return {
-        "is_high_load": is_highload_raw == "是" if is_highload_raw else False,
+        "high_load_type": row.get("is_highload") or "否",
         "cell_name": row.get("cell_name"),
         "dist_name": row.get("dist_name"),
         "county_name": row.get("county_name"),
         "prod_name": row.get("prod_name"),
-        "gnb_name": row.get("gnb_name"),
     }
 
 
@@ -499,6 +489,25 @@ def _parse_stat_time(stat_time: str | datetime | None) -> datetime | None:
     return datetime.strptime(stat_time, "%Y-%m-%d")
 
 
+def _parse_hour_detail(hour_detail_raw: Any) -> list[dict]:
+    """解析 hour_detail 字段。
+
+    格式：[{"hour": 0, "low_flow_pct": 85.5}, ...]
+    """
+    if not hour_detail_raw:
+        return []
+    if isinstance(hour_detail_raw, list):
+        return hour_detail_raw
+    if isinstance(hour_detail_raw, str):
+        try:
+            import json
+            result = json.loads(hour_detail_raw)
+            return result if isinstance(result, list) else []
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
 def _format_sleep_duration(seconds: int | None) -> str:
     """将休眠时长（秒）格式化为可读字符串。"""
     if seconds is None:
@@ -515,4 +524,5 @@ def _format_sleep_duration(seconds: int | None) -> str:
         parts.append(f"{minutes}分钟")
     if secs > 0:
         parts.append(f"{secs}秒")
+    return "".join(parts)
     return "".join(parts)
