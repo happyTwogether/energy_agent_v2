@@ -225,22 +225,21 @@ class LLMClient:
 
             async for chunk in response:
                 chunk_count += 1
-                data = chunk.model_dump()
-                choices = data.get("choices") or []
+                choices = chunk.choices or []
 
                 if choices:
-                    delta = choices[0].get("delta", {})
-                    content = delta.get("content") or ""
+                    choice = choices[0]
+                    delta = choice.delta
+                    content = delta.content if delta else None
                     if content:
                         collected_content += content
 
                     # 检查是否是结束 chunk，尝试提取工具调用
-                    finish_reason = choices[0].get("finish_reason")
+                    finish_reason = choice.finish_reason
                     if finish_reason and collected_content and tools and settings.llm_tool_call_fallback_enabled:
                         inspection = inspect_tool_call_content(collected_content)
                         if inspection.tool_calls:
                             logger.info("流式响应中提取到 %d 个工具调用", len(inspection.tool_calls))
-                            # 构造流式格式的 tool_calls（分多个 chunk 发送，模拟流式行为）
                             for i, tc in enumerate(inspection.tool_calls):
                                 yield {
                                     "choices": [{
@@ -252,7 +251,6 @@ class LLMClient:
                                         "finish_reason": None
                                     }]
                                 }
-                            # 最后发送结束 chunk
                             yield {
                                 "choices": [{
                                     "index": 0,
@@ -283,7 +281,7 @@ class LLMClient:
                             }
                             continue
 
-                yield data
+                yield chunk.model_dump()
 
             logger.info("LLM stream_chat 完成, 共 %d chunks", chunk_count)
         except Exception as exc:

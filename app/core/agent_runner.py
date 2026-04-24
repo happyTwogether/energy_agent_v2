@@ -27,7 +27,7 @@ from app.tools.registry import tool_registry
 
 logger = get_logger("agent_runner")
 
-_IDLE_TIMEOUT_SEC = 60  # 连续 30 秒无新 chunk 才认为流挂起
+_IDLE_TIMEOUT_SEC = 20  # 连续 N 秒无新 chunk 才认为流挂起
 
 # 上下文长度限制配置
 _MAX_TOOL_RESULT_CHARS = 5000  # 单个工具结果最大字符数
@@ -316,7 +316,7 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
 
             # 清理旧消息，保持上下文在限制内
             messages[:] = _prune_old_messages(messages)
-
+            logger.debug("messages: %s", messages)
             yield StreamEvent(
                 event_type="agent_step",
                 data={"step": steps, "max_steps": max_steps},
@@ -370,7 +370,7 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                                 collected_tool_calls[idx]["function"]["arguments"] += fn["arguments"]
             except asyncio.TimeoutError:
                 # 30秒无新 chunk → DeepSeek 流式 API 挂起，降级为非流式
-                logger.warning("流式调用挂起（第 %d 步，已等待30秒），降级为非流式调用", steps)
+                logger.warning("流式调用挂起（第 %d 步，已等待%d秒），降级为非流式调用", steps, _IDLE_TIMEOUT_SEC)
                 _stream_fallback_needed = True
             except LLMError as exc:
                 # 流式中途连接断开 → 同样降级，比报错更可靠
@@ -391,9 +391,7 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     # 【关键修复】输出降级后获取的内容（扣除已输出的部分）
                     if fb_content and len(fb_content) > len(collected_content):
                         remaining = fb_content[len(collected_content):]
-                        # 流式输出剩余内容，保持用户体验连贯
-                        for char in remaining:
-                            yield StreamEvent(event_type="token", data=char)
+                        yield StreamEvent(event_type="token", data=remaining)
                         collected_content = fb_content
 
                     if fb_tool_calls:
@@ -408,12 +406,11 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     yield StreamEvent(event_type="error", data=str(retry_exc))
                     return
 
-            settings = get_settings()
             tool_calls: list[dict[str, Any]] | None = (
                 list(collected_tool_calls.values()) if collected_tool_calls else None
             )
 
-            if not tool_calls and collected_content and settings.llm_tool_call_fallback_enabled:
+            if not tool_calls and collected_content and not suspected_tool_draft and settings.llm_tool_call_fallback_enabled:
                 inspection = inspect_tool_call_content(collected_content)
                 if inspection.tool_calls:
                     tool_calls = inspection.tool_calls
@@ -555,8 +552,7 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                             # 【关键修复】输出降级后获取的内容（扣除已输出的部分）
                             if fb_content and len(fb_content) > len(final_collected):
                                 remaining = fb_content[len(final_collected):]
-                                for char in remaining:
-                                    yield StreamEvent(event_type="token", data=char)
+                                yield StreamEvent(event_type="token", data=remaining)
                                 final_collected = fb_content
                         except LLMError:
                             pass
