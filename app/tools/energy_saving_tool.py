@@ -127,11 +127,18 @@ async def analyze_single_cell_energy(
     # 处理扩展分析结果
     if "expansion" in results_map:
         expansion_result = results_map["expansion"]
-        result["expansion_data"] = expansion_result["data"]
+        # 【优化】不再返回原始 expansion_data，只返回表格
         result["expansion_table"] = expansion_result["table"]
         result["high_load_type"] = expansion_result.get("high_load_type", "否")
-        # 参数核查结果
-        result["param_check"] = results_map.get("param_check", {"is_compliant": True})
+        # 参数核查结果（仅保留关键字段）
+        param_check_raw = results_map.get("param_check", {"is_compliant": True})
+        result["param_check"] = {
+            "is_compliant": param_check_raw.get("is_compliant", True),
+            "unqualified_count": param_check_raw.get("unqualified_count", 0),
+        }
+        # 如果不合规，保留不合规项（用于表格输出）
+        if not param_check_raw.get("is_compliant", True):
+            result["param_check"]["unqualified_items"] = param_check_raw.get("unqualified_items", [])[:10]  # 最多10项
         # 节电信息 & 白名单信息（统一从扩展表获取）
         result["jd_type"] = expansion_result.get("jd_type")
         result["jd_reason"] = expansion_result.get("reason")
@@ -148,7 +155,7 @@ async def analyze_single_cell_energy(
     # 处理收缩分析结果
     if "constriction" in results_map:
         constriction_result = results_map["constriction"]
-        result["constriction_data"] = constriction_result["data"]
+        # 【优化】不再返回原始 constriction_data，只返回表格
         result["constriction_table"] = constriction_result["table"]
         # 基础信息（如果扩展分析没查，从收缩结果获取）
         if "cell_name" not in result:
