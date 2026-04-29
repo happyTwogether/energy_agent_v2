@@ -6,6 +6,7 @@
 - jd_cell_detail_hour_nr: 小时级明细（流量、休眠时长），用于15天聚合分析
 - jd_cell_constriction_day: 收缩分析数据
 - jd_cell_around: 周边小区高负荷信息
+- jd_cell_pre_hour_busy: 休眠生效前高负荷数据
 """
 
 import asyncio
@@ -27,15 +28,16 @@ logger = get_logger("energy_saving_tool")
 AROUND_DISTANCE_THRESHOLD: float = 200.0
 
 @tool_registry.tool(
-    description="""分析单个5G小区的节电详情，包含休眠扩展、休眠收缩和负荷状态。
+    description="""分析单个5G小区的节电详情，包含休眠扩展、休眠收缩、负荷状态和休眠生效前高负荷。
 
 参数说明:
 - cgi: 小区全球标识 (格式 460-00-xxx-xxx)，必填
 - analysis_target: 分析目标类型:
-  * "all"          — 输出完整报告（扩展+收缩+备注）
-  * "expansion"    — 仅输出节能扩展分析
-  * "constriction" — 仅输出节能收缩分析
-  * "load"         — 仅输出高负荷状态
+  * "all"           — 输出完整报告（扩展+收缩+备注）
+  * "expansion"     — 仅输出节能扩展分析
+  * "constriction"  — 仅输出节能收缩分析
+  * "load"          — 仅输出高负荷状态
+  * "pre_sleep_load"— 仅输出休眠生效前高负荷分析
 - stat_time: 统计日期 (YYYY-MM-DD)，可选，默认查询最新日期
 
 核心原则: 返回结构化数据 + 基础表格，由 LLM 组装最终报告。
@@ -49,8 +51,8 @@ AROUND_DISTANCE_THRESHOLD: float = 200.0
             },
             "analysis_target": {
                 "type": "string",
-                "enum": ["all", "expansion", "constriction", "load"],
-                "description": "分析目标: all=全量报告, expansion=休眠扩展, constriction=休眠收缩, load=负荷状态",
+                "enum": ["all", "expansion", "constriction", "load", "pre_sleep_load"],
+                "description": "分析目标: all=全量报告, expansion=休眠扩展, constriction=休眠收缩, load=负荷状态, pre_sleep_load=休眠生效前高负荷",
             },
             "stat_time": {
                 "type": "string",
@@ -75,10 +77,20 @@ async def analyze_single_cell_energy(
     need_expansion = analysis_target in ("all", "expansion")
     need_constriction = analysis_target in ("all", "constriction")
     need_load = analysis_target in ("all", "load")
+    need_pre_sleep_load = analysis_target == "pre_sleep_load"
 
     # ── Step 1: 确定查询日期 ──
     if stat_time:
         query_date = _parse_stat_time(stat_time)
+    elif need_pre_sleep_load:
+        # pre_sleep_load 单独查询 jd_cell_pre_hour_busy 表的最新日期
+        latest_sql = text(f"""
+            SELECT MAX(stat_time) as max_date
+            FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
+        """)
+        latest_result = await db.execute(latest_sql)
+        latest_row = latest_result.mappings().first()
+        query_date = latest_row["max_date"] if latest_row else None
     else:
         # 查询各表的最新日期，取最小值确保所有表都有数据
         latest_sql = text(f"""
@@ -177,6 +189,17 @@ async def analyze_single_cell_energy(
             result["dist_name"] = load_info.get("dist_name") or "-"
             result["county_name"] = load_info.get("county_name") or "-"
             result["prod_name"] = load_info.get("prod_name") or "-"
+
+    # ── Step 5: 休眠生效前高负荷分析 ──
+    if need_pre_sleep_load:
+        pre_sleep_result = await _query_pre_sleep_load_data(db, cgi, query_date)
+        result["pre_sleep_load_table"] = pre_sleep_result["table"]
+        result["high_prb_days_7d"] = pre_sleep_result.get("high_prb_days_7d", 0)
+        # 基础信息
+        result["cell_name"] = pre_sleep_result.get("cell_name") or cgi
+        result["dist_name"] = pre_sleep_result.get("dist_name") or "-"
+        result["county_name"] = pre_sleep_result.get("county_name") or "-"
+        result["prod_name"] = pre_sleep_result.get("prod_name") or "-"
 
     # 确保基础信息有默认值
     result.setdefault("cell_name", cgi)
@@ -420,7 +443,7 @@ async def _query_constriction_data(
         )
 
     if not table_rows:
-        table_rows.append("| — | 暂无收缩数据 | — | — | — |")
+        table_rows.append("| — | 该小区无需收缩 | — | — | — |")
 
     table_md = (
         "| 原节能生效时间点 | 触发收缩原因 | 关联小区名称 | 证据字段 | 收缩建议 |\n"
@@ -532,4 +555,175 @@ def _format_sleep_duration(seconds: int | None) -> str:
     if secs > 0:
         parts.append(f"{secs}秒")
     return "".join(parts)
-    return "".join(parts)
+
+
+def _check_is_pre_sleep_hour(prb_hour: int | None, sleep_hour: str | None) -> bool:
+    """判断是否为休眠前一小时。
+
+    Args:
+        prb_hour: 上一小时时间点（整数，如 22 表示 22:00-23:00）
+        sleep_hour: 休眠时间点（字符串，可能包含多个时间点，如 "22,23,0"）
+
+    Returns:
+        如果 prb_hour 是休眠时间点的前一小时，返回 True。
+
+    判断逻辑：
+        如果 (prb_hour + 1) 在 sleep_hour 列表中，则为休眠前一小时。
+        例如：prb_hour=21，sleep_hour="22,23,0"，则 21+1=22 在列表中，返回 True。
+    """
+    if prb_hour is None or not sleep_hour:
+        return False
+
+    try:
+        # 解析 sleep_hour（可能是逗号分隔的多个时间点）
+        sleep_hours = [int(h.strip()) for h in sleep_hour.split(",") if h.strip()]
+        # 休眠前一小时 = 休眠时间点 - 1（处理跨天情况）
+        pre_sleep_hours = [(h - 1) % 24 for h in sleep_hours]
+        return prb_hour in pre_sleep_hours
+    except (ValueError, AttributeError):
+        return False
+
+
+async def _query_pre_sleep_load_data(
+    db: AsyncSession,
+    cgi: str,
+    stat_time: datetime,
+) -> dict[str, Any]:
+    """查询休眠生效前高负荷分析数据。
+
+    数据来源：jd_cell_pre_hour_busy
+
+    返回字段：
+        - 时间、地市名称、厂家、基站名称、小区名称、CGI
+        - 休眠类生效时长（秒）
+        - 无线利用率（%）
+        - 是否休眠前一小时
+        - 7天内休眠前1小时PRB利用率大于50%的天数
+    """
+    from datetime import timedelta
+
+    # 计算7天时间范围（包含当天共7天）
+    start_date_7d = stat_time - timedelta(days=6)
+
+    # 并行查询：当日明细 + 7天统计
+    async def _query_detail():
+        sql = text(f"""
+            SELECT
+                stat_time,
+                dist_name,
+                prod_name,
+                gnb_name,
+                cell_name,
+                cgi,
+                ee_shallowsleeptimerru,
+                ee_deepsleeptimerru,
+                ee_supersleeptimerru,
+                prb_hour,
+                prb_rate_ul,
+                prb_rate_dl,
+                sleep_hour
+            FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
+            WHERE cgi = :cgi
+              AND stat_time = :stat_time
+            ORDER BY stat_time, prb_hour
+        """)
+        result = await db.execute(sql, {"cgi": cgi, "stat_time": stat_time})
+        return result.mappings().all()
+
+    async def _query_7day_stats():
+        # 统计7天内PRB利用率>50%的天数（上行>50%或下行>50%，任一满足）
+        sql = text(f"""
+            SELECT COUNT(DISTINCT DATE(stat_time)) AS high_prb_days
+            FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
+            WHERE cgi = :cgi
+              AND stat_time >= :start_date
+              AND stat_time <= :end_date
+              AND (prb_rate_ul > 50 OR prb_rate_dl > 50)
+        """)
+        result = await db.execute(sql, {
+            "cgi": cgi,
+            "start_date": start_date_7d,
+            "end_date": stat_time
+        })
+        row = result.mappings().first()
+        return row["high_prb_days"] if row else 0
+
+    detail_rows, high_prb_days = await asyncio.gather(
+        _query_detail(), _query_7day_stats()
+    )
+
+    # 构建表格数据
+    data: list[dict[str, Any]] = []
+    for row in detail_rows:
+        # 计算休眠类生效时长（浅层+深度+极致）
+        total_sleep_seconds = (
+            (row.get("ee_shallowsleeptimerru") or 0) +
+            (row.get("ee_deepsleeptimerru") or 0) +
+            (row.get("ee_supersleeptimerru") or 0)
+        )
+
+        # 计算无线利用率（取上下行较大值）
+        prb_rate_ul = row.get("prb_rate_ul") or 0
+        prb_rate_dl = row.get("prb_rate_dl") or 0
+        prb_rate = max(prb_rate_ul, prb_rate_dl)
+
+        # 判断是否休眠前一小时
+        is_pre_sleep_hour = _check_is_pre_sleep_hour(
+            row.get("prb_hour"),
+            row.get("sleep_hour")
+        )
+
+        # 格式化时间：stat_time + prb_hour
+        stat_time_val = row.get("stat_time")
+        prb_hour_val = row.get("prb_hour")
+        if stat_time_val and prb_hour_val is not None:
+            time_display = f"{stat_time_val.strftime('%Y-%m-%d')} {prb_hour_val:02d}:00:00"
+        else:
+            time_display = "-"
+
+        data.append({
+            "time": time_display,
+            "dist_name": row.get("dist_name") or "-",
+            "prod_name": row.get("prod_name") or "-",
+            "gnb_name": row.get("gnb_name") or "-",
+            "cell_name": row.get("cell_name") or "-",
+            "cgi": row.get("cgi") or cgi,
+            "sleep_seconds": total_sleep_seconds,
+            "sleep_display": _format_sleep_duration(total_sleep_seconds),
+            "prb_rate": round(prb_rate, 2),
+            "is_pre_sleep_hour": "是" if is_pre_sleep_hour else "否",
+            "high_prb_days_7d": high_prb_days,
+        })
+
+    # 生成表格
+    if not data:
+        table_md = "| — | 休眠生效前无高负荷 | — | — | — | — | — | — | — | — |"
+    else:
+        table_rows = []
+        for item in data:
+            table_rows.append(
+                f"| {item['time']} | {item['dist_name']} | {item['prod_name']} | "
+                f"{item['gnb_name']} | {item['cell_name']} | {item['cgi']} | "
+                f"{item['sleep_seconds']} | {item['prb_rate']:.2f}% | "
+                f"{item['is_pre_sleep_hour']} | {item['high_prb_days_7d']} |"
+            )
+
+        table_md = (
+            "| 时间 | 地市名称 | 厂家 | 基站名称 | 小区名称 | CGI | "
+            "休眠类生效时长(秒) | 无线利用率(%) | 是否休眠前一小时 | 7天内PRB>50%天数 |\n"
+            "|---|---|---|---|---|---|---|---|---|---|\n"
+            + "\n".join(table_rows)
+        )
+
+    # 获取基础信息（从第一条记录）
+    first_row = detail_rows[0] if detail_rows else {}
+
+    return {
+        "data": data,
+        "table": table_md,
+        "high_prb_days_7d": high_prb_days,
+        "cell_name": first_row.get("cell_name") or cgi,
+        "dist_name": first_row.get("dist_name") or "-",
+        "county_name": first_row.get("county_name") or "-",
+        "prod_name": first_row.get("prod_name") or "-",
+    }
