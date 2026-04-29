@@ -32,6 +32,9 @@ logger = get_logger("energy_param_check_tool")
 # 获取数据库 schema（规则表所在 schema）
 DB_SCHEMA_RULE = get_settings().db_schema_rule
 
+# 表示数据不可用（非合规也非不合规）的 saving_switch_state 值
+_EXCLUDED_STATES = frozenset({"北向数据缺失", "空值"})
+
 
 def _get_check_date(user_date: str | None) -> str:
     """确定核查日期。"""
@@ -149,8 +152,10 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
     - 不合规且数据量小(show_detail=True)：用表格展示不合规参数详情
     - 不合规且数据量大(show_detail=False)：仅显示统计摘要，提示下载Excel查看详情
     """
-    unqualified_items = [row for row in data if row.get("saving_switch_state") != "合格"]
-    qualified_count = len(data) - len(unqualified_items)
+    unqualified_items = [row for row in data if row.get("saving_switch_state") not in ("合格", "北向数据缺失", "空值")]
+    excluded_count = sum(1 for row in data if row.get("saving_switch_state") in _EXCLUDED_STATES)
+    qualified_count = len(data) - len(unqualified_items) - excluded_count
+    unique_unqualified_cgis = len({item["cgi"] for item in unqualified_items if item.get("cgi")})
 
     if is_single_cgi:
         # 模式 A：单小区 CGI 查询
@@ -169,15 +174,21 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
             # 全部合规
             report_md += f"**核查结论：✅ 合规**\n\n"
             report_md += f"- 经核查，该小区共 {qualified_count} 项节能参数均符合规范要求，状态合格。\n"
+            if excluded_count:
+                report_md += f"- 其中 {excluded_count} 项参数因北向数据缺失/空值无法判断，已排除统计\n"
         elif not show_detail:
             # 存在不合规项但数据量大，只显示摘要
             report_md += f"**核查结论：❌ 不合规**\n\n"
             report_md += f"- 共核查 {len(data)} 项参数，其中合格 {qualified_count} 项，**不合规 {len(unqualified_items)} 项**\n"
+            if excluded_count:
+                report_md += f"- 其中 {excluded_count} 项参数因北向数据缺失/空值无法判断，已排除统计\n"
             report_md += f"- 数据量较大，详细明细请查看 Excel 下载文件\n"
         else:
             # 存在不合规项且数据量小，显示明细表格
             report_md += f"**核查结论：❌ 不合规**\n\n"
             report_md += f"- 共核查 {len(data)} 项参数，其中合格 {qualified_count} 项，**不合规 {len(unqualified_items)} 项**\n"
+            if excluded_count:
+                report_md += f"- 其中 {excluded_count} 项参数因北向数据缺失/空值无法判断，已排除统计\n"
 
             # 不合规参数详情表格
             report_md += "\n#### 不合规参数明细\n"
@@ -199,21 +210,29 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
 
     else:
         # 模式 B：批量查询汇总
-        report_md = f"### 节能参数核查汇总报告（{query_label}）\n\n"
+        report_md = f"### 4/5G节能参数核查汇总报告（{query_label}）\n\n"
 
         if not unqualified_items:
             # 全部合规
             report_md += f"**核查结论：✅ 合规**\n\n"
             report_md += f"- 经核查，共 {qualified_count} 项节能参数均符合规范要求，状态合格。\n"
+            if excluded_count:
+                report_md += f"- 其中 {excluded_count} 项参数因北向数据缺失/空值无法判断，已排除统计\n"
         elif not show_detail:
             # 存在不合规项但数据量大，只显示摘要
             report_md += f"**核查结论：❌ 不合规**\n\n"
             report_md += f"- 共核查 {len(data)} 项参数，其中合格 {qualified_count} 项，**不合规 {len(unqualified_items)} 项**\n"
+            report_md += f"- 不合规小区涉及 **{unique_unqualified_cgis}** 个\n"
+            if excluded_count:
+                report_md += f"- 其中 {excluded_count} 项参数因北向数据缺失/空值无法判断，已排除统计\n"
             report_md += f"- 数据量较大，详细明细请查看 Excel 下载文件\n"
         else:
             # 存在不合规项且数据量小，显示明细表格
             report_md += f"**核查结论：❌ 不合规**\n\n"
             report_md += f"- 共核查 {len(data)} 项参数，其中合格 {qualified_count} 项，**不合规 {len(unqualified_items)} 项**\n"
+            report_md += f"- 不合规小区涉及 **{unique_unqualified_cgis}** 个\n"
+            if excluded_count:
+                report_md += f"- 其中 {excluded_count} 项参数因北向数据缺失/空值无法判断，已排除统计\n"
 
             # 不合规参数详情表格（含CGI列）
             report_md += "\n#### 不合规参数明细\n"
@@ -346,7 +365,9 @@ async def query_energy_param_check(
                 "report_content": f"未查询到 {query_label} 在 {date_str} 的参数核查数据。",
             }
 
-        unqualified_items = [row for row in data if row.get("saving_switch_state") != "合格"]
+        unqualified_items = [row for row in data if row.get("saving_switch_state") not in ("合格", "北向数据缺失", "空值")]
+        excluded_count = sum(1 for row in data if row.get("saving_switch_state") in _EXCLUDED_STATES)
+        unique_unqualified_cgis = len({item["cgi"] for item in unqualified_items if item.get("cgi")})
         is_single_cgi = bool(cgi)
 
         # 数据截断逻辑：超过50条时只返回前50条，报告不显示明细表格
@@ -358,8 +379,8 @@ async def query_energy_param_check(
         # 生成报告，数据量大时不显示明细表格
         report_md = _generate_report(query_label, data, is_single_cgi, show_detail=not is_truncated)
         logger.info(
-            "节能参数核查完成: date=%s, query=%s, total=%d, unqualified=%d",
-            date_str, query_label, len(data), len(unqualified_items)
+            "节能参数核查完成: date=%s, query=%s, total=%d, unqualified=%d, excluded=%d",
+            date_str, query_label, len(data), len(unqualified_items), excluded_count
         )
 
         returned_items = unqualified_items[:MAX_RETURN_ITEMS] if is_truncated else unqualified_items
@@ -371,11 +392,13 @@ async def query_energy_param_check(
             "is_compliant": len(unqualified_items) == 0,
             "total_count": len(data),
             "unqualified_count": len(unqualified_items),
-            "qualified_count": len(data) - len(unqualified_items),
+            "qualified_count": len(data) - len(unqualified_items) - excluded_count,
+            "excluded_count": excluded_count,
             "report_content": report_md,
             "unqualified_items": returned_items,
             "returned_count": len(returned_items),
             "is_truncated": is_truncated,
+            "unqualified_cgi_count": unique_unqualified_cgis,
         }
 
         # Excel 导出逻辑
