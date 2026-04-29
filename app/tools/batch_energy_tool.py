@@ -200,10 +200,21 @@ async def analyze_batch_cells_energy(
         prod = exp_info.get("prod_name") or prod_name or "-"
 
         # 节能扩展：容量与风险说明
+        # is_highload 可能的值：否(非高负荷)、上高(上行高负荷)、下高(下行高负荷)、双高(双向高负荷)
         is_highload_raw = exp_info.get("is_highload")
-        capacity_risk = "高负荷" if is_highload_raw == "是" else "非高负荷"
-        if is_highload_raw == "是":
+        if is_highload_raw == "否":
+            capacity_risk = "非高负荷"
+        else:
             stats["high_load"] += 1
+            if is_highload_raw == "上高":
+                capacity_risk = "上行高负荷"
+            elif is_highload_raw == "下高":
+                capacity_risk = "下行高负荷"
+            elif is_highload_raw == "双高":
+                capacity_risk = "双向高负荷"
+            else:
+                # 兼容旧数据或其他值，默认为高负荷
+                capacity_risk = "高负荷"
 
         # 节能扩展：低业务时段与0休眠匹配表
         hour_filter_raw = exp_info.get("hour_filter")
