@@ -486,7 +486,8 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                         )
                         return
 
-                    call_info: dict[str, Any] = {"tool": tool_name, "args": tool_args}
+                    tc_id = tool_calls[idx].get("id", f"call_{idx}")
+                    call_info: dict[str, Any] = {"tool": tool_name, "args": tool_args, "call_id": tc_id}
                     parsed_calls.append((tool_name, tool_args))
 
                     yield StreamEvent(event_type="tool_call", data=call_info)
@@ -503,9 +504,8 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     results = [t.result() for t in tasks]
 
                 for idx, result in enumerate(results):
-                    yield StreamEvent(event_type="tool_result", data=result)
-
                     tc_id: str = tool_calls[idx].get("id", f"call_{idx}")
+                    yield StreamEvent(event_type="tool_result", data={**result, "call_id": tc_id})
                     # 截断工具结果，防止上下文过长
                     truncated_content = _truncate_tool_result(result)
                     messages.append({
