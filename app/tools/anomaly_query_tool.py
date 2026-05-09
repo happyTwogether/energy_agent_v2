@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import get_settings, MAX_RETURN_ITEMS
 from app.core.logging import get_logger
 from app.tools.registry import tool_registry
 from app.utils.export_util import export_to_excel
@@ -334,27 +334,33 @@ Excel 导出:
                 "default": False,
             },
         },
-        "required": ["dist_name", "prod_name", "target_date"],
+        "required": [],
     },
 )
 async def query_anomaly(
-    dist_name: str,
-    prod_name: str,
-    target_date: str,
     db: AsyncSession,
+    dist_name: str | None = None,
+    prod_name: str | None = None,
+    target_date: str | None = None,
     export_excel: bool = False,
 ) -> dict[str, Any]:
     """诊断特定日期是否有核心指标劣化超过10%。
 
     Args:
-        dist_name: 地市名称。
-        prod_name: 设备厂家。
-        target_date: 目标诊断日期 (YYYY-MM-DD)。
+        dist_name: 地市名称，默认"全网"。
+        prod_name: 设备厂家，默认"全网"。
+        target_date: 目标诊断日期 (YYYY-MM-DD)，默认昨天。
         db: 数据库会话。
 
     Returns:
         包含异常指标列表的字典。
     """
+    from datetime import datetime, timedelta
+
+    dist_name = dist_name or "全网"
+    prod_name = prod_name or "全网"
+    target_date = target_date or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
     logger.info(
         "异常诊断: dist_name=%s, prod_name=%s, target_date=%s",
         dist_name,
@@ -386,7 +392,6 @@ async def query_anomaly(
         logger.info("5G异常指标: %s", nr_anomalies)
 
         # 数据截断逻辑：超过50条时只返回前50条，完整数据走Excel
-        MAX_RETURN_ITEMS = 50
         combined_anomalies = []
         for item in lte_anomalies:
             item["network_type"] = "4G"

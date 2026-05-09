@@ -28,7 +28,7 @@ FILTER_FIELD_ALIASES: dict[str, dict[str, str]] = {
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import get_settings, MAX_RETURN_ITEMS
 from app.core.logging import get_logger
 from app.services.llm_client import get_llm_client, LLMError
 from app.tools.registry import tool_registry
@@ -678,7 +678,6 @@ async def query_metric(
                         combined_data.append(item)
 
                     # 数据截断逻辑：超过50条时只返回前50条，完整数据走Excel
-                    MAX_RETURN_ITEMS = 50
                     is_truncated = len(combined_data) > MAX_RETURN_ITEMS
                     if is_truncated:
                         logger.info("数据量超过%d条，已截断返回前%d条", MAX_RETURN_ITEMS, MAX_RETURN_ITEMS)
@@ -718,7 +717,6 @@ async def query_metric(
                 result = await _execute_single_query(db, sql)
 
                 # 数据截断逻辑：超过50条时只返回前50条，完整数据走Excel
-                MAX_RETURN_ITEMS = 50
                 data = result.get("data", [])
                 is_truncated = len(data) > MAX_RETURN_ITEMS
                 if is_truncated:
@@ -778,7 +776,6 @@ async def query_metric(
             result = await _execute_single_query(db, sql, params)
 
             # 数据截断逻辑：超过50条时只返回前50条，完整数据走Excel
-            MAX_RETURN_ITEMS = 50
             data = result.get("data", [])
             is_truncated = len(data) > MAX_RETURN_ITEMS
             if is_truncated:

@@ -500,11 +500,11 @@ async def _query_param_check(db: AsyncSession, cgi: str, stat_time: str | None =
             "unqualified_items": result.get("unqualified_items", []),
         }
     except Exception as exc:
-        logger.warning("参数核查调用异常: %s", exc)
+        logger.error("参数核查调用异常: %s", exc, exc_info=True)
         return {
             "success": False,
-            "is_compliant": True,  # 异常时默认合规，避免误导
-            "report_content": "（参数核查暂时不可用）",
+            "is_compliant": None,
+            "error": f"参数核查暂时不可用: {exc}",
         }
 
 

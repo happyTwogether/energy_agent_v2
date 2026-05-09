@@ -8,9 +8,8 @@
 - 按 check_time 进行分区和日期过滤
 
 日期规则:
-- 用户未传 check_date 时:
-  - 当前时间 < 15:00: 使用昨天日期
-  - 当前时间 >= 15:00: 使用今天日期
+- 用户未传 check_date 时: 自动查询数据库中最新日期
+- 数据库查询失败时回退: 当前时间 < 15:00 用昨天，>= 15:00 用今天
 
 核心原则: 纯 Python 查询与报告生成，零 LLM 依赖。
 """
@@ -22,7 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import get_settings, MAX_RETURN_ITEMS
 from app.core.logging import get_logger
 from app.tools.registry import tool_registry
 from app.utils.export_util import export_to_excel
@@ -36,18 +35,31 @@ DB_SCHEMA_RULE = get_settings().db_schema_rule
 _EXCLUDED_STATES = frozenset({"北向数据缺失", "空值"})
 
 
-def _get_check_date(user_date: str | None) -> str:
-    """确定核查日期。"""
+async def _get_check_date(db: AsyncSession, user_date: str | None) -> str:
+    """确定核查日期。
+
+    优先使用用户指定日期；未指定则查询数据库中最新的 check_time，
+    若查询失败则回退到时间推断。
+    """
     if user_date:
         return user_date.replace("-", "")
 
+    try:
+        sql = text(f"SELECT MAX(check_time) AS latest FROM {DB_SCHEMA_RULE}.eng_check_result")
+        result = await db.execute(sql)
+        row = result.mappings().first()
+        if row and row.get("latest"):
+            latest = row["latest"]
+            if hasattr(latest, 'strftime'):
+                return latest.strftime("%Y%m%d")
+            return "".join(c for c in str(latest) if c.isdigit())[:8]
+    except Exception:
+        pass
+
     now = datetime.now()
     if now.hour < 15:
-        check_date = (now - timedelta(days=1)).strftime("%Y%m%d")
-    else:
-        check_date = now.strftime("%Y%m%d")
-
-    return check_date
+        return (now - timedelta(days=1)).strftime("%Y%m%d")
+    return now.strftime("%Y%m%d")
 
 
 def _build_check_time_range(check_date: str) -> tuple[datetime, datetime]:
@@ -266,9 +278,8 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
 - 按 check_time 进行分区和日期过滤
 
 日期规则:
-- 用户未传 check_date 时:
-  - 当前时间 < 15:00: 使用昨天日期
-  - 当前时间 >= 15:00: 使用今天日期
+- 用户未传 check_date 时: 自动查询数据库中最新日期
+- 数据库查询失败时回退: 当前时间 < 15:00 用昨天，>= 15:00 用今天
 
 查询优先级（至少提供一种查询条件）:
 1. 如果提供 cgi，直接用 cgi 查询（最精确，输出单小区报告）
@@ -302,7 +313,7 @@ Excel 导出:
         "properties": {
             "check_date": {
                 "type": "string",
-                "description": "核查日期 (YYYY-MM-DD)，未提及时根据当前时间自动计算（<15:00用昨天，>=15:00用今天）",
+                "description": "核查日期 (YYYY-MM-DD)，未提及时自动查询数据库最新日期",
             },
             "cgi": {
                 "type": "string",
@@ -339,7 +350,7 @@ async def query_energy_param_check(
     export_excel: bool = False,
 ) -> dict[str, Any]:
     """查询小区节能参数核查结果。"""
-    date_str = _get_check_date(check_date)
+    date_str = await _get_check_date(db, check_date)
 
     # 构建查询标签（用于日志和批量报告标题）
     query_parts = []
@@ -371,7 +382,6 @@ async def query_energy_param_check(
         is_single_cgi = bool(cgi)
 
         # 数据截断逻辑：超过50条时只返回前50条，报告不显示明细表格
-        MAX_RETURN_ITEMS = 50
         is_truncated = len(unqualified_items) > MAX_RETURN_ITEMS
         if is_truncated:
             logger.info("数据量超过%d条，报告将只显示摘要", MAX_RETURN_ITEMS)
