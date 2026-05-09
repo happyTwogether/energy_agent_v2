@@ -1,8 +1,13 @@
 """
 Agent 运行时核心模块。
 
-实现 ReAct Loop 骨架，协调 LLM 推理与工具调用，
+实现单步 Function Calling Router，协调 LLM 推理与工具调用，
 以 AsyncGenerator 方式逐步产出 StreamEvent，驱动 SSE 流式输出。
+
+架构说明：
+- 业务模式为"意图识别 → 匹配唯一工具 → 执行 → 返回结果"，不需要多步 ReAct Loop
+- 工具为自包含重型工具（内部已完成 SQL + 计算 + 表格生成）
+- 保留流式降级、tool draft 检测、直接答案提取等容错机制
 """
 
 import asyncio
@@ -28,10 +33,7 @@ from app.tools.registry import tool_registry
 logger = get_logger("agent_runner")
 
 _IDLE_TIMEOUT_SEC = 20  # 连续 N 秒无新 chunk 才认为流挂起
-
-# 上下文长度限制配置
 _MAX_TOOL_RESULT_CHARS = 5000  # 单个工具结果最大字符数
-_MAX_TOTAL_CONTEXT_CHARS = 50000  # 总上下文最大字符数（约 15k tokens）
 
 
 def _sanitize_tool_draft_text(content: str) -> str:
@@ -136,64 +138,6 @@ def _truncate_tool_result(result: Any, max_chars: int = _MAX_TOOL_RESULT_CHARS) 
     return f"{truncated}\n...(已截断 {omitted} 个字符)"
 
 
-def _estimate_context_length(messages: list[dict]) -> int:
-    """估算上下文字符数。"""
-    total = 0
-    for msg in messages:
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            total += len(content)
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, str):
-                    total += len(part)
-                elif isinstance(part, dict) and part.get("text"):
-                    total += len(part["text"])
-    return total
-
-
-def _prune_old_messages(messages: list[dict], max_chars: int = _MAX_TOTAL_CONTEXT_CHARS) -> list[dict]:
-    """清理旧消息，保持上下文在限制内。
-
-    保留：system 消息 + 最近几轮对话
-    删除：旧的 tool 结果
-    """
-    if _estimate_context_length(messages) <= max_chars:
-        return messages
-
-    # 分离 system 消息和其他消息
-    system_msg = None
-    other_msgs = []
-    for msg in messages:
-        if msg.get("role") == "system":
-            system_msg = msg
-        else:
-            other_msgs.append(msg)
-
-    # 从旧到新遍历，删除 tool 消息直到满足限制
-    pruned_msgs = []
-    for msg in other_msgs:
-        pruned_msgs.append(msg)
-
-    # 反向遍历，将旧的 tool 消息替换为简短摘要
-    tool_msg_count = 0
-    for i in range(len(pruned_msgs) - 1, -1, -1):
-        if _estimate_context_length([system_msg] + pruned_msgs) <= max_chars:
-            break
-        msg = pruned_msgs[i]
-        if msg.get("role") == "tool":
-            # 将旧的 tool 消息替换为简短提示
-            tool_msg_count += 1
-            pruned_msgs[i] = {
-                "role": "tool",
-                "tool_call_id": msg.get("tool_call_id", ""),
-                "content": "[历史工具结果已清理]",
-            }
-
-    result = [system_msg] + pruned_msgs if system_msg else pruned_msgs
-    return result
-
-
 async def _stream_with_idle_timeout(
     agen: AsyncIterator[dict[str, Any]],
 ) -> AsyncGenerator[dict[str, Any], None]:
@@ -246,24 +190,13 @@ async def _execute_tool(
     tool_args: dict[str, Any],
     db: Any | None = None,
 ) -> dict[str, Any]:
-    """执行单个工具调用，自动注入 db 上下文。
-
-    Args:
-        tool_name: 工具名称。
-        tool_args: 工具参数字典（LLM 提供）。
-        db: 数据库会话，若工具需要 db 参数则自动注入。
-
-    Returns:
-        工具执行结果字典。
-    """
+    """执行单个工具调用，自动注入 db 上下文。"""
     try:
         func = tool_registry.get_tool(tool_name)
 
-        # 检查工具函数签名，判断是否需要 db 参数
         sig = inspect.signature(func)
         params = list(sig.parameters.keys())
 
-        # 如果工具需要 db 参数，但 LLM 没提供，则注入
         if "db" in params and "db" not in tool_args:
             if db is not None:
                 tool_args = {**tool_args, "db": db}
@@ -273,7 +206,6 @@ async def _execute_tool(
                     "error": "工具需要数据库上下文，但未提供 db 参数",
                 }
 
-        # 执行工具调用
         if inspect.iscoroutinefunction(func):
             result = await func(**tool_args)
         else:
@@ -285,289 +217,404 @@ async def _execute_tool(
         return {"tool": tool_name, "error": str(exc)}
 
 
-async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[StreamEvent, None]:
-    """运行 ReAct Loop Agent，以流式方式产出事件。
+async def _collect_stream_chunks(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    yield_token,
+) -> tuple[str, dict[int, dict], str | None, bool, str | None, bool]:
+    """单次 LLM 流式调用，收集 content 和 tool_calls。
 
-    ReAct Loop 流程：
-    1. 验证并确保 messages 包含 system_prompt
-    2. 循环调用 LLM，判断是否需要工具调用
-    3. 若有 tool_calls，并发执行所有工具，将结果追加到 messages
-    4. 若 LLM 返回最终回答，输出 final_answer 事件并终止
-    5. 达到最大步数时强制终止
+    包含流式降级：超时或连接中断时自动切换非流式调用。
+
+    Returns:
+        (collected_content, collected_tool_calls, finish_reason,
+         suspected_tool_draft, suspected_tool_name, fallback_used)
+    """
+    collected_content = ""
+    collected_tool_calls: dict[int, dict] = {}
+    finish_reason: str | None = None
+    suspected_tool_draft = False
+    suspected_tool_name: str | None = None
+    fallback_needed = False
+
+    try:
+        async for chunk in _stream_with_idle_timeout(
+            get_llm_client().stream_chat(
+                messages=messages,
+                tools=tools or None,
+            )
+        ):
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0]
+            finish_reason = choice.get("finish_reason") or finish_reason
+            delta = choice.get("delta", {})
+
+            if delta.get("content"):
+                token_text = delta["content"]
+                collected_content += token_text
+                yield_token(token_text)
+
+            metadata = delta.get("metadata") or {}
+            if metadata.get("suspected_tool_draft"):
+                suspected_tool_draft = True
+                suspected_tool_name = metadata.get("suspected_tool_name") or suspected_tool_name
+
+            for tc_delta in (delta.get("tool_calls") or []):
+                idx = tc_delta["index"]
+                if idx not in collected_tool_calls:
+                    collected_tool_calls[idx] = {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    }
+                if tc_delta.get("id"):
+                    collected_tool_calls[idx]["id"] = tc_delta["id"]
+                fn = tc_delta.get("function") or {}
+                if fn.get("name"):
+                    collected_tool_calls[idx]["function"]["name"] = fn["name"]
+                if fn.get("arguments"):
+                    collected_tool_calls[idx]["function"]["arguments"] += fn["arguments"]
+    except asyncio.TimeoutError:
+        logger.warning("流式调用挂起（已等待%d秒），降级为非流式调用", _IDLE_TIMEOUT_SEC)
+        fallback_needed = True
+    except LLMError as exc:
+        logger.warning("流式调用中断: %s，降级为非流式调用", exc)
+        fallback_needed = True
+
+    if fallback_needed:
+        try:
+            fallback_resp = await get_llm_client().chat(
+                messages=messages, tools=tools or None
+            )
+            fb_choice = (fallback_resp.get("choices") or [{}])[0]
+            finish_reason = fb_choice.get("finish_reason")
+            fb_msg = fb_choice.get("message") or {}
+            fb_content = fb_msg.get("content") or ""
+            fb_tool_calls = fb_msg.get("tool_calls") or []
+
+            if fb_content and len(fb_content) > len(collected_content):
+                remaining = fb_content[len(collected_content):]
+                yield_token(remaining)
+                collected_content = fb_content
+
+            if fb_tool_calls:
+                collected_tool_calls = {i: tc for i, tc in enumerate(fb_tool_calls)}
+            else:
+                inspection = inspect_tool_call_content(fb_content)
+                suspected_tool_draft = inspection.suspected_draft
+                suspected_tool_name = inspection.suspected_tool_name or suspected_tool_name
+            logger.info("降级非流式调用成功: finish=%s", finish_reason)
+        except LLMError as retry_exc:
+            raise retry_exc
+
+    return (collected_content, collected_tool_calls, finish_reason,
+            suspected_tool_draft, suspected_tool_name, fallback_needed)
+
+
+async def _stream_llm_summary(
+    messages: list[dict[str, Any]],
+    yield_token,
+) -> str:
+    """调用 LLM 对工具结果进行总结（不带 tools，防止再次触发工具调用）。"""
+    collected = ""
+    fallback_needed = False
+
+    try:
+        async for chunk in _stream_with_idle_timeout(
+            get_llm_client().stream_chat(messages=messages, tools=None)
+        ):
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta", {})
+            if delta.get("content"):
+                token_text = delta["content"]
+                collected += token_text
+                yield_token(token_text)
+    except (asyncio.TimeoutError, LLMError) as exc:
+        logger.warning("LLM 总结流式失败: %s，降级为非流式", exc)
+        fallback_needed = True
+
+    if fallback_needed:
+        try:
+            fb = await get_llm_client().chat(messages=messages, tools=None)
+            fb_content = ((fb.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+            if fb_content and len(fb_content) > len(collected):
+                remaining = fb_content[len(collected):]
+                yield_token(remaining)
+                collected = fb_content
+        except LLMError as exc:
+            logger.error("LLM 总结降级也失败: %s", exc)
+            raise
+
+    return collected
+
+
+def _extract_tool_calls_from_text(
+    content: str,
+    settings: Any,
+    suspected_tool_draft: bool,
+) -> tuple[list[dict[str, Any]] | None, bool, str | None]:
+    """从 LLM 文本内容中提取 <tool> 标签中的工具调用（DeepSeek 兼容）。"""
+    inspection = inspect_tool_call_content(content)
+    if inspection.tool_calls:
+        logger.info("从 <tool> 标签中提取到 %d 个工具调用", len(inspection.tool_calls))
+        return inspection.tool_calls, suspected_tool_draft, None
+    elif inspection.suspected_draft:
+        logger.warning("检测到疑似工具调用草稿: tool=%s", inspection.suspected_tool_name or "unknown")
+        return None, True, inspection.suspected_tool_name
+    return None, suspected_tool_draft, None
+
+
+async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[StreamEvent, None]:
+    """运行单步 Function Calling Router，以流式方式产出事件。
+
+    流程：
+    1. 构建 system prompt + 工具列表
+    2. 单次流式 LLM 调用（含降级保护）
+    3. 无 tool_call → 直接输出 LLM 回答
+    4. 有 tool_call → 并发执行工具
+       - 工具返回 report_content → 跳过 LLM 总结，直接输出
+       - 无 report_content → 再调用 LLM 总结后输出
 
     Args:
         messages: 对话消息列表，OpenAI 格式。运行时会统一重建 system 消息。
 
     Yields:
-        StreamEvent: 每个执行步骤对应的流式事件。
+        StreamEvent: 流式事件（token / tool_call / tool_result / final_answer / error）
     """
     settings = get_settings()
-    max_steps: int = settings.agent_max_steps
 
     messages = _normalize_messages_with_system_prompt(messages)
-    
-    steps: int = 0
     tools: list[dict[str, Any]] = tool_registry.get_tools_for_llm()
 
+    # 兼容前端：发送固定 agent_step
+    yield StreamEvent(event_type="agent_step", data={"step": 1, "max_steps": 1})
+
     try:
-        while steps < max_steps:
-            steps += 1
-            logger.info("Agent 第 %d 步开始", steps)
+        # ── Phase 1: 单次 LLM 流式调用（实时流式 yield token）──
+        collected_content = ""
+        collected_tool_calls: dict[int, dict] = {}
+        finish_reason: str | None = None
+        suspected_tool_draft = False
+        suspected_tool_name: str | None = None
 
-            # 清理旧消息，保持上下文在限制内
-            messages[:] = _prune_old_messages(messages)
-            logger.debug("messages: %s", messages)
-            yield StreamEvent(
-                event_type="agent_step",
-                data={"step": steps, "max_steps": max_steps},
-            )
+        token_queue: asyncio.Queue[str] = asyncio.Queue()
+        stream_done = asyncio.Event()
+        stream_result: list = []
+        _stream_error: BaseException | None = None
 
-            collected_content = ""
-            collected_tool_calls: dict[int, dict] = {}
-            finish_reason: str | None = None
-            _stream_fallback_needed = False
-            suspected_tool_draft = False
-            suspected_tool_name: str | None = None
-
+        async def _run_phase1_stream():
+            nonlocal _stream_error
             try:
-                async for chunk in _stream_with_idle_timeout(
-                    get_llm_client().stream_chat(
-                        messages=messages,
-                        tools=tools or None,
-                    )
-                ):
-                        choices = chunk.get("choices") or []
-                        if not choices:
-                            continue
-                        choice = choices[0]
-                        finish_reason = choice.get("finish_reason") or finish_reason
-                        delta = choice.get("delta", {})
+                result = await _collect_stream_chunks(
+                    messages, tools,
+                    lambda t: token_queue.put_nowait(t),
+                )
+                stream_result.extend(result)
+            except BaseException as e:
+                _stream_error = e
+            finally:
+                stream_done.set()
 
-                        if delta.get("content"):
-                            token_text = delta["content"]
-                            collected_content += token_text
-                            yield StreamEvent(event_type="token", data=token_text)
+        stream_task = asyncio.create_task(_run_phase1_stream())
 
-                        metadata = delta.get("metadata") or {}
-                        if metadata.get("suspected_tool_draft"):
-                            suspected_tool_draft = True
-                            suspected_tool_name = metadata.get("suspected_tool_name") or suspected_tool_name
-
-                        for tc_delta in (delta.get("tool_calls") or []):
-                            idx = tc_delta["index"]
-                            if idx not in collected_tool_calls:
-                                collected_tool_calls[idx] = {
-                                    "id": "",
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""},
-                                }
-                            if tc_delta.get("id"):
-                                collected_tool_calls[idx]["id"] = tc_delta["id"]
-                            fn = tc_delta.get("function") or {}
-                            if fn.get("name"):
-                                collected_tool_calls[idx]["function"]["name"] = fn["name"]
-                            if fn.get("arguments"):
-                                collected_tool_calls[idx]["function"]["arguments"] += fn["arguments"]
-            except asyncio.TimeoutError:
-                # 30秒无新 chunk → DeepSeek 流式 API 挂起，降级为非流式
-                logger.warning("流式调用挂起（第 %d 步，已等待%d秒），降级为非流式调用", steps, _IDLE_TIMEOUT_SEC)
-                _stream_fallback_needed = True
-            except LLMError as exc:
-                # 流式中途连接断开 → 同样降级，比报错更可靠
-                logger.warning("流式调用中断（第 %d 步）: %s，降级为非流式调用", steps, exc)
-                _stream_fallback_needed = True
-
-            if _stream_fallback_needed:
+        try:
+            while not stream_done.is_set() or not token_queue.empty():
                 try:
-                    fallback_resp = await get_llm_client().chat(
-                        messages=messages, tools=tools or None
-                    )
-                    fb_choice = (fallback_resp.get("choices") or [{}])[0]
-                    finish_reason = fb_choice.get("finish_reason")
-                    fb_msg = fb_choice.get("message") or {}
-                    fb_content = fb_msg.get("content") or ""
-                    fb_tool_calls = fb_msg.get("tool_calls") or []
+                    t = await asyncio.wait_for(token_queue.get(), timeout=0.1)
+                    yield StreamEvent(event_type="token", data=t)
+                except asyncio.TimeoutError:
+                    continue
 
-                    # 【关键修复】输出降级后获取的内容（扣除已输出的部分）
-                    if fb_content and len(fb_content) > len(collected_content):
-                        remaining = fb_content[len(collected_content):]
-                        yield StreamEvent(event_type="token", data=remaining)
-                        collected_content = fb_content
+            if _stream_error is not None:
+                if isinstance(_stream_error, LLMError):
+                    logger.error("LLM 调用失败: %s", _stream_error)
+                    yield StreamEvent(event_type="error", data=str(_stream_error))
+                    return
+                raise _stream_error
 
-                    if fb_tool_calls:
-                        collected_tool_calls = {i: tc for i, tc in enumerate(fb_tool_calls)}
+            collected_content, collected_tool_calls, finish_reason, \
+                suspected_tool_draft, suspected_tool_name, _ = stream_result
+        finally:
+            if not stream_task.done():
+                stream_task.cancel()
+                try:
+                    await stream_task
+                except asyncio.CancelledError:
+                    pass
+
+        # ── Phase 2: 从文本中提取 <tool> 标签（DeepSeek 兼容） ──
+        tool_calls: list[dict[str, Any]] | None = (
+            list(collected_tool_calls.values()) if collected_tool_calls else None
+        )
+
+        if not tool_calls and collected_content and not suspected_tool_draft \
+                and settings.llm_tool_call_fallback_enabled:
+            tool_calls, suspected_tool_draft, suspected_tool_name = \
+                _extract_tool_calls_from_text(collected_content, settings, suspected_tool_draft)
+
+        # ── Phase 3: 构建 assistant 消息 ──
+        assistant_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": collected_content or None,
+        }
+        if tool_calls:
+            assistant_message["tool_calls"] = tool_calls
+        messages.append(assistant_message)
+
+        # ── Phase 4: 无工具调用 → 处理 tool draft 重试或直接输出 ──
+        if not tool_calls:
+            if suspected_tool_draft and settings.llm_tool_call_retry_on_suspected_draft:
+                logger.warning("疑似工具调用草稿触发非流式补救: tool=%s",
+                               suspected_tool_name or "unknown")
+                try:
+                    retry_resp = await get_llm_client().chat(messages=messages, tools=tools or None)
+                    retry_choice = (retry_resp.get("choices") or [{}])[0]
+                    retry_msg = retry_choice.get("message") or {}
+                    retry_tool_calls = retry_msg.get("tool_calls") or []
+                    retry_content = retry_msg.get("content") or ""
+
+                    if retry_tool_calls:
+                        tool_calls = retry_tool_calls
+                        assistant_message["tool_calls"] = tool_calls
+                        assistant_message["content"] = retry_content or None
+                        messages[-1] = assistant_message
+                        logger.info("疑似工具草稿补救成功: tool_calls=%d", len(tool_calls))
+                        # 继续进入 Phase 5
                     else:
-                        inspection = inspect_tool_call_content(fb_content)
-                        suspected_tool_draft = inspection.suspected_draft
-                        suspected_tool_name = inspection.suspected_tool_name or suspected_tool_name
-                    logger.info("降级非流式调用成功（第 %d 步）: finish=%s", steps, finish_reason)
+                        clean_content = _sanitize_tool_draft_text(retry_content or collected_content)
+                        fallback_message = clean_content or "本次工具调用未生成有效参数，请重试。"
+                        logger.warning("疑似工具草稿补救失败，返回安全提示")
+                        yield StreamEvent(event_type="final_answer", data=fallback_message)
+                        return
                 except LLMError as retry_exc:
-                    logger.error("降级非流式调用也失败（第 %d 步）: %s", steps, retry_exc)
-                    yield StreamEvent(event_type="error", data=str(retry_exc))
+                    logger.error("疑似工具草稿补救异常: %s", retry_exc)
+                    yield StreamEvent(event_type="final_answer",
+                                      data="本次工具调用未生成有效参数，请重试。")
                     return
 
-            tool_calls: list[dict[str, Any]] | None = (
-                list(collected_tool_calls.values()) if collected_tool_calls else None
-            )
-
-            if not tool_calls and collected_content and not suspected_tool_draft and settings.llm_tool_call_fallback_enabled:
-                inspection = inspect_tool_call_content(collected_content)
-                if inspection.tool_calls:
-                    tool_calls = inspection.tool_calls
-                    logger.info("从 <tool> 标签中提取到 %d 个工具调用", len(tool_calls))
-                elif inspection.suspected_draft:
-                    suspected_tool_draft = True
-                    suspected_tool_name = inspection.suspected_tool_name or suspected_tool_name
-                    logger.warning(
-                        "检测到疑似工具调用草稿（第 %d 步）: tool=%s",
-                        steps,
-                        suspected_tool_name or "unknown",
-                    )
-
-            assistant_message: dict[str, Any] = {
-                "role": "assistant",
-                "content": collected_content or None,
-            }
-            if tool_calls:
-                assistant_message["tool_calls"] = tool_calls
-
-            messages.append(assistant_message)
-
-            if finish_reason == "stop" and not tool_calls:
-                if suspected_tool_draft and settings.llm_tool_call_retry_on_suspected_draft:
-                    logger.warning(
-                        "疑似工具调用草稿触发非流式补救（第 %d 步）: tool=%s",
-                        steps,
-                        suspected_tool_name or "unknown",
-                    )
-                    try:
-                        retry_resp = await get_llm_client().chat(messages=messages, tools=tools or None)
-                        retry_choice = (retry_resp.get("choices") or [{}])[0]
-                        retry_finish_reason = retry_choice.get("finish_reason")
-                        retry_msg = retry_choice.get("message") or {}
-                        retry_tool_calls = retry_msg.get("tool_calls") or []
-                        retry_content = retry_msg.get("content") or ""
-
-                        if retry_tool_calls:
-                            tool_calls = retry_tool_calls
-                            finish_reason = retry_finish_reason or finish_reason
-                            assistant_message["tool_calls"] = tool_calls
-                            assistant_message["content"] = retry_content or None
-                            messages[-1] = assistant_message
-                            logger.info("疑似工具草稿补救成功（第 %d 步）: tool_calls=%d", steps, len(tool_calls))
-                        else:
-                            clean_content = _sanitize_tool_draft_text(retry_content or collected_content)
-                            fallback_message = clean_content or "本次工具调用未生成有效参数，请重试。"
-                            logger.warning("疑似工具草稿补救失败（第 %d 步），返回安全提示", steps)
-                            yield StreamEvent(event_type="final_answer", data=fallback_message)
-                            return
-                    except LLMError as retry_exc:
-                        logger.error("疑似工具草稿补救异常（第 %d 步）: %s", steps, retry_exc)
-                        yield StreamEvent(event_type="final_answer", data="本次工具调用未生成有效参数，请重试。")
-                        return
-
-                if not tool_calls:
-                    clean_content = _sanitize_tool_draft_text(collected_content)
-                    logger.info("Agent 最终回答（第 %d 步）: %s", steps, clean_content[:200])
-                    yield StreamEvent(event_type="final_answer", data=clean_content)
-                    return
-
-            if tool_calls:
-                parsed_calls: list[tuple[str, dict[str, Any]]] = []
-
-                for tc in tool_calls:
-                    tool_name = (tc.get("function") or {}).get("name") or "unknown"
-                    is_valid, tool_args, error_message = _is_valid_tool_call(tc, tools)
-                    if not is_valid or tool_args is None:
-                        logger.warning("拦截非法工具调用（第 %d 步）: %s", steps, error_message)
-                        yield StreamEvent(
-                            event_type="final_answer",
-                            data=error_message or f"工具 {tool_name} 的参数无效，请重试。",
-                        )
-                        return
-
-                    tc_id = tool_calls[idx].get("id", f"call_{idx}")
-                    call_info: dict[str, Any] = {"tool": tool_name, "args": tool_args, "call_id": tc_id}
-                    parsed_calls.append((tool_name, tool_args))
-
-                    yield StreamEvent(event_type="tool_call", data=call_info)
-
-                # 【核心补丁】创建数据库会话并注入到需要 db 的工具
-                results: list[dict[str, Any]] = []
-                session_factory = get_session_factory()
-                async with session_factory() as db:
-                    async with asyncio.TaskGroup() as tg:
-                        tasks = [
-                            tg.create_task(_execute_tool(name, args, db=db))
-                            for name, args in parsed_calls
-                        ]
-                    results = [t.result() for t in tasks]
-
-                for idx, result in enumerate(results):
-                    tc_id: str = tool_calls[idx].get("id", f"call_{idx}")
-                    yield StreamEvent(event_type="tool_result", data={**result, "call_id": tc_id})
-                    # 截断工具结果，防止上下文过长
-                    truncated_content = _truncate_tool_result(result)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "content": truncated_content,
-                    })
-
-                logger.info("第 %d 步工具调用完成，共 %d 个工具", steps, len(results))
-
-                if _is_direct_answer_eligible(results):
-                    direct_answer = _extract_direct_answer_from_tool_result(results[0])
-                    if direct_answer:
-                        logger.info("第 %d 步命中工具结果直出: tool=%s, answer_len=%d", steps, results[0].get("tool"), len(direct_answer))
-                        yield StreamEvent(event_type="final_answer", data=direct_answer)
-                        return
-
-                if steps == max_steps:
-                    logger.warning("达到最大步数 %d，强制终止", max_steps)
-                    final_collected = ""
-                    _max_step_fallback = False
-                    try:
-                        async for chunk in _stream_with_idle_timeout(
-                            get_llm_client().stream_chat(
-                                messages=messages,
-                                tools=None,
-                            )
-                        ):
-                            choices = chunk.get("choices") or []
-                            if not choices:
-                                continue
-                            delta = choices[0].get("delta", {})
-                            if delta.get("content"):
-                                token_text = delta["content"]
-                                final_collected += token_text
-                                yield StreamEvent(event_type="token", data=token_text)
-                    except (asyncio.TimeoutError, LLMError) as exc:
-                        logger.warning("最大步数强制汇总流式失败: %s，降级为非流式", exc)
-                        _max_step_fallback = True
-                    if _max_step_fallback:
-                        try:
-                            fb = await get_llm_client().chat(messages=messages, tools=None)
-                            fb_content = ((fb.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-                            # 【关键修复】输出降级后获取的内容（扣除已输出的部分）
-                            if fb_content and len(fb_content) > len(final_collected):
-                                remaining = fb_content[len(final_collected):]
-                                yield StreamEvent(event_type="token", data=remaining)
-                                final_collected = fb_content
-                        except LLMError:
-                            pass
-                    yield StreamEvent(event_type="final_answer", data=final_collected or "已达到最大推理步数，请重新提问。")
-                    return
-
-                continue
-
-            if collected_content:
-                logger.info("Agent 返回文本回答（第 %d 步）", steps)
-                yield StreamEvent(event_type="final_answer", data=collected_content)
+            if not tool_calls:
+                clean_content = _sanitize_tool_draft_text(collected_content)
+                logger.info("Agent 直接回答: %s", clean_content[:200])
+                yield StreamEvent(event_type="final_answer", data=clean_content)
                 return
 
-        logger.warning("Agent 循环结束，未产生最终回答")
-        yield StreamEvent(event_type="final_answer", data="已达到最大推理步数，请重新提问。")
+        # ── Phase 5: 执行工具调用 ──
+        if tool_calls:
+            # 校验参数
+            parsed_calls: list[tuple[str, dict[str, Any]]] = []
+            for tc in tool_calls:
+                tool_name = (tc.get("function") or {}).get("name") or "unknown"
+                is_valid, tool_args, error_message = _is_valid_tool_call(tc, tools)
+                if not is_valid or tool_args is None:
+                    logger.warning("拦截非法工具调用: %s", error_message)
+                    yield StreamEvent(
+                        event_type="final_answer",
+                        data=error_message or f"工具 {tool_name} 的参数无效，请重试。",
+                    )
+                    return
+
+                yield StreamEvent(event_type="tool_call", data={
+                    "tool": tool_name, "args": tool_args,
+                    "call_id": tc.get("id", f"call_{len(parsed_calls)}"),
+                })
+                parsed_calls.append((tool_name, tool_args))
+
+            # 并行执行所有工具（每个工具独立 session，真正并发）
+            results: list[dict[str, Any]] = []
+            session_factory = get_session_factory()
+
+            async def _run_with_session(name: str, args: dict) -> dict:
+                async with session_factory() as db:
+                    return await _execute_tool(name, args, db=db)
+
+            async with asyncio.TaskGroup() as tg:
+                tasks = [
+                    tg.create_task(_run_with_session(name, args))
+                    for name, args in parsed_calls
+                ]
+            results = [t.result() for t in tasks]
+
+            # 输出工具结果
+            for idx, result in enumerate(results):
+                tc_id: str = tool_calls[idx].get("id", f"call_{idx}")
+                yield StreamEvent(event_type="tool_result",
+                                  data={**result, "call_id": tc_id})
+                truncated_content = _truncate_tool_result(result)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": truncated_content,
+                })
+
+            logger.info("工具调用完成，共 %d 个工具", len(results))
+
+            # 直接答案提取：工具返回 report_content 时跳过 LLM 总结
+            if _is_direct_answer_eligible(results):
+                direct_answer = _extract_direct_answer_from_tool_result(results[0])
+                if direct_answer:
+                    logger.info("命中工具结果直出: tool=%s, answer_len=%d",
+                                results[0].get("tool"), len(direct_answer))
+                    yield StreamEvent(event_type="final_answer", data=direct_answer)
+                    return
+
+            # LLM 总结工具结果（实时流式 yield token）
+            summary_queue: asyncio.Queue[str] = asyncio.Queue()
+            summary_done = asyncio.Event()
+            summary_result: list = []
+            _summary_error: BaseException | None = None
+
+            async def _run_summary_stream():
+                nonlocal _summary_error
+                try:
+                    text = await _stream_llm_summary(
+                        messages,
+                        lambda t: summary_queue.put_nowait(t),
+                    )
+                    summary_result.append(text)
+                except BaseException as e:
+                    _summary_error = e
+                finally:
+                    summary_done.set()
+
+            summary_task = asyncio.create_task(_run_summary_stream())
+
+            try:
+                while not summary_done.is_set() or not summary_queue.empty():
+                    try:
+                        t = await asyncio.wait_for(summary_queue.get(), timeout=0.1)
+                        yield StreamEvent(event_type="token", data=t)
+                    except asyncio.TimeoutError:
+                        continue
+
+                if _summary_error is not None:
+                    if isinstance(_summary_error, LLMError):
+                        logger.exception("LLM 总结失败")
+                        yield StreamEvent(event_type="error", data="工具执行完成，但总结生成失败，请重试。")
+                        return
+                    raise _summary_error
+
+                summary_text = summary_result[0] if summary_result else ""
+                yield StreamEvent(event_type="final_answer", data=summary_text or "工具执行完成，但未能生成总结。")
+                return
+            finally:
+                if not summary_task.done():
+                    summary_task.cancel()
+                    try:
+                        await summary_task
+                    except asyncio.CancelledError:
+                        pass
+
+        # ── Phase 6: 兜底 ──
+        if collected_content:
+            yield StreamEvent(event_type="final_answer", data=collected_content)
+            return
+
+        logger.warning("Agent 未产生最终回答")
+        yield StreamEvent(event_type="final_answer", data="未收到有效回答，请重试。")
 
     except Exception as exc:
         logger.error("Agent 运行异常: %s", exc, exc_info=True)
