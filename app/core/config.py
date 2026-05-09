@@ -12,6 +12,9 @@ from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# 业务常量
+MAX_RETURN_ITEMS: int = 50  # 单次查询最大返回条数
+
 class Settings(BaseSettings):
     """应用全局配置，自动从环境变量和 .env 文件读取。"""
 
@@ -39,7 +42,6 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     default_model: str = ""
     log_level: str = "INFO"
-    agent_max_steps: int = 5
     llm_max_tokens: int = 8192  # LLM 最大输出 token 数，防止长报告被截断
     llm_tool_call_fallback_enabled: bool = True
     llm_tool_call_strict_mode: bool = True
@@ -47,7 +49,8 @@ class Settings(BaseSettings):
     llm_tool_call_debug_log: bool = False
     agent_system_prompt: str = ""
     cors_origins: list[str] = ["*"]
-    base_url: str = "http://10.159.55.28:9500"  # 服务基础URL
+    base_url: str = "http://10.159.55.28:9500/"  # 服务基础URL
+    export_dir: str = "static/exports"  # Excel 导出文件目录
 
     model_config = SettingsConfigDict(
         env_file=".env",

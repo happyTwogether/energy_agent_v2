@@ -16,8 +16,8 @@ from app.core.logging import get_logger
 
 logger = get_logger("export_util")
 
-# 全局导出目录配置 (与 main.py 保持一致)
-EXPORT_DIR = os.path.join(os.getcwd(), "static", "exports")
+# 全局导出目录配置
+EXPORT_DIR = os.path.join(os.getcwd(), get_settings().export_dir)
 
 # 默认列名中文映射表（项目级统一配置）
 DEFAULT_COLUMN_MAPPING = {
