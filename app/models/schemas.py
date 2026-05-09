@@ -11,16 +11,34 @@ from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
-    """用户聊天请求模型（OpenAI 格式）。"""
+    """用户聊天请求模型。"""
 
-    messages: list[dict[str, Any]] = Field(..., min_items=1, description="对话消息列表，OpenAI 格式")
+    query: str = Field(..., min_length=1, description="用户消息")
+    conversation_id: str | None = Field(default=None, description="会话ID，为空则创建新会话")
+    user_id: str = Field(default="anonymous", description="用户唯一标识")
 
 
-class ChatResponse(BaseModel):
-    """聊天响应模型（OpenAI 格式）。"""
+class ConversationItem(BaseModel):
+    """会话列表中的单个会话项。"""
 
-    choices: list[dict[str, Any]] = Field(..., description="响应选择列表")
-    usage: dict[str, Any] | None = Field(default=None, description="Token 使用统计")
+    conversation_id: str
+    title: str
+    updated_at: str
+    message_count: int
+
+
+class ConversationListResponse(BaseModel):
+    """会话列表响应。"""
+
+    conversations: list[ConversationItem]
+
+
+class ConversationDetailResponse(BaseModel):
+    """单个会话详情响应。"""
+
+    conversation_id: str
+    title: str
+    messages: list[dict[str, Any]]
 
 
 class StreamEvent(BaseModel):
@@ -82,36 +100,3 @@ class DifyChatRequest(BaseModel):
     user: str = Field(..., description="用户唯一标识")
 
 
-class DifyChatResponse(BaseModel):
-    """Dify 对话应用响应模型 (blocking 模式)。"""
-
-    message_id: str = Field(..., description="消息ID")
-    conversation_id: str = Field(..., description="会话ID")
-    answer: str = Field(..., description="助手回复")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="元数据")
-
-
-class DifyMessageEnd(BaseModel):
-    """Dify SSE 消息结束标记。"""
-
-    event: Literal["message_end"] = "message_end"
-    message_id: str
-    conversation_id: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class DifyTTSMessage(BaseModel):
-    """Dify TTS 消息事件。"""
-
-    event: Literal["tts_message"] = "tts_message"
-    conversation_id: str
-    message_id: str
-    audio: str
-
-
-class DifyTTSMessageEnd(BaseModel):
-    """Dify TTS 消息结束。"""
-
-    event: Literal["tts_message_end"] = "tts_message_end"
-    conversation_id: str
-    message_id: str

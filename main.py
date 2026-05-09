@@ -17,15 +17,11 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.database import init_db
 
-# Excel 导出目录（与 export_util.py 保持一致）
-EXPORT_DIR = os.path.join(os.getcwd(), "static", "exports")
-
 logger = get_logger("main")
 
 
 def _register_tools() -> None:
     """显式注册所有工具模块，确保工具在服务启动时完成注册。"""
-    import app.tools.weather_tool  # noqa: F401
     import app.tools.metric_query_tool  # noqa: F401
     import app.tools.report_query_tool  # noqa: F401
     import app.tools.energy_saving_tool  # noqa: F401
@@ -39,7 +35,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期管理。"""
     logger.info("AI Agent 微服务启动中...")
     _register_tools()
-    # await init_db()
+    await init_db()
     logger.info("服务已就绪，等待请求")
     yield
     logger.info("AI Agent 微服务正在关闭...")
@@ -66,7 +62,8 @@ def create_app() -> FastAPI:
     application.include_router(router, prefix="/api/v1")
 
     # 挂载静态文件目录，提供 Excel 批量报告下载服务
-    os.makedirs("static/exports", exist_ok=True)
+    export_dir = os.path.join(os.getcwd(), settings.export_dir)
+    os.makedirs(export_dir, exist_ok=True)
     application.mount("/static", StaticFiles(directory="static"), name="static")
 
     @application.get("/")
@@ -76,7 +73,7 @@ def create_app() -> FastAPI:
     @application.get("/downloads/{filename}")
     async def download_excel(filename: str) -> FileResponse:
         """强制下载 Excel 文件（添加 Content-Disposition: attachment 头）。"""
-        file_path = os.path.join(EXPORT_DIR, filename)
+        file_path = os.path.join(export_dir, filename)
         if not os.path.exists(file_path):
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="文件不存在")

@@ -20,17 +20,25 @@ from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
 from app.models.schemas import (
     ChatRequest,
+    ConversationDetailResponse,
+    ConversationItem,
+    ConversationListResponse,
     DifyChatRequest,
     StreamEvent,
 )
+from app.services.database import (
+    Conversation,
+    get_session_factory,
+    get_conversation_title,
+    list_conversations,
+    load_conversation,
+    save_conversation,
+)
+from sqlalchemy import delete as sa_delete
 
 logger = get_logger("routes")
 
 router = APIRouter()
-
-# 内存会话存储: conversation_id -> list[dict]
-# 结构: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
-_conversations: dict[str, list[dict[str, Any]]] = {}
 
 
 def _sanitize_history_answer(answer: str) -> str:
@@ -67,57 +75,117 @@ async def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
-async def _event_generator(request: ChatRequest) -> AsyncGenerator[dict, None]:
+@router.get("/conversations", response_model=ConversationListResponse)
+async def get_conversations(user_id: str) -> ConversationListResponse:
+    """获取指定用户的会话列表，按更新时间倒序。"""
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        items = await list_conversations(db, user_id)
+    return ConversationListResponse(
+        conversations=[ConversationItem(**item) for item in items]
+    )
+
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
+async def get_conversation(conversation_id: str) -> ConversationDetailResponse:
+    """获取单个会话的消息历史。"""
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        messages = await load_conversation(db, conversation_id)
+        title = await get_conversation_title(db, conversation_id)
+    return ConversationDetailResponse(
+        conversation_id=conversation_id,
+        title=title,
+        messages=messages,
+    )
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str) -> dict[str, str]:
+    """删除指定会话。"""
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        await db.execute(
+            sa_delete(Conversation).where(Conversation.conversation_id == conversation_id)
+        )
+        await db.commit()
+    logger.info("会话已删除: %s", conversation_id)
+    return {"status": "ok"}
+
+
+async def _event_generator(
+    query: str, conversation_id: str | None, user_id: str
+) -> AsyncGenerator[dict, None]:
     """将 Agent 流式事件转换为 SSE 格式的事件生成器。
 
-    Args:
-        request: 用户聊天请求。
-
-    Yields:
-        符合 SSE 协议的事件字典，包含 event 和 data 字段。
+    流程：加载/创建会话 → 调用 Agent → 保存结果到 DB。
     """
-    try:
-        logger.info("开始处理请求: messages_count=%d", len(request.messages))
-        async for event in run_agent_stream(messages=request.messages):
-            event_data: str = dumps_decimal(
-                {"event_type": event.event_type, "data": event.data},
-                ensure_ascii=False,
-            )
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        cid = conversation_id or str(uuid.uuid4())
+        history = await load_conversation(db, cid)
 
-            yield {
-                "event": event.event_type,
-                "data": event_data,
-            }
-        logger.info("请求处理完成")
-    except Exception as exc:
-        logger.error("SSE 事件生成异常: %s", exc, exc_info=True)
-        error_event = StreamEvent(event_type="error", data=f"服务器内部错误: {exc}")
+        messages = list(history)
+        messages.append({"role": "user", "content": query})
+
+        is_new = len(history) == 0
+
+        # 首条事件：告知前端 conversation_id
         yield {
-            "event": error_event.event_type,
+            "event": "conversation",
             "data": dumps_decimal(
-                {"event_type": error_event.event_type, "data": error_event.data},
+                {"event_type": "conversation", "data": {"conversation_id": cid}},
                 ensure_ascii=False,
             ),
         }
+
+        collected_answer = ""
+        try:
+            logger.info("开始处理请求: query=%s, cid=%s", query[:50], cid)
+            async for event in run_agent_stream(messages=messages):
+                if event.event_type == "final_answer":
+                    collected_answer = str(event.data)
+                event_data = dumps_decimal(
+                    {"event_type": event.event_type, "data": event.data},
+                    ensure_ascii=False,
+                )
+                yield {"event": event.event_type, "data": event_data}
+            logger.info("请求处理完成: cid=%s", cid)
+        except Exception as exc:
+            logger.error("SSE 事件生成异常: %s", exc, exc_info=True)
+            yield {
+                "event": "error",
+                "data": dumps_decimal(
+                    {"event_type": "error", "data": f"服务器内部错误: {exc}"},
+                    ensure_ascii=False,
+                ),
+            }
+
+        # 保存会话
+        clean_answer = _sanitize_history_answer(collected_answer)
+        title = query[:20] if is_new else None
+        await save_conversation(
+            db, cid, user_id,
+            [{"role": "user", "content": query}, {"role": "assistant", "content": clean_answer}],
+            title=title,
+        )
 
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest) -> EventSourceResponse:
     """SSE 流式聊天接口。
 
-    接收用户消息，调用 Agent Runner 执行 ReAct Loop，
+    接收用户消息，加载/创建会话，通过 Agent Runner 处理，
     将每个执行步骤的 StreamEvent 通过 SSE 推送给客户端。
-
-    Args:
-        request: 用户聊天请求，包含 messages 数组。
-
-    Returns:
-        EventSourceResponse: SSE 流式响应。
     """
     try:
-        logger.info("收到聊天请求: messages_count=%d", len(request.messages))
+        logger.info("收到聊天请求: query=%s, cid=%s", request.query[:50], request.conversation_id)
         return EventSourceResponse(
-            content=_event_generator(request),
+            content=_event_generator(
+                query=request.query,
+                conversation_id=request.conversation_id,
+                user_id=request.user_id,
+            ),
             media_type="text/event-stream",
         )
     except Exception as exc:
@@ -128,26 +196,25 @@ async def chat_stream(request: ChatRequest) -> EventSourceResponse:
 # ========== Dify 风格接口 ==========
 
 
-def _build_messages_from_dify(
+async def _build_messages_from_dify(
     request: DifyChatRequest,
+    db,
 ) -> tuple[str, list[dict[str, Any]]]:
     """构建 Agent 所需的消息列表。
 
     Args:
         request: Dify 风格的请求
+        db: 数据库会话
 
     Returns:
         (conversation_id, messages): 会话ID和完整消息列表
     """
-    # 确定会话 ID
     conversation_id = request.conversation_id
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
 
-    # 获取或初始化会话历史
-    history = _conversations.get(conversation_id, [])
+    history = await load_conversation(db, conversation_id)
 
-    # 构造 system prompt（包含 inputs 上下文）
     system_content = (
         "你是一个4G/5G网络节能分析助手。"
         "对于 query_report、query_metric、query_anomaly 这类查询，若用户未明确提及地市/厂家/日期，"
@@ -157,7 +224,6 @@ def _build_messages_from_dify(
     if request.inputs:
         system_content += f"\n\n用户上下文信息：{json.dumps(request.inputs, ensure_ascii=False)}"
 
-    # 构建完整消息列表
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
     messages.extend(history)
     messages.append({"role": "user", "content": request.query})
@@ -172,26 +238,17 @@ async def _dify_stream_generator(
     created_at: int,
     messages: list[dict[str, Any]],
     user_query: str,
+    user_id: str,
+    db,
 ) -> AsyncGenerator[dict, None]:
-    """Dify 风格的 SSE 流式响应生成器。
-
-    事件顺序：
-    1. message (开始)
-    2. message_end (结束)
-
-    Dify Streaming 响应格式：
-    - message 事件: {"event": "message", "data": {"task_id": "", "message_id": "", "conversation_id": "", "answer": "", "created_at": 1234567890}}
-    - message_end 事件: {"event": "message_end", "data": {"task_id": "", "message_id": "", "conversation_id": "", "metadata": {}}}
-    """
+    """Dify 风格的 SSE 流式响应生成器。"""
     try:
         collected_answer = ""
 
         async for event in run_agent_stream(messages=messages):
             if event.event_type == "token":
-                # token -> Dify 的 message 事件
                 token_text = str(event.data)
                 collected_answer += token_text
-                # 过滤 <tool> 标签，不输出给前端
                 if "<tool>" not in token_text:
                     yield {
                         "event": "message",
@@ -207,9 +264,7 @@ async def _dify_stream_generator(
                         ),
                     }
             elif event.event_type == "final_answer":
-                # final_answer 包含完整回答
                 final_text = str(event.data)
-                # 如果之前没有收集到 token，或者 final_answer 与收集的不同，发送差异部分
                 if not collected_answer:
                     collected_answer = final_text
                     yield {
@@ -226,7 +281,6 @@ async def _dify_stream_generator(
                         ),
                     }
                 else:
-                    # 已经有 token，用 final_answer 作为最终答案
                     collected_answer = final_text
             elif event.event_type == "error":
                 yield {
@@ -237,19 +291,12 @@ async def _dify_stream_generator(
                     ),
                 }
 
-        # 保存对话历史（追加而不是覆盖）
         clean_answer = _sanitize_history_answer(collected_answer)
-        if conversation_id not in _conversations:
-            _conversations[conversation_id] = []
-        _conversations[conversation_id].extend([
-            {"role": "user", "content": user_query},
-            {"role": "assistant", "content": clean_answer},
-        ])
-        # 限制历史长度，保留最近 10 轮对话
-        if len(_conversations[conversation_id]) > 20:
-            _conversations[conversation_id] = _conversations[conversation_id][-20:]
+        await save_conversation(
+            db, conversation_id, user_id,
+            [{"role": "user", "content": user_query}, {"role": "assistant", "content": clean_answer}],
+        )
 
-        # 发送 message_end
         yield {
             "event": "message_end",
             "data": dumps_decimal(
@@ -281,6 +328,8 @@ async def _run_blocking(
     created_at: int,
     messages: list[dict[str, Any]],
     user_query: str,
+    user_id: str,
+    db,
 ) -> dict[str, Any]:
     """Dify Blocking 响应格式。"""
     collected_answer = ""
@@ -290,34 +339,17 @@ async def _run_blocking(
         if event.event_type == "token":
             token_count += 1
         elif event.event_type == "final_answer":
-            # blocking 模式只消费最终答案，避免重复拼接大量 token
             collected_answer = str(event.data)
-            logger.info(
-                "blocking 收到 final_answer: len=%d, token_count=%d",
-                len(collected_answer),
-                token_count,
-            )
             break
         elif event.event_type == "error":
             raise Exception(str(event.data))
 
-    logger.info("blocking 开始清洗答案: len=%d", len(collected_answer))
     clean_answer = _sanitize_history_answer(collected_answer)
-    logger.info("blocking 清洗答案完成: raw_len=%d, clean_len=%d", len(collected_answer), len(clean_answer))
+    await save_conversation(
+        db, conversation_id, user_id,
+        [{"role": "user", "content": user_query}, {"role": "assistant", "content": clean_answer}],
+    )
 
-    # 保存对话历史（追加而不是覆盖）
-    if conversation_id not in _conversations:
-        _conversations[conversation_id] = []
-    _conversations[conversation_id].extend([
-        {"role": "user", "content": user_query},
-        {"role": "assistant", "content": clean_answer},
-    ])
-    # 限制历史长度，保留最近 10 轮对话
-    if len(_conversations[conversation_id]) > 20:
-        _conversations[conversation_id] = _conversations[conversation_id][-20:]
-    logger.info("blocking 保存历史完成: conversation_id=%s, history_size=%d", conversation_id, len(_conversations[conversation_id]))
-
-    logger.info("blocking 准备返回响应: message_id=%s, answer_len=%d", message_id, len(collected_answer))
     return {
         "event": "message",
         "task_id": task_id,
@@ -352,20 +384,7 @@ async def dify_chat_messages(http_request: Request, req: DifyChatRequest) -> Res
     """Dify 对话应用 API。
 
     对标 Dify API: POST /v1/chat-messages
-    https://docs.dify.ai/zh/use-dify/publish/developing-with-apis
-
-    支持两种响应模式：
-    - blocking: 等待完整响应后返回 JSON
-    - streaming: SSE 流式返回
-
-    请求示例：
-    {
-        "inputs": {},
-        "query": "查询昨天5G数据",
-        "response_mode": "streaming",
-        "conversation_id": null,  // 或传入已有会话ID
-        "user": "user-123"
-    }
+    支持 streaming (SSE) 和 blocking (JSON) 两种响应模式。
     """
     try:
         logger.info(
@@ -375,45 +394,40 @@ async def dify_chat_messages(http_request: Request, req: DifyChatRequest) -> Res
             req.response_mode,
         )
 
-        # 构建消息列表
-        conversation_id, messages = _build_messages_from_dify(req)
-        message_id = str(uuid.uuid4())
-        task_id = str(uuid.uuid4())
-        created_at = int(time.time())
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            conversation_id, messages = await _build_messages_from_dify(req, db)
+            message_id = str(uuid.uuid4())
+            task_id = str(uuid.uuid4())
+            created_at = int(time.time())
 
-        if req.response_mode == "streaming":
-            # 流式响应
-            return EventSourceResponse(
-                content=_dify_stream_generator(
+            if req.response_mode == "streaming":
+                return EventSourceResponse(
+                    content=_dify_stream_generator(
+                        conversation_id=conversation_id,
+                        message_id=message_id,
+                        task_id=task_id,
+                        created_at=created_at,
+                        messages=messages,
+                        user_query=req.query,
+                        user_id=req.user,
+                        db=db,
+                    ),
+                    media_type="text/event-stream",
+                )
+            else:
+                result = await _run_blocking(
                     conversation_id=conversation_id,
                     message_id=message_id,
                     task_id=task_id,
                     created_at=created_at,
                     messages=messages,
                     user_query=req.query,
-                ),
-                media_type="text/event-stream",
-            )
-        else:
-            # 阻塞响应
-            result = await _run_blocking(
-                conversation_id=conversation_id,
-                message_id=message_id,
-                task_id=task_id,
-                created_at=created_at,
-                messages=messages,
-                user_query=req.query,
-            )
-            logger.info("blocking 已生成结果，准备序列化: message_id=%s", message_id)
-            payload = dumps_decimal(result, ensure_ascii=False)
-            logger.info(
-                "blocking 序列化完成: message_id=%s, bytes=%d",
-                message_id,
-                len(payload.encode("utf-8")),
-            )
-            response = Response(content=payload, media_type="application/json")
-            logger.info("blocking Response 已构造: message_id=%s", message_id)
-            return response
+                    user_id=req.user,
+                    db=db,
+                )
+                payload = dumps_decimal(result, ensure_ascii=False)
+                return Response(content=payload, media_type="application/json")
 
     except Exception as exc:
         logger.error("Dify 聊天接口异常: %s", exc, exc_info=True)
