@@ -578,6 +578,30 @@
     color: var(--text-muted);
   }
 
+  #stop-btn {
+    width: 34px;
+    height: 34px;
+    background: #e04848;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 14px;
+    transition: background 0.2s, transform 0.1s;
+  }
+
+  #stop-btn:hover {
+    background: #ff5a5a;
+  }
+
+  #stop-btn:active {
+    transform: scale(0.92);
+  }
+
   .hint-text {
     font-size: 11.5px;
     color: var(--text-muted);
@@ -658,6 +682,191 @@
     background: linear-gradient(135deg, #3366ff55, #5588ff55);
     border-color: #3366ff88;
   }
+
+  /* 侧边栏 */
+  #body-layout {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  #sidebar {
+    width: 260px;
+    flex-shrink: 0;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: width 0.25s ease;
+  }
+
+  #body-layout.collapsed #sidebar {
+    width: 0;
+    border-right: none;
+  }
+
+  .sidebar-header {
+    padding: 14px 14px 10px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  #sidebar-toggle {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 13px;
+    transition: background 0.12s, transform 0.25s ease;
+  }
+
+  #sidebar-toggle:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+
+  #body-layout.collapsed #sidebar-toggle {
+    transform: rotate(180deg);
+  }
+
+  /* 侧边栏折叠后浮出的展开按钮 */
+  #sidebar-expand {
+    display: none;
+    position: absolute;
+    left: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    z-index: 10;
+  }
+
+  #body-layout.collapsed #sidebar-expand {
+    display: flex;
+  }
+
+  #new-conv-btn {
+    width: 100%;
+    padding: 9px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 13.5px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  #new-conv-btn:hover {
+    background: var(--bg-card);
+    border-color: var(--accent);
+  }
+
+  #conv-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+
+  #conv-list::-webkit-scrollbar { width: 4px; }
+  #conv-list::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 2px; }
+
+  .conv-item {
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    margin-bottom: 2px;
+    position: relative;
+    transition: background 0.12s;
+  }
+
+  .conv-item:hover { background: var(--bg-tertiary); }
+  .conv-item.active { background: var(--bg-tertiary); border: 1px solid var(--border); }
+
+  .conv-title {
+    font-size: 13.5px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-right: 24px;
+    line-height: 1.4;
+  }
+
+  .conv-item.active .conv-title { font-weight: 500; }
+
+  .conv-date {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 3px;
+  }
+
+  .conv-delete {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.12s, color 0.12s;
+  }
+
+  .conv-item:hover .conv-delete { opacity: 1; }
+  .conv-delete:hover { color: #e04848; background: rgba(224, 72, 72, 0.1); }
+
+  .sidebar-empty {
+    padding: 24px 14px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  #main-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    position: relative;
+  }
+
+  /* 移动端：隐藏侧边栏 */
+  @media (max-width: 768px) {
+    #sidebar { display: none; }
+  }
+
+  /* 浅色主题侧边栏覆盖 */
+  :root[data-theme="light"] .conv-item.active { background: #f0f1f3; }
 </style>
 </head>
 <body>
@@ -685,22 +894,56 @@
     </div>
   </div>
 
-  <div id="chat-container">
-    <div id="welcome">
-      <div class="welcome-icon">⚡</div>
-      <p>您好，我是能效智能体，请问有什么可以帮助您？</p>
+  <div id="body-layout">
+    <div id="sidebar">
+      <div class="sidebar-header">
+        <button id="sidebar-toggle" title="折叠侧边栏">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </button>
+        <button id="new-conv-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          新对话
+        </button>
+      </div>
+      <div id="conv-list">
+        <div class="sidebar-empty">暂无对话记录</div>
+      </div>
     </div>
-  </div>
 
-  <div id="input-area">
-    <div class="input-wrapper">
-      <textarea id="user-input" placeholder="输入问题... (Shift+Enter 换行，Enter 发送)" rows="1"></textarea>
-      <button id="send-btn" title="发送 (Enter)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="22" y1="2" x2="11" y2="13"></line>
-          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+    <div id="main-area">
+      <button id="sidebar-expand" title="展开侧边栏">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 18 15 12 9 6"></polyline>
         </svg>
       </button>
+      <div id="chat-container">
+        <div id="welcome">
+          <div class="welcome-icon">⚡</div>
+          <p>您好，我是能效智能体，请问有什么可以帮助您？</p>
+        </div>
+      </div>
+
+      <div id="input-area">
+        <div class="input-wrapper">
+          <textarea id="user-input" placeholder="输入问题... (Shift+Enter 换行，Enter 发送)" rows="1"></textarea>
+          <button id="send-btn" title="发送 (Enter)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+          <button id="stop-btn" title="停止生成 (Esc)" style="display:none;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+            </svg>
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -750,6 +993,31 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e)
 initTheme();
 
 // ============================================================
+// 侧边栏折叠
+// ============================================================
+const SIDEBAR_KEY = 'sidebar-collapsed';
+
+function getSidebarState() {
+  return localStorage.getItem(SIDEBAR_KEY) === '1';
+}
+
+function setSidebarCollapsed(collapsed) {
+  if (collapsed) {
+    bodyLayout.classList.add('collapsed');
+    sidebarToggle.title = '展开侧边栏';
+  } else {
+    bodyLayout.classList.remove('collapsed');
+    sidebarToggle.title = '折叠侧边栏';
+  }
+  localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0');
+}
+
+function toggleSidebar() {
+  const collapsed = bodyLayout.classList.contains('collapsed');
+  setSidebarCollapsed(!collapsed);
+}
+
+// ============================================================
 // 配置
 // ============================================================
 // 基础 URL（自动检测当前主机地址）
@@ -761,8 +1029,13 @@ const API_URL = `${BASE_URL}/api/v1/chat/stream`; // 'BASE_URL/api/v1/chat/strea
 // ============================================================
 // 状态
 // ============================================================
-const conversationHistory = [];
+let userId = 'default-user';
+
+let conversationId = null;        // 当前激活的会话ID
+let conversations = [];           // 会话列表缓存
+let conversationHistory = [];     // 当前会话的消息（仅用于渲染）
 let isStreaming = false;
+let abortController = null;
 
 // ============================================================
 // DOM 引用
@@ -770,7 +1043,19 @@ let isStreaming = false;
 const chatContainer = document.getElementById('chat-container');
 const userInput = document.getElementById('user-input');
 const sendBtn = document.getElementById('send-btn');
+const stopBtn = document.getElementById('stop-btn');
+const sidebarToggle = document.getElementById('sidebar-toggle');
+const sidebarExpand = document.getElementById('sidebar-expand');
+const bodyLayout = document.getElementById('body-layout');
 const welcome = document.getElementById('welcome');
+
+// 初始化侧边栏状态
+if (getSidebarState()) {
+  setSidebarCollapsed(true);
+}
+
+sidebarToggle.addEventListener('click', toggleSidebar);
+sidebarExpand.addEventListener('click', toggleSidebar);
 
 // ============================================================
 // Markdown 渲染（使用 marked.js）
@@ -1025,6 +1310,113 @@ function appendToolResult(thinkingContent, data) {
 }
 
 // ============================================================
+// 会话管理
+// ============================================================
+async function loadConversationList() {
+  try {
+    const resp = await fetch(`${BASE_URL}/api/v1/conversations?user_id=${encodeURIComponent(userId)}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    conversations = data.conversations || [];
+    renderConversationList();
+  } catch (err) {
+    console.error('[loadConversationList]', err);
+  }
+}
+
+function renderConversationList() {
+  const list = document.getElementById('conv-list');
+  if (!conversations.length) {
+    list.innerHTML = '<div class="sidebar-empty">暂无对话记录</div>';
+    return;
+  }
+  list.innerHTML = conversations.map(c => {
+    const dateStr = c.updated_at ? new Date(c.updated_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) : '';
+    const activeClass = c.conversation_id === conversationId ? ' active' : '';
+    return `
+      <div class="conv-item${activeClass}" data-cid="${c.conversation_id}" onclick="switchConversation('${c.conversation_id}')">
+        <div class="conv-title">${escapeHtml(c.title || '新对话')}</div>
+        <div class="conv-date">${dateStr}</div>
+        <button class="conv-delete" title="删除" onclick="event.stopPropagation(); deleteConversation('${c.conversation_id}')">&times;</button>
+      </div>`;
+  }).join('');
+}
+
+async function switchConversation(cid) {
+  if (isStreaming) { abortController?.abort(); }
+  conversationId = cid;
+  try {
+    const resp = await fetch(`${BASE_URL}/api/v1/conversations/${cid}`);
+    if (!resp.ok) throw new Error('加载失败');
+    const data = await resp.json();
+    conversationHistory = data.messages || [];
+
+    // 清空并重新渲染
+    const cc = document.getElementById('chat-container');
+    cc.innerHTML = '';
+    const welcome = document.getElementById('welcome');
+    if (welcome) welcome.style.display = 'none';
+
+    conversationHistory.forEach(msg => {
+      if (msg.role === 'user') {
+        appendUserMessage(msg.content);
+      } else if (msg.role === 'assistant') {
+        renderHistoryAssistant(msg.content);
+      }
+    });
+    scrollToBottom();
+  } catch (err) {
+    console.error('[switchConversation]', err);
+    newConversation();
+    return;
+  }
+  renderConversationList();
+}
+
+function renderHistoryAssistant(content) {
+  const row = document.createElement('div');
+  row.className = 'message-row assistant';
+  const wrapper = document.createElement('div');
+  wrapper.className = 'message-content-wrapper';
+  const msg = document.createElement('div');
+  msg.className = 'message assistant';
+  const answerContent = document.createElement('div');
+  answerContent.className = 'answer-content assistant-content';
+  answerContent.innerHTML = renderMarkdown(content || '');
+  msg.innerHTML = '<div class="message-role">能效智能体</div>';
+  msg.appendChild(answerContent);
+  wrapper.appendChild(msg);
+  row.appendChild(wrapper);
+  document.getElementById('chat-container').appendChild(row);
+}
+
+function newConversation() {
+  if (isStreaming) { abortController?.abort(); }
+  conversationId = null;
+  conversationHistory = [];
+  const cc = document.getElementById('chat-container');
+  cc.innerHTML = `
+    <div id="welcome">
+      <div class="welcome-icon">⚡</div>
+      <p>您好，我是能效智能体，请问有什么可以帮助您？</p>
+    </div>`;
+  loadConversationList();
+}
+
+async function deleteConversation(cid) {
+  const isCurrent = cid === conversationId;
+  try {
+    await fetch(`${BASE_URL}/api/v1/conversations/${cid}`, { method: 'DELETE' });
+  } catch (err) {
+    console.error('[deleteConversation]', err);
+  }
+  if (isCurrent) {
+    newConversation();
+  }
+  await loadConversationList();
+}
+
+// ============================================================
 // 核心：流式请求
 // ============================================================
 
@@ -1082,15 +1474,27 @@ function processSseEvent(eventStr, ctx) {
     case 'token': {
       const token = typeof payload === 'object' ? payload.token : String(payload);
       if (token) {
-        ctx.finalAnswerText += token;
-        // 流式期间：直接追加纯文本，避免每 token 重渲全文 Markdown（大报告会导致浏览器崩溃）
-        answerContent.textContent = ctx.finalAnswerText;
-        answerContent.classList.add('streaming');
+        ctx.streamingText += token;
+        if (!ctx.streamingDiv) {
+          ctx.streamingDiv = document.createElement('div');
+          ctx.streamingDiv.className = 'step-card';
+          ctx.streamingDiv.innerHTML = '<div class="step-header">推理中</div><div class="step-body"></div>';
+          thinkingContent.appendChild(ctx.streamingDiv);
+          details.open = true;
+        }
+        ctx.streamingDiv.querySelector('.step-body').textContent = ctx.streamingText;
+        summary.innerHTML = '思考中<span class="thinking-dot">.</span><span class="thinking-dot">.</span><span class="thinking-dot">.</span></span>';
         scrollToBottom();
       }
       break;
     }
     case 'tool_call': {
+      // 移除流式推理文本（LLM 已确定工具调用，原始文本失去意义）
+      if (ctx.streamingDiv) {
+        ctx.streamingDiv.remove();
+        ctx.streamingDiv = null;
+        ctx.streamingText = '';
+      }
       ctx.hasThinking = true;
       const tcData = typeof payload === 'object' ? payload : { tool: String(payload) };
       ctx.toolCalls.push({
@@ -1108,6 +1512,14 @@ function processSseEvent(eventStr, ctx) {
       appendToolResult(thinkingContent, trData);
       break;
     }
+    case 'conversation': {
+      const cid = typeof payload === 'object' ? payload.conversation_id : payload;
+      if (cid) {
+        conversationId = cid;
+        renderConversationList();
+      }
+      break;
+    }
     case 'agent_step': {
       const step = typeof payload === 'object' ? payload.step : payload;
       ctx.stepCount = step;
@@ -1118,14 +1530,18 @@ function processSseEvent(eventStr, ctx) {
       if (payload) {
         ctx.finalAnswerText = String(payload);
       }
-      // 流结束：执行一次完整 Markdown 渲染（只此一次，不在 token 流中重复执行）
+      // 完整 Markdown 渲染到回答区
       answerContent.innerHTML = renderMarkdown(ctx.finalAnswerText);
       answerContent.classList.remove('streaming');
       if (ctx.hasThinking) {
-        summary.innerHTML = `已完成推理（${ctx.stepCount} 步）`;
+        summary.innerHTML = `已完成推理（${ctx.toolCalls.length} 步）`;
         details.open = false;
       } else {
-        // 无工具调用时隐藏思考面板
+        // 无工具调用：清理思考面板中的流式文本，折叠面板
+        if (ctx.streamingDiv) {
+          ctx.streamingDiv.remove();
+          ctx.streamingDiv = null;
+        }
         details.style.display = 'none';
       }
       scrollToBottom();
@@ -1146,15 +1562,16 @@ function processSseEvent(eventStr, ctx) {
 async function streamChat(userMessage) {
   if (isStreaming) return;
   isStreaming = true;
-  sendBtn.disabled = true;
+  abortController = new AbortController();
+  sendBtn.style.display = 'none';
+  stopBtn.style.display = '';
   toolCardMap.clear();
 
-  conversationHistory.push({ role: 'user', content: userMessage });
+  const isNewConv = !conversationId;
   appendUserMessage(userMessage);
 
   const { details, summary, thinkingContent, answerContent } = createAssistantMessage();
 
-  // 共享上下文对象
   const ctx = {
     finalAnswerText: '',
     hasThinking: false,
@@ -1164,13 +1581,20 @@ async function streamChat(userMessage) {
     answerContent,
     toolCalls: [],
     toolResults: [],
+    streamingText: '',
+    streamingDiv: null,
   };
 
   try {
     const response = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: conversationHistory }),
+      body: JSON.stringify({
+        query: userMessage,
+        conversation_id: conversationId,
+        user_id: userId,
+      }),
+      signal: abortController.signal,
     });
 
     if (!response.ok) {
@@ -1207,45 +1631,42 @@ async function streamChat(userMessage) {
       }
     }
 
-    // 流结束后兜底：如果 final_answer 没有处理成功
+    // 流结束后兜底
     if (!ctx.finalAnswerText) {
       if (ctx.hasThinking) {
-        summary.innerHTML = `已完成推理（${ctx.stepCount} 步）`;
+        summary.innerHTML = `已完成推理（${ctx.toolCalls.length} 步）`;
         details.open = false;
       } else {
         details.style.display = 'none';
       }
       answerContent.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">（未收到回答内容）</p>';
-    } else {
-      // 若本轮调用了工具，以标准 OpenAI 格式将 tool_calls + tool 结果写入历史
-      if (ctx.toolCalls.length > 0) {
-        conversationHistory.push({
-          role: 'assistant',
-          content: null,
-          tool_calls: ctx.toolCalls.map((tc, i) => ({
-            id: tc.id,
-            type: 'function',
-            function: { name: tc.name, arguments: JSON.stringify(tc.args) }
-          }))
-        });
-        ctx.toolResults.forEach((tr, i) => {
-          const callId = ctx.toolCalls[i]?.id || `call_${i}`;
-          let resultStr = JSON.stringify(tr.result);
-          if (resultStr.length > 3000) resultStr = resultStr.slice(0, 3000) + '...(已截断)';
-          conversationHistory.push({ role: 'tool', tool_call_id: callId, content: resultStr });
-        });
-      }
-      conversationHistory.push({ role: 'assistant', content: ctx.finalAnswerText });
+    }
+
+    // 新会话：首条消息后刷新侧边栏
+    if (isNewConv && conversationId) {
+      await loadConversationList();
     }
 
   } catch (err) {
-    console.error('[streamChat error]', err);
-    answerContent.innerHTML = `<div class="error-message">连接失败：${escapeHtml(err.message)}</div>`;
-    details.style.display = 'none';
-    summary.innerHTML = '请求失败';
+    if (err.name === 'AbortError') {
+      if (ctx.hasThinking) {
+        summary.innerHTML = `已停止（${ctx.stepCount || 1} 步）`;
+        details.open = false;
+      }
+      if (!answerContent.innerHTML.trim()) {
+        answerContent.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">（已停止生成）</p>';
+      }
+    } else {
+      console.error('[streamChat error]', err);
+      answerContent.innerHTML = `<div class="error-message">连接失败：${escapeHtml(err.message)}</div>`;
+      details.style.display = 'none';
+      summary.innerHTML = '请求失败';
+    }
   } finally {
     isStreaming = false;
-    sendBtn.disabled = false;
+    abortController = null;
+    sendBtn.style.display = '';
+    stopBtn.style.display = 'none';
     userInput.focus();
     scrollToBottom();
   }
@@ -1264,7 +1685,17 @@ userInput.addEventListener('input', () => {
 // ============================================================
 function handleSend() {
   const text = userInput.value.trim();
-  if (!text || isStreaming) return;
+  if (!text) return;
+  if (isStreaming) {
+    // 正在流式输出中：先停止再发送新消息
+    abortController?.abort();
+    // 延迟发送，等当前流完全终止
+    setTimeout(() => {
+      userInput.value = text;
+      handleSend();
+    }, 200);
+    return;
+  }
   userInput.value = '';
   userInput.style.height = 'auto';
   streamChat(text);
@@ -1272,18 +1703,32 @@ function handleSend() {
 
 sendBtn.addEventListener('click', handleSend);
 
+stopBtn.addEventListener('click', () => {
+  abortController?.abort();
+});
+
 userInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     handleSend();
+  }
+  if (e.key === 'Escape' && isStreaming) {
+    e.preventDefault();
+    abortController?.abort();
   }
 });
 
 // 页面加载后聚焦输入框
 userInput.focus();
 
+// 新对话按钮
+document.getElementById('new-conv-btn').addEventListener('click', newConversation);
+
 // 绑定主题切换按钮
 document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+
+// 页面加载时获取会话列表
+loadConversationList();
 </script>
 </body>
 </html>
