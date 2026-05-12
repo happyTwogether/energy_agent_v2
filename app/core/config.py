@@ -42,7 +42,11 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     default_model: str = ""
     log_level: str = "INFO"
-    llm_max_tokens: int = 8192  # LLM 最大输出 token 数，防止长报告被截断
+    llm_max_tokens: int = 4096  # LLM 最大输出 token 数
+    llm_temperature: float = 0.3  # 生成温度，越低输出越确定
+    summary_model: str = ""  # 总结模型名，不填则复用 default_model
+    summary_api_key: str = ""  # 总结模型 API Key，不填则复用 llm_api_key
+    summary_base_url: str = ""  # 总结模型 Base URL，不填则复用 llm_base_url
     llm_tool_call_fallback_enabled: bool = True
     llm_tool_call_strict_mode: bool = True
     llm_tool_call_retry_on_suspected_draft: bool = True
