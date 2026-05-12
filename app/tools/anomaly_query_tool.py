@@ -289,48 +289,25 @@ async def _fetch_nr_data(
 
 
 @tool_registry.tool(
-    description="""诊断特定日期是否有核心指标劣化超过10%。
-
-对比目标日期与过去7天历史基线，找出数值劣化超过10%的核心能效指标。
-
-参数说明:
-- dist_name: 地市名称 (如: 长沙市)
-- prod_name: 设备厂家 (如: 华为)
-- target_date: 目标诊断日期 (YYYY-MM-DD)，未提及传昨天
-- export_excel: 是否导出 Excel 文件（可选，默认 false）
-
-Excel 导出:
-- 设置 export_excel=true 可将异常指标导出为 Excel 文件
-- 导出内容包含 4G 和 5G 所有异常指标的合并数据
-- 返回结果中的 download_url 可用于下载
-
-使用示例:
-- "诊断长沙市华为昨天的指标异常，导出 Excel"
-- "分析长沙 2025-03-20 的指标波动情况，并生成下载链接"
-
-触发条件: 用户询问"异常"、"劣化"、"大幅下降"、"波动"时调用。
-
-返回:
-- 包含异常指标列表的字典，若无异常告知运行平稳
-""",
+    description="""诊断核心指标劣化情况。对比目标日期与过去7天基线，找出劣化超过10%的指标。""",
     parameters={
         "type": "object",
         "properties": {
             "dist_name": {
                 "type": "string",
-                "description": "地市名称",
+                "description": "地市名称，如长沙市",
             },
             "prod_name": {
                 "type": "string",
-                "description": "设备厂家",
+                "description": "设备厂家，如华为",
             },
             "target_date": {
                 "type": "string",
-                "description": "目标诊断日期 (YYYY-MM-DD)，未提及传昨天",
+                "description": "目标诊断日期 (YYYY-MM-DD)",
             },
             "export_excel": {
                 "type": "boolean",
-                "description": "是否导出为 Excel 文件",
+                "description": "是否导出 Excel",
                 "default": False,
             },
         },

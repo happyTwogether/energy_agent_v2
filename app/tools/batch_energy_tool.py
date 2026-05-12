@@ -1,10 +1,3 @@
-"""
-批量小区节电诊断与导出工具模块。
-
-从 jd_cell_expansion_day 和 jd_cell_constriction_day 两个表查询数据，
-合并结果生成 Excel 报告。
-"""
-
 import json
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -23,36 +16,25 @@ DB_SCHEMA_AGENT = get_settings().db_schema_agent
 
 
 @tool_registry.tool(
-    description="""按区县批量诊断5G小区节电情况，生成完整报告。
-
-参数说明:
-- dist_name: 地市名称（如"长沙市"），可选。
-- county_name: 区县名称（如"芙蓉区"），必填。
-- prod_name: 厂家名称（如"华为"、"中兴"），可选。
-- stat_time: 统计日期 (YYYY-MM-DD)，可选，默认查询最新日期。
-
-注意: 区县为必填项，若不提供将提示错误。
-
-返回统计摘要 + Excel 下载链接。
-""",
+    description="""按区县批量诊断5G小区节电情况，生成统计摘要和 Excel 报告。区县为必填项。""",
     parameters={
         "type": "object",
         "properties": {
             "dist_name": {
                 "type": "string",
-                "description": "地市名称，如'长沙市'",
+                "description": "地市名称，如长沙市",
             },
             "county_name": {
                 "type": "string",
-                "description": "区县名称，如'芙蓉区'（必填）",
+                "description": "区县名称，如芙蓉区（必填）",
             },
             "prod_name": {
                 "type": "string",
-                "description": "厂家名称，如'华为'、'中兴'",
+                "description": "厂家名称，如华为",
             },
             "stat_time": {
                 "type": "string",
-                "description": "统计日期 (YYYY-MM-DD)，可选，默认最新日期",
+                "description": "统计日期 (YYYY-MM-DD)",
             },
         },
         "required": [],

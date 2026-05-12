@@ -269,71 +269,37 @@ def _generate_report(query_label: str, data: list[dict[str, Any]], is_single_cgi
 
 
 @tool_registry.tool(
-    description="""查询小区节能参数核查结果。
+    description="""查询小区节能参数核查结果，分析不合规配置。
 
-查询指定日期的节能参数核查数据，分析不合规配置，生成标准化 Markdown 报告。
-
-表设计规则:
-- 统一表名: {schema}.eng_check_result
-- 按 check_time 进行分区和日期过滤
-
-日期规则:
-- 用户未传 check_date 时: 自动查询数据库中最新日期
-- 数据库查询失败时回退: 当前时间 < 15:00 用昨天，>= 15:00 用今天
-
-查询优先级（至少提供一种查询条件）:
-1. 如果提供 cgi，直接用 cgi 查询（最精确，输出单小区报告）
-2. 如果提供 cell_name，用 cell_name 查询
-3. 否则需要 dist_name + prod_name 进行批量查询（输出汇总报告）
-
-参数说明:
-- check_date: 核查日期 (YYYY-MM-DD，未提及自动计算)
-- cgi: CGI 过滤（可选，优先级最高，如 "460-00-12345-678"）
-- cell_name: 小区名称过滤（可选，如 "长沙芙蓉区芙蓉广场-HHH-1"）
-- dist_name: 地市名称（可选，当未提供 cgi/cell_name 时必填）
-- prod_name: 设备厂家（可选，当未提供 cgi/cell_name 时必填）
-- export_excel: 是否导出 Excel 文件（可选，默认 false）
-
-Excel 导出:
-- 设置 export_excel=true 可将不合规参数导出为 Excel 文件
-- 导出内容包含所有不合规参数的明细数据
-- 返回结果中的 download_url 可用于下载
-
-使用示例:
-- "核查长沙华为小区的节能参数，导出 Excel"
-- "检查 CGI 460-00-12345-678 的参数配置，并生成报告"
-
-触发条件: "节能参数核查"、"参数检查"、"配置核查"、"参数合规"。
-
-返回:
-- 包含 report_content 和结构化数据的字典
+查询优先级: cgi > cell_name > dist_name/prod_name。
+check_date 可选，未传自动查最新日期。
 """,
     parameters={
         "type": "object",
         "properties": {
             "check_date": {
                 "type": "string",
-                "description": "核查日期 (YYYY-MM-DD)，未提及时自动查询数据库最新日期",
+                "description": "核查日期 (YYYY-MM-DD)，不传则自动查最新",
             },
             "cgi": {
                 "type": "string",
-                "description": "CGI 过滤（可选，优先级最高，如 460-00-12345-678）",
+                "description": "CGI，优先级最高",
             },
             "cell_name": {
                 "type": "string",
-                "description": "小区名称过滤（可选，如 长沙芙蓉区芙蓉广场-HHH-1）",
+                "description": "小区名称",
             },
             "dist_name": {
                 "type": "string",
-                "description": "地市名称（可选，当未提供 cgi/cell_name 时必填）",
+                "description": "地市名称，如长沙市",
             },
             "prod_name": {
                 "type": "string",
-                "description": "设备厂家（可选，当未提供 cgi/cell_name 时必填）",
+                "description": "设备厂家，如华为",
             },
             "export_excel": {
                 "type": "boolean",
-                "description": "是否导出为 Excel 文件",
+                "description": "是否导出 Excel",
                 "default": False,
             },
         },
