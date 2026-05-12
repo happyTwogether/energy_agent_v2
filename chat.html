@@ -1474,16 +1474,24 @@ function processSseEvent(eventStr, ctx) {
     case 'token': {
       const token = typeof payload === 'object' ? payload.token : String(payload);
       if (token) {
-        ctx.streamingText += token;
-        if (!ctx.streamingDiv) {
-          ctx.streamingDiv = document.createElement('div');
-          ctx.streamingDiv.className = 'step-card';
-          ctx.streamingDiv.innerHTML = '<div class="step-header">推理中</div><div class="step-body"></div>';
-          thinkingContent.appendChild(ctx.streamingDiv);
-          details.open = true;
+        if (ctx.hasThinking) {
+          // 工具调用后的总结 token → 直接流到回答区
+          ctx.finalAnswerText += token;
+          answerContent.textContent = ctx.finalAnswerText;
+          answerContent.classList.add('streaming');
+        } else {
+          // 意图识别阶段的 token → 思考面板
+          ctx.streamingText += token;
+          if (!ctx.streamingDiv) {
+            ctx.streamingDiv = document.createElement('div');
+            ctx.streamingDiv.className = 'step-card';
+            ctx.streamingDiv.innerHTML = '<div class="step-header">推理中</div><div class="step-body"></div>';
+            thinkingContent.appendChild(ctx.streamingDiv);
+            details.open = true;
+          }
+          ctx.streamingDiv.querySelector('.step-body').textContent = ctx.streamingText;
+          summary.innerHTML = '思考中<span class="thinking-dot">.</span><span class="thinking-dot">.</span><span class="thinking-dot">.</span></span>';
         }
-        ctx.streamingDiv.querySelector('.step-body').textContent = ctx.streamingText;
-        summary.innerHTML = '思考中<span class="thinking-dot">.</span><span class="thinking-dot">.</span><span class="thinking-dot">.</span></span>';
         scrollToBottom();
       }
       break;
