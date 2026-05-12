@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings, MAX_RETURN_ITEMS
 from app.core.logging import get_logger
+from app.prompts.sql_generation import SQL_GENERATION_PROMPT
 from app.services.llm_client import get_llm_client, LLMError
 from app.tools.registry import tool_registry
 from app.utils.export_util import export_to_excel
@@ -43,44 +44,6 @@ DB_SCHEMA = get_settings().db_schema
 LTE_TABLE = f"{DB_SCHEMA}.lte_report_day_collect"
 NR_TABLE = f"{DB_SCHEMA}.nr_report_day_collect"
 
-# SQL_TEMPLATES: dict[str, dict[str, Any]] = {
-#     "lte_summary": {
-#         "description": "4G汇总指标查询",
-#         "table": LTE_TABLE,
-#         "fields": "data_date, dist_name, prod_name, lte_cell_total, lte_logic_station_total, bbu_power, rru_power, lte_station_power, lte_curmonthpower, lte_curmonthpower_rate, upoctul_dl, avg_energy_efficiency",
-#         "order_by": "ORDER BY data_date DESC, dist_name",
-#     },
-#     "nr_summary": {
-#         "description": "5G汇总指标查询",
-#         "table": NR_TABLE,
-#         "fields": "data_date, dist_name, prod_name, nr_cell_total, nr_logic_station_total, nr_bbu_power, nr_rru_power, nr_sa_station_power, nr_curmonthpower, nr_curmonthpower_rate, upoctul_dl, sa_avg_energy_efficiency",
-#         "order_by": "ORDER BY data_date DESC, dist_name",
-#     },
-#     "lte_energy_saving": {
-#         "description": "4G节电功能生效情况查询",
-#         "table": LTE_TABLE,
-#         "fields": "data_date, dist_name, prod_name, lte_cell_total, symdown_on, symdown_effect, chandown_on, chandown_effect, carrdown_on, carrdown_effect, deepsleep_on, deepsleep_effect, lte_curmonthpower, lte_curmonthpower_rate",
-#         "order_by": "ORDER BY data_date DESC, dist_name",
-#     },
-#     "nr_energy_saving": {
-#         "description": "5G节电功能生效情况查询",
-#         "table": NR_TABLE,
-#         "fields": "data_date, dist_name, prod_name, nr_cell_total, subframe_silence_on, subframe_silence_effect, channel_silence_on, channel_silence_effect, shallow_sleep_on, shallow_sleep_effect, deep_sleep_on, deep_sleep_effect, extreme_sleep_on, extreme_sleep_effect, nr_curmonthpower, nr_curmonthpower_rate",
-#         "order_by": "ORDER BY data_date DESC, dist_name",
-#     },
-#     "lte_cell_detail": {
-#         "description": "4G小区级节电明细查询",
-#         "table": LTE_TABLE,
-#         "fields": "*",
-#         "order_by": "ORDER BY data_date DESC, dist_name, prod_name",
-#     },
-#     "nr_cell_detail": {
-#         "description": "5G小区级节电明细查询",
-#         "table": NR_TABLE,
-#         "fields": "*",
-#         "order_by": "ORDER BY data_date DESC, dist_name, prod_name",
-#     },
-# }
 SQL_TEMPLATES: dict[str, dict] = {
     "lte_summary": {
         "description": "4G汇总指标查询（规模、能耗、能效、节电量）",
@@ -350,106 +313,11 @@ def _build_llm_prompt(
 
     condition_str = "\n".join(conditions) if conditions else "无额外过滤条件"
 
-    # 获取 schema 用于提示词
-    schema = DB_SCHEMA
-
-    prompt = f"""你是一个专业的 SQL 查询生成助手，专门用于生成 4G/5G 能耗指标的 SQL 查询。
-
-数据库表结构:
-
-1. {schema}.lte_report_day_collect (4G 汇总报表)
-   - data_date (DATE): 日期
-   - dist_name (VARCHAR): 地市名称
-   - prod_name (VARCHAR): 设备厂家
-   - freq_band (VARCHAR): 频段
-   - site_type (VARCHAR): 站型
-   - area (VARCHAR): 区域
-   - logic_station_total (INT): 逻辑站数量
-   - all_cell_total (INT): 总小区数
-   - lte_station_power (DECIMAL): 基站总能耗
-   - bbu_power (DECIMAL): BBU能耗
-   - rru_power (DECIMAL): RRU能耗
-   - avg_energy_efficiency (DECIMAL): 平均能效(GB/千瓦时)
-   - upoctul_dl (DECIMAL): 上下行业务量(GB)
-   - lte_curmonthpower (DECIMAL): 当月节电量
-   - lte_curmonthpower_rate (VARCHAR): 节电率
-   - symdown_effect_hour (DECIMAL): 符号关断生效小时
-   - chandown_effect_hour (DECIMAL): 通道关断生效小时
-   - carrdown_effect_hour (DECIMAL): 载波关断生效小时
-   - deepsleep_effect_hour (DECIMAL): 深度休眠生效小时
-
-2. {schema}.nr_report_day_collect (5G 汇总报表)
-   - data_date (DATE): 日期
-   - dist_name (VARCHAR): 地市名称
-   - prod_name (VARCHAR): 设备厂家
-   - freq_band (VARCHAR): 频段
-   - site_type (VARCHAR): 站型
-   - area (VARCHAR): 区域
-   - logic_station_total (INT): 逻辑站数量
-   - all_cell_total (INT): 总小区数
-   - nr_sa_station_power (DECIMAL): 基站总能耗
-   - sa_bbu_power (DECIMAL): BBU能耗
-   - rru_power (DECIMAL): RRU能耗
-   - sa_avg_energy_efficiency (DECIMAL): 平均能效(GB/千瓦时)
-   - upoctul_dl (DECIMAL): 上下行业务量(GB)
-   - nr_curmonthpower (DECIMAL): 当月节电量
-   - nr_curmonthpower_rate (VARCHAR): 节电率
-   - symdown_effect_hour (DECIMAL): 亚帧静默生效小时
-   - chandown_effect_hour (DECIMAL): 通道静默生效小时
-   - carrdown_effect_hour (DECIMAL): 浅层休眠生效小时
-   - deepsleep_effect_hour (DECIMAL): 深度休眠生效小时
-   - aaurru_supersleep_effect_hour (DECIMAL): 极致休眠生效小时
-
-3. {schema}.lte_report_day_detail (4G 小区级明细)
-   - data_date (DATE): 日期
-   - dist_name (VARCHAR): 地市名称
-   - prod_name (VARCHAR): 设备厂家
-   - cgi (VARCHAR): 小区全局标识
-   - enbid (VARCHAR): 基站ID
-   - symbol_shutdown_hour (DECIMAL): 符号关断小时
-   - channel_shutdown_hour (DECIMAL): 通道关断小时
-   - carrier_shutdown_hour (DECIMAL): 载波关断小时
-   - deepsleep_hour (DECIMAL): 深度休眠小时
-   - upoctul_dl (DECIMAL): 上下行业务量(GB)
-   - is_low_energy (INT): 是否低能效小区
-   - is_common_mode_station (INT): 是否共模站
-
-4. {schema}.nr_report_day_detail (5G 小区级明细)
-   - data_date (DATE): 日期
-   - dist_name (VARCHAR): 地市名称
-   - prod_name (VARCHAR): 设备厂家
-   - cgi (VARCHAR): 小区全局标识
-   - gnbid (VARCHAR): 基站ID
-   - symbol_shutdown_hour (DECIMAL): 亚帧静默小时
-   - channel_shutdown_hour (DECIMAL): 通道静默小时
-   - carrier_shutdown_hour (DECIMAL): 浅层休眠小时
-   - deepsleep_hour (DECIMAL): 深度休眠小时
-   - supersleep_hour (DECIMAL): 极致休眠小时
-   - upoctul_dl (DECIMAL): 上下行业务量(GB)
-   - is_low_energy (INT): 是否低能效小区
-   - is_common_mode_station (INT): 是否共模站
-
-用户需求:
-{metric_desc}
-
-过滤条件:
-{condition_str}
-
-要求:
-1. 生成的 SQL 必须只包含 SELECT 语句，禁止包含 INSERT、UPDATE、DELETE、DROP 等危险操作
-2. 查询表名必须带 schema 前缀，使用上述 4 张真实业务表
-3. 如果查询涉及 4G 和 5G 双网对比，请分别生成两条 SQL，用以下标记分隔:
-   ### SQL_4G ###
-   [4G SQL 语句]
-   ### SQL_5G ###
-   [5G SQL 语句]
-4. 日期字段请使用 data_date
-5. 如果涉及聚合计算，请使用标准 SQL 函数(AVG, SUM, COUNT 等)
-6. 请直接返回 SQL 语句，不要包含解释说明
-
-请生成 SQL 查询:"""
-
-    return prompt
+    return SQL_GENERATION_PROMPT.format(
+        schema=DB_SCHEMA,
+        metric_desc=metric_desc,
+        condition_str=condition_str,
+    )
 
 
 async def _execute_single_query(
@@ -486,23 +354,10 @@ async def _execute_single_query(
 
 
 @tool_registry.tool(
-    description="""查询 4G/5G 能耗指标数据，支持预定义模板查询和自由 SQL 探索模式。
+    description="""查询 4G/5G 能耗指标数据，支持预定义模板和自由 SQL 探索。
 
-预定义模板:
-- lte_summary: 4G汇总指标查询
-- nr_summary: 5G汇总指标查询
-- lte_energy_saving: 4G节电功能生效情况查询
-- nr_energy_saving: 5G节电功能生效情况查询
-- lte_cell_detail: 4G小区级节电明细查询(数据量大，支持导出Excel)
-- nr_cell_detail: 5G小区级节电明细查询(数据量大，支持导出Excel)
-- freeform: 自由探索模式(基于 LLM 生成 SQL)
-
-使用示例:
-1. 模板查询: template_key="lte_summary", dist_name="长沙市", date_start="2024-01-01"
-2. 自由探索: template_key="freeform", metric_desc="查询各地市平均节电率排名"
-3. 导出Excel: template_key="lte_cell_detail", dist_name="长沙市", export_excel=true
-
-Excel导出: 当查询小区级明细或数据量较大时，设置 export_excel=true 可生成Excel下载链接
+模板: lte_summary(4G汇总) / nr_summary(5G汇总) / lte_energy_saving(4G节电) / nr_energy_saving(5G节电) / lte_cell_detail(4G小区明细) / nr_cell_detail(5G小区明细) / freeform(自由探索)
+含特定CGI、对比、TOP排序时用 freeform，填写 metric_desc。
 """,
     parameters={
         "type": "object",
@@ -518,27 +373,27 @@ Excel导出: 当查询小区级明细或数据量较大时，设置 export_excel
                     "nr_cell_detail",
                     "freeform",
                 ],
-                "description": "查询模板标识，freeform 启用自由探索模式",
+                "description": "查询模板标识",
             },
             "dist_name": {
                 "type": "string",
-                "description": "地市名称过滤条件，未传时默认全网",
+                "description": "地市名称，如长沙市",
             },
             "prod_name": {
                 "type": "string",
-                "description": "设备厂家过滤条件，未传时默认全网",
+                "description": "设备厂家，如华为",
             },
             "freq_band": {
                 "type": "string",
-                "description": "频段过滤条件，未传时默认全网",
+                "description": "频段",
             },
             "site_type": {
                 "type": "string",
-                "description": "站型过滤条件，未传时默认全网",
+                "description": "站型",
             },
             "area": {
                 "type": "string",
-                "description": "区域过滤条件，未传时默认全网",
+                "description": "区域",
             },
             "date_start": {
                 "type": "string",
@@ -550,15 +405,15 @@ Excel导出: 当查询小区级明细或数据量较大时，设置 export_excel
             },
             "cgi": {
                 "type": "string",
-                "description": "小区全局标识过滤条件",
+                "description": "小区全局标识，格式 460-00-基站号-小区号",
             },
             "metric_desc": {
                 "type": "string",
-                "description": "自由探索模式下的指标查询需求描述",
+                "description": "自由探索模式下的查询需求描述",
             },
             "export_excel": {
                 "type": "boolean",
-                "description": "是否导出为 Excel 文件，数据量较大时建议开启",
+                "description": "是否导出 Excel",
                 "default": False,
             },
         },
