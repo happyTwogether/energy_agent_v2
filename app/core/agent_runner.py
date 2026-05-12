@@ -21,11 +21,12 @@ from app.core.config import get_settings
 from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
 from app.models.schemas import StreamEvent
-from app.prompts import ENERGY_SAVING_PROMPT_APPENDIX
+from app.prompts import ENERGY_SAVING_INTENT_PROMPT, ENERGY_SAVING_SUMMARY_PROMPT
 from app.services.database import get_session_factory
 from app.services.llm_client import (
     LLMError,
     get_llm_client,
+    get_summary_llm_client,
     inspect_tool_call_content,
 )
 from app.tools.registry import tool_registry
@@ -51,7 +52,7 @@ def _build_system_prompt(
     settings = get_settings()
     current_date = datetime.now().strftime("%Y-%m-%d")
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    system_prompt = settings.agent_system_prompt + ENERGY_SAVING_PROMPT_APPENDIX.format(
+    system_prompt = settings.agent_system_prompt + ENERGY_SAVING_INTENT_PROMPT.format(
         current_date=current_date,
         yesterday=yesterday,
     )
@@ -242,6 +243,7 @@ async def _collect_stream_chunks(
             get_llm_client().stream_chat(
                 messages=messages,
                 tools=tools or None,
+                max_tokens=2000,
             )
         ):
             choices = chunk.get("choices") or []
@@ -286,7 +288,8 @@ async def _collect_stream_chunks(
     if fallback_needed:
         try:
             fallback_resp = await get_llm_client().chat(
-                messages=messages, tools=tools or None
+                messages=messages, tools=tools or None,
+                max_tokens=2000,
             )
             fb_choice = (fallback_resp.get("choices") or [{}])[0]
             finish_reason = fb_choice.get("finish_reason")
@@ -317,13 +320,20 @@ async def _stream_llm_summary(
     messages: list[dict[str, Any]],
     yield_token,
 ) -> str:
-    """调用 LLM 对工具结果进行总结（不带 tools，防止再次触发工具调用）。"""
+    """调用 LLM 对工具结果进行总结（不带 tools，使用总结模型 + 总结 Prompt）。"""
+    # 替换 system message 为总结专用 Prompt
+    summary_messages = [
+        {"role": "system", "content": ENERGY_SAVING_SUMMARY_PROMPT},
+        *[m for m in messages if m.get("role") != "system"],
+    ]
+
+    summary_client = get_summary_llm_client()
     collected = ""
     fallback_needed = False
 
     try:
         async for chunk in _stream_with_idle_timeout(
-            get_llm_client().stream_chat(messages=messages, tools=None)
+            summary_client.stream_chat(messages=summary_messages, tools=None)
         ):
             choices = chunk.get("choices") or []
             if not choices:
@@ -339,7 +349,7 @@ async def _stream_llm_summary(
 
     if fallback_needed:
         try:
-            fb = await get_llm_client().chat(messages=messages, tools=None)
+            fb = await summary_client.chat(messages=summary_messages, tools=None)
             fb_content = ((fb.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
             if fb_content and len(fb_content) > len(collected):
                 remaining = fb_content[len(collected):]
@@ -471,7 +481,7 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                 logger.warning("疑似工具调用草稿触发非流式补救: tool=%s",
                                suspected_tool_name or "unknown")
                 try:
-                    retry_resp = await get_llm_client().chat(messages=messages, tools=tools or None)
+                    retry_resp = await get_llm_client().chat(messages=messages, tools=tools or None, max_tokens=2000)
                     retry_choice = (retry_resp.get("choices") or [{}])[0]
                     retry_msg = retry_choice.get("message") or {}
                     retry_tool_calls = retry_msg.get("tool_calls") or []
