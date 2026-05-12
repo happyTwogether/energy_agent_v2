@@ -1,14 +1,3 @@
-"""
-单小区节电分析工具模块。
-
-数据来源：
-- jd_cell_expansion_day: 高负荷状态、白名单信息、节电时间段
-- jd_cell_detail_hour_nr: 小时级明细（流量、休眠时长），用于15天聚合分析
-- jd_cell_constriction_day: 收缩分析数据
-- jd_cell_around: 周边小区高负荷信息
-- jd_cell_pre_hour_busy: 休眠生效前高负荷数据
-"""
-
 import asyncio
 from datetime import datetime
 from typing import Any
@@ -18,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.services.database import get_session_factory
 from app.tools.registry import tool_registry
 
 DB_SCHEMA_AGENT = get_settings().db_schema_agent
@@ -30,17 +20,12 @@ AROUND_DISTANCE_THRESHOLD: float = 200.0
 @tool_registry.tool(
     description="""分析单个5G小区的节电详情，包含休眠扩展、休眠收缩、负荷状态和休眠生效前高负荷。
 
-参数说明:
-- cgi: 小区全球标识 (格式 460-00-xxx-xxx)，必填
-- analysis_target: 分析目标类型:
-  * "all"           — 输出完整报告（扩展+收缩+备注）
-  * "expansion"     — 仅输出节能扩展分析
-  * "constriction"  — 仅输出节能收缩分析
-  * "load"          — 仅输出高负荷状态
-  * "pre_sleep_load"— 仅输出休眠生效前高负荷分析
-- stat_time: 统计日期 (YYYY-MM-DD)，可选，默认查询最新日期
-
-核心原则: 返回结构化数据 + 基础表格，由 LLM 组装最终报告。
+analysis_target 参数按用户用词推断：
+  - "休眠影响"/"负面影响"/"导致高负荷"/"收缩"/"影响周边"/"节能导致" → "constriction"
+  - "扩展"/"低业务"/"节能增加"/"延长休眠"/"可扩展" → "expansion"
+  - "高负荷"/"负荷状态"/"是否高负荷"/"业务状态" → "load"
+  - "休眠前高负荷"/"休眠前业务" → "pre_sleep_load"
+  - 用户只说CGI未具体说明维度 → "all"
 """,
     parameters={
         "type": "object",
@@ -52,11 +37,11 @@ AROUND_DISTANCE_THRESHOLD: float = 200.0
             "analysis_target": {
                 "type": "string",
                 "enum": ["all", "expansion", "constriction", "load", "pre_sleep_load"],
-                "description": "分析目标: all=全量报告, expansion=休眠扩展, constriction=休眠收缩, load=负荷状态, pre_sleep_load=休眠生效前高负荷",
+                "description": "分析目标",
             },
             "stat_time": {
                 "type": "string",
-                "description": "统计日期 (YYYY-MM-DD)，可选，默认查询最新日期",
+                "description": "统计日期 (YYYY-MM-DD)",
             },
         },
         "required": ["cgi", "analysis_target"],
@@ -115,24 +100,27 @@ async def analyze_single_cell_energy(
         "stat_time": display_date,
     }
 
-    # ── Step 2 & 3: 并行执行扩展分析、收缩分析、参数核查 ──
+    # ── Step 2 & 3: 并行执行扩展分析、收缩分析、参数核查（各自独立 session）──
+    async def _with_own_session(func, *args):
+        async with get_session_factory()() as sess:
+            return await func(sess, *args)
+
     tasks = []
     task_names = []
 
     if need_expansion:
-        tasks.append(_query_expansion_data(db, cgi, query_date))
+        tasks.append(_with_own_session(_query_expansion_data, cgi, query_date))
         task_names.append("expansion")
 
     if need_constriction:
-        tasks.append(_query_constriction_data(db, cgi, query_date))
+        tasks.append(_with_own_session(_query_constriction_data, cgi, query_date))
         task_names.append("constriction")
 
     # 参数核查也加入并行（扩展分析需要）
     if need_expansion:
-        tasks.append(_query_param_check(db, cgi, display_date))
+        tasks.append(_with_own_session(_query_param_check, cgi, display_date))
         task_names.append("param_check")
 
-    # 并行执行所有查询
     results = await asyncio.gather(*tasks) if tasks else []
     results_map = dict(zip(task_names, results))
 
@@ -225,35 +213,37 @@ async def _query_expansion_data(
     """
     from datetime import timedelta
 
-    # 并行查询：基础信息 + 休眠时长
+    # 并行查询：基础信息 + 休眠时长（各自独立 session）
     async def _query_base_info():
-        expansion_sql = text(f"""
-            SELECT is_highload, jd_type, reason, starttime, endtime, is_whitelist,
-                   cell_name, dist_name, county_name, prod_name, hour_detail
-            FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
-            WHERE cgi = :cgi AND stat_time = :stat_time
-        """)
-        result = await db.execute(expansion_sql, {"cgi": cgi, "stat_time": stat_time})
-        return result.mappings().first()
+        async with get_session_factory()() as sess:
+            expansion_sql = text(f"""
+                SELECT is_highload, jd_type, reason, starttime, endtime, is_whitelist,
+                       cell_name, dist_name, county_name, prod_name, hour_detail
+                FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
+                WHERE cgi = :cgi AND stat_time = :stat_time
+            """)
+            result = await sess.execute(expansion_sql, {"cgi": cgi, "stat_time": stat_time})
+            return result.mappings().first()
 
     async def _query_sleep_data():
-        night_hours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 22, 23]
-        start_date = stat_time - timedelta(days=14)
-        sleep_sql = text(f"""
-            SELECT hours,
-                   AVG(ee_shallowsleeptimerru + ee_deepsleeptimerru + ee_supersleeptimerru) as avg_sleep_sum
-            FROM {DB_SCHEMA_AGENT}.jd_cell_detail_hour_nr
-            WHERE cgi = :cgi
-              AND stat_time >= :start_date
-              AND stat_time <= :end_date
-              AND hours = ANY(:night_hours)
-            GROUP BY hours
-            ORDER BY hours
-        """)
-        result = await db.execute(sleep_sql, {
-            "cgi": cgi, "start_date": start_date, "end_date": stat_time, "night_hours": night_hours
-        })
-        return result.mappings().all()
+        async with get_session_factory()() as sess:
+            night_hours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 22, 23]
+            start_date = stat_time - timedelta(days=14)
+            sleep_sql = text(f"""
+                SELECT hours,
+                       AVG(ee_shallowsleeptimerru + ee_deepsleeptimerru + ee_supersleeptimerru) as avg_sleep_sum
+                FROM {DB_SCHEMA_AGENT}.jd_cell_detail_hour_nr
+                WHERE cgi = :cgi
+                  AND stat_time >= :start_date
+                  AND stat_time <= :end_date
+                  AND hours = ANY(:night_hours)
+                GROUP BY hours
+                ORDER BY hours
+            """)
+            result = await sess.execute(sleep_sql, {
+                "cgi": cgi, "start_date": start_date, "end_date": stat_time, "night_hours": night_hours
+            })
+            return result.mappings().all()
 
     base_row, sleep_rows = await asyncio.gather(_query_base_info(), _query_sleep_data())
 
@@ -605,52 +595,51 @@ async def _query_pre_sleep_load_data(
     # 计算7天时间范围（包含当天共7天）
     start_date_7d = stat_time - timedelta(days=6)
 
-    # 并行查询：当日明细 + 7天统计
+    # 并行查询：当日明细 + 7天统计（各自独立 session）
     async def _query_detail():
-        sql = text(f"""
-            SELECT
-                stat_time,
-                dist_name,
-                prod_name,
-                gnb_name,
-                cell_name,
-                cgi,
-                ee_shallowsleeptimerru,
-                ee_deepsleeptimerru,
-                ee_supersleeptimerru,
-                prb_hour,
-                prb_rate_ul,
-                prb_rate_dl,
-                sleep_hour
-            FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
-            WHERE cgi = :cgi
-              AND stat_time = :stat_time
-            ORDER BY stat_time, prb_hour
-        """)
-        result = await db.execute(sql, {"cgi": cgi, "stat_time": stat_time})
-        return result.mappings().all()
+        async with get_session_factory()() as sess:
+            sql = text(f"""
+                SELECT
+                    stat_time,
+                    dist_name,
+                    prod_name,
+                    gnb_name,
+                    cell_name,
+                    cgi,
+                    ee_shallowsleeptimerru,
+                    ee_deepsleeptimerru,
+                    ee_supersleeptimerru,
+                    prb_hour,
+                    prb_rate_ul,
+                    prb_rate_dl,
+                    sleep_hour
+                FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
+                WHERE cgi = :cgi
+                  AND stat_time = :stat_time
+                ORDER BY stat_time, prb_hour
+            """)
+            result = await sess.execute(sql, {"cgi": cgi, "stat_time": stat_time})
+            return result.mappings().all()
 
     async def _query_7day_stats():
-        # 统计7天内PRB利用率>50%的天数（上行>50%或下行>50%，任一满足）
-        sql = text(f"""
-            SELECT COUNT(DISTINCT DATE(stat_time)) AS high_prb_days
-            FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
-            WHERE cgi = :cgi
-              AND stat_time >= :start_date
-              AND stat_time <= :end_date
-              AND (prb_rate_ul > 50 OR prb_rate_dl > 50)
-        """)
-        result = await db.execute(sql, {
-            "cgi": cgi,
-            "start_date": start_date_7d,
-            "end_date": stat_time
-        })
-        row = result.mappings().first()
-        return row["high_prb_days"] if row else 0
+        async with get_session_factory()() as sess:
+            sql = text(f"""
+                SELECT COUNT(DISTINCT DATE(stat_time)) AS high_prb_days
+                FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
+                WHERE cgi = :cgi
+                  AND stat_time >= :start_date
+                  AND stat_time <= :end_date
+                  AND (prb_rate_ul > 50 OR prb_rate_dl > 50)
+            """)
+            result = await sess.execute(sql, {
+                "cgi": cgi,
+                "start_date": start_date_7d,
+                "end_date": stat_time
+            })
+            row = result.mappings().first()
+            return row["high_prb_days"] if row else 0
 
-    detail_rows, high_prb_days = await asyncio.gather(
-        _query_detail(), _query_7day_stats()
-    )
+    detail_rows, high_prb_days = await asyncio.gather(_query_detail(), _query_7day_stats())
 
     # 构建表格数据
     data: list[dict[str, Any]] = []
