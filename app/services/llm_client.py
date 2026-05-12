@@ -152,12 +152,12 @@ class LLMError(Exception):
 class LLMClient:
     """LLM 客户端，封装 LiteLLM 的调用细节。"""
 
-    def __init__(self) -> None:
-        """初始化 LLM 客户端，从配置加载 API Key、Base URL 和默认模型。"""
+    def __init__(self, model: str = "", api_key: str = "", base_url: str = "") -> None:
+        """初始化 LLM 客户端，可指定 override 参数，不填则从全局配置加载。"""
         settings = get_settings()
-        self.model: str = settings.default_model
-        self.api_key: str = settings.llm_api_key
-        self.base_url: str = settings.llm_base_url
+        self.model: str = model or settings.default_model
+        self.api_key: str = api_key or settings.llm_api_key
+        self.base_url: str = base_url or settings.llm_base_url
 
     def _build_kwargs(
         self,
@@ -165,23 +165,16 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         *,
         stream: bool = False,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
-        """构建 LiteLLM acompletion 调用参数。
-
-        Args:
-            messages: 对话消息列表。
-            tools: 可选的工具描述列表。
-            stream: 是否启用流式模式。
-
-        Returns:
-            完整的 kwargs 字典。
-        """
+        """构建 LiteLLM acompletion 调用参数。"""
         settings = get_settings()
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "api_key": self.api_key,
-            "max_tokens": settings.llm_max_tokens,
+            "max_tokens": max_tokens if max_tokens is not None else settings.llm_max_tokens,
+            "temperature": settings.llm_temperature,
             "timeout": 180,
         }
         if self.base_url:
@@ -197,11 +190,13 @@ class LLMClient:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         """调用 LLM 获取完整响应。"""
         try:
             logger.info("调用 LLM chat: model=%s", self.model)
-            response = await litellm.acompletion(**self._build_kwargs(messages, tools))
+            response = await litellm.acompletion(**self._build_kwargs(messages, tools, max_tokens=max_tokens))
             data = response.model_dump()
             normalized = _normalize_response(data)
             logger.info("LLM chat 调用成功")
@@ -214,11 +209,13 @@ class LLMClient:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        max_tokens: int | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """流式调用 LLM，逐块产出响应。"""
         try:
             logger.info("调用 LLM stream_chat: model=%s", self.model)
-            response = await litellm.acompletion(**self._build_kwargs(messages, tools, stream=True))
+            response = await litellm.acompletion(**self._build_kwargs(messages, tools, stream=True, max_tokens=max_tokens))
             chunk_count = 0
             collected_content = ""
             settings = get_settings()
@@ -293,8 +290,28 @@ _llm_client: LLMClient | None = None
 
 
 def get_llm_client() -> LLMClient:
-    """获取 LLM 客户端单例。"""
+    """获取 LLM 客户端单例（意图识别模型）。"""
     global _llm_client
     if _llm_client is None:
         _llm_client = LLMClient()
     return _llm_client
+
+
+_summary_llm_client: LLMClient | None = None
+
+
+def get_summary_llm_client() -> LLMClient:
+    """获取总结模型 LLM 客户端。
+
+    使用 summary_model / summary_api_key / summary_base_url 配置，
+    未配置时回退到主模型配置。
+    """
+    global _summary_llm_client
+    if _summary_llm_client is None:
+        settings = get_settings()
+        _summary_llm_client = LLMClient(
+            model=settings.summary_model,
+            api_key=settings.summary_api_key,
+            base_url=settings.summary_base_url,
+        )
+    return _summary_llm_client
