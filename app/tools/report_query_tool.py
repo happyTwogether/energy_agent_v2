@@ -1,12 +1,3 @@
-"""
-报表生成工具模块。
-
-提取 4G/5G 汇总数据，使用 Python 预处理所有单位换算和异常诊断，
-使用纯 Python f-string 生成标准化 Markdown 报告（零 LLM 依赖）。
-
-核心原则: 纯 Python 搞定一切计算和排版，零 LLM 依赖。
-"""
-
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -644,56 +635,55 @@ def _generate_report_markdown(
 
     return "\n".join(lines)
 
+async def _get_latest_report_date(db: AsyncSession) -> str:
+    """查询数据库中报表数据的最新日期。"""
+    sql = text(f"""
+        SELECT MAX(data_date) FROM (
+            SELECT MAX(data_date) AS data_date FROM {DB_SCHEMA}.lte_report_day_collect
+            UNION ALL
+            SELECT MAX(data_date) FROM {DB_SCHEMA}.nr_report_day_collect
+        ) t
+    """)
+    result = await db.execute(sql)
+    row = result.scalar()
+    if row:
+        return row.strftime("%Y-%m-%d") if hasattr(row, 'strftime') else str(row)[:10]
+    return ""
+
+
 @tool_registry.tool(
-    description="""生成 4G/5G 网络节耗电分析报告。
-
-查询指定时间段内的汇总数据，暗中前推7天获取历史基线，
-使用 Python 预处理所有单位换算和异常诊断，通过纯 Python 生成标准化 Markdown 报告。
-
-参数说明:
-- dist_name: 地市名称 (如: 长沙市)，未传时默认"全网"
-- prod_name: 设备厂家 (如: 华为)，未传时默认"全网"
-- freq_band: 频段 (如: 700M)，未传时默认"全网"
-- site_type: 站型，未传时默认"全网"
-- area: 区域，未传时默认"全网"
-- date_start: 报告日期 (YYYY-MM-DD)，会暗中前推7天获取基线，未传时默认昨天
-- date_end: 结束日期 (YYYY-MM-DD)，通常与 date_start 相同，未传时默认与 date_start 相同
-
-触发条件: "生成报表"、"出报告"、"报表查询"。
-
-返回:
-- 包含 report_content 和结构化数据的字典
-""",
+    description="""生成 4G/5G 网络节耗电分析报告。查询指定时间段汇总数据，前推7天获取基线，对比生成 Markdown 报告。
+未指定日期时自动查询数据库最新数据日期。""",
     parameters={
         "type": "object",
         "properties": {
             "dist_name": {
                 "type": "string",
-                "description": "地市名称，未传时默认全网",
+                "description": "地市名称，如长沙市",
             },
             "prod_name": {
                 "type": "string",
-                "description": "设备厂家，未传时默认全网",
+                "description": "设备厂家",
             },
             "freq_band": {
                 "type": "string",
-                "description": "频段，未传时默认全网",
+                "description": "频段",
             },
             "site_type": {
                 "type": "string",
-                "description": "站型，未传时默认全网",
+                "description": "站型",
             },
             "area": {
                 "type": "string",
-                "description": "区域，未传时默认全网",
+                "description": "区域",
             },
             "date_start": {
                 "type": "string",
-                "description": "报告日期 (YYYY-MM-DD)，会暗中前推7天获取基线，未传时默认昨天",
+                "description": "开始日期 (YYYY-MM-DD)",
             },
             "date_end": {
                 "type": "string",
-                "description": "结束日期 (YYYY-MM-DD)，未传时默认与 date_start 相同",
+                "description": "结束日期 (YYYY-MM-DD)",
             },
         },
         "required": [],
@@ -729,7 +719,10 @@ async def query_report(
     freq_band = freq_band or "全网"
     site_type = site_type or "全网"
     area = area or "全网"
-    date_start = date_start or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    if not date_start:
+        date_start = await _get_latest_report_date(db)
+        if not date_start:
+            return {"success": False, "error": "数据库中暂无报表数据"}
     date_end = date_end or date_start
 
     logger.info(
