@@ -293,14 +293,8 @@ async def _fetch_nr_data(
     parameters={
         "type": "object",
         "properties": {
-            "dist_name": {
-                "type": "string",
-                "description": "地市名称，如长沙市",
-            },
-            "prod_name": {
-                "type": "string",
-                "description": "设备厂家，如华为",
-            },
+            "dist_name": {"type": "string", "description": "地市名称"},
+            "prod_name": {"type": "string", "description": "设备厂家"},
             "target_date": {
                 "type": "string",
                 "description": "目标诊断日期 (YYYY-MM-DD)",
