@@ -5,6 +5,7 @@
 供 Agent Runner 查询和调用。
 """
 
+import json
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field
@@ -32,6 +33,8 @@ class ToolRegistry:
         """初始化空的工具注册表。"""
         self._tools: dict[str, Callable] = {}
         self._metadata: dict[str, ToolMetadata] = {}
+        self._tools_for_llm_cache: list[dict[str, Any]] | None = None
+        self._tools_json_cache: str | None = None
 
     def register_tool(
         self,
@@ -48,6 +51,8 @@ class ToolRegistry:
         """
         self._tools[name] = func
         self._metadata[name] = metadata
+        self._tools_for_llm_cache = None  # 缓存失效
+        self._tools_json_cache = None
         logger.info("工具已注册: %s", name)
 
     def tool(
@@ -108,22 +113,32 @@ class ToolRegistry:
         return list(self._metadata.values())
 
     def get_tools_for_llm(self) -> list[dict[str, Any]]:
-        """将已注册工具转换为 LLM function calling 所需的格式。
+        """将已注册工具转换为 LLM function calling 所需的格式（缓存结果）。
 
         Returns:
             符合 OpenAI function calling 规范的工具描述列表。
         """
-        tools: list[dict[str, Any]] = []
-        for meta in self._metadata.values():
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": meta.name,
-                    "description": meta.description,
-                    "parameters": meta.parameters,
-                },
-            })
-        return tools
+        if self._tools_for_llm_cache is None:
+            tools: list[dict[str, Any]] = []
+            for meta in self._metadata.values():
+                tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": meta.name,
+                        "description": meta.description,
+                        "parameters": meta.parameters,
+                    },
+                })
+            self._tools_for_llm_cache = tools
+        return self._tools_for_llm_cache
+
+    def get_tools_json(self) -> str:
+        """获取预序列化的工具 JSON 字符串（缓存，避免每次请求重复序列化）。"""
+        if self._tools_json_cache is None:
+            self._tools_json_cache = json.dumps(
+                self.get_tools_for_llm(), ensure_ascii=False
+            )
+        return self._tools_json_cache
 
 
 tool_registry = ToolRegistry()

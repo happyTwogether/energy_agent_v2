@@ -7,6 +7,7 @@ LLM 调用适配层。
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator
 
@@ -184,6 +185,11 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        # DeepSeek Context Caching: 通过 extra_headers 启用自动前缀缓存
+        # 对相同 system+tools 前缀的后续请求可显著降低 TTFT
+        if "deepseek" in self.model.lower():
+            kwargs.setdefault("extra_headers", {})
+            kwargs["extra_headers"]["X-DeepSeek-Cache"] = "enabled"
         return kwargs
 
     async def chat(
@@ -214,7 +220,15 @@ class LLMClient:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """流式调用 LLM，逐块产出响应。"""
         try:
-            logger.info("调用 LLM stream_chat: model=%s", self.model)
+            # 计算输入规模用于诊断
+            input_text = json.dumps(messages, ensure_ascii=False)
+            tools_text = json.dumps(tools, ensure_ascii=False) if tools else ""
+            total_chars = len(input_text) + len(tools_text)
+            # 粗略估算: 中英文混合约 2 字符/token (保守估计), 中文为主约 1.5 字符/token
+            estimated_tokens = total_chars // 2
+            t0 = time.time()
+            logger.info("LLM stream_chat 开始: model=%s, input_chars=%d, estimated_tokens~%d",
+                        self.model, total_chars, estimated_tokens)
             response = await litellm.acompletion(**self._build_kwargs(messages, tools, stream=True, max_tokens=max_tokens))
             chunk_count = 0
             collected_content = ""
@@ -280,7 +294,9 @@ class LLMClient:
 
                 yield chunk.model_dump()
 
-            logger.info("LLM stream_chat 完成, 共 %d chunks", chunk_count)
+            elapsed = time.time() - t0
+            logger.info("LLM stream_chat 完成: chunks=%d, elapsed=%.1fs, estimated_tokens~%d",
+                        chunk_count, elapsed, estimated_tokens)
         except Exception as exc:
             logger.error("LLM stream_chat 调用失败: %s", exc, exc_info=True)
             raise LLMError(f"LLM 流式调用失败: {exc}") from exc
