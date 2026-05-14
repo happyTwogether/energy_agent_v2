@@ -50,12 +50,7 @@ def _build_system_prompt(
 ) -> str:
     """统一构建 system prompt。"""
     settings = get_settings()
-    current_date = datetime.now().strftime("%Y-%m-%d")
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    system_prompt = settings.agent_system_prompt + ENERGY_SAVING_INTENT_PROMPT.format(
-        current_date=current_date,
-        yesterday=yesterday,
-    )
+    system_prompt = settings.agent_system_prompt + ENERGY_SAVING_INTENT_PROMPT
 
     if context_text:
         system_prompt += f"\n\n# User Context\n{context_text}"
@@ -73,7 +68,56 @@ def _normalize_messages_with_system_prompt(messages: list[dict[str, Any]]) -> li
         system_content = str(system_message.get("content") or "")
         if system_content.strip():
             context_text = system_content.strip()
+    # 诊断日志：压缩前的原始消息
+    logger.info("原始消息数=%d (不含 system)", len(other_messages))
+    for i, m in enumerate(other_messages):
+        c = m.get("content") or ""
+        tc = m.get("tool_calls")
+        tc_info = f" tool_calls={len(tc)}" if tc else ""
+        logger.info("  raw[%d] role=%s len=%d%s preview=%.200s", i, m.get("role"), len(c), tc_info, c)
+
+    other_messages = _compact_history_messages(other_messages)
     return [{"role": "system", "content": _build_system_prompt(context_text)}, *other_messages]
+
+
+def _compact_history_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """压缩历史消息：user 保留，assistant 精简为工具调用记录，tool 移除。
+
+    目的：防止 LLM 在多轮对话中看到历史工具返回的完整数据后"复用"数据而不调工具。
+    """
+    compacted: list[dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role == "user" and content:
+            compacted.append(msg)
+        elif role == "assistant":
+            tool_calls = msg.get("tool_calls")
+            if tool_calls:
+                summaries = []
+                for tc in tool_calls:
+                    fn = tc.get("function") or {}
+                    summaries.append(
+                        f"已调用 {fn.get('name', 'unknown')}，"
+                        f"参数：{fn.get('arguments', '{}')}"
+                    )
+                compacted.append({
+                    "role": "assistant",
+                    "content": "\n".join(summaries),
+                })
+            elif content and len(content) < 200:
+                # 只保留短消息（错误提示等），长文本（编造报告）移除
+                compacted.append(msg)
+        # role == "tool" / content 为空 → 跳过
+
+    # 诊断日志：打印压缩后的消息结构
+    logger.info("历史消息: before=%d after=%d", len(messages), len(compacted))
+    for i, m in enumerate(compacted):
+        c = m.get("content") or ""
+        tc = m.get("tool_calls")
+        tc_info = f" tool_calls={len(tc)}" if tc else ""
+        logger.info("  [%d] role=%s len=%d%s preview=%.200s", i, m.get("role"), len(c), tc_info, c)
+    return compacted
 
 
 def _extract_direct_answer_from_tool_result(result: dict[str, Any]) -> str | None:
@@ -378,7 +422,10 @@ def _extract_tool_calls_from_text(
     return None, suspected_tool_draft, None
 
 
-async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[StreamEvent, None]:
+async def run_agent_stream(
+    messages: list[dict[str, Any]],
+    output_messages: list[dict[str, Any]] | None = None,
+) -> AsyncGenerator[StreamEvent, None]:
     """运行单步 Function Calling Router，以流式方式产出事件。
 
     流程：
@@ -399,6 +446,13 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
 
     messages = _normalize_messages_with_system_prompt(messages)
     tools: list[dict[str, Any]] = tool_registry.get_tools_for_llm()
+
+    # 诊断日志：输出意图识别的 system prompt 和工具列表（使用缓存序列化避免重复 JSON 编码）
+    tools_json = tool_registry.get_tools_json()
+    system_msg = messages[0]["content"] if messages else ""
+    logger.info("意图识别 system_prompt (%d chars):\n%s", len(system_msg), system_msg)
+    logger.info("意图识别 tools 数量=%d, tools_json (%d chars):\n%s",
+                len(tools), len(tools_json), tools_json)
 
     # 兼容前端：发送固定 agent_step
     yield StreamEvent(event_type="agent_step", data={"step": 1, "max_steps": 1})
@@ -629,3 +683,9 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
     except Exception as exc:
         logger.error("Agent 运行异常: %s", exc, exc_info=True)
         yield StreamEvent(event_type="error", data=f"Agent 运行异常: {exc}")
+    finally:
+        if output_messages is not None:
+            output_messages.clear()
+            output_messages.extend(
+                m for m in messages if m.get("role") != "system" and m.get("content")
+            )

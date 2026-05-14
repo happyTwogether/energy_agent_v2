@@ -110,13 +110,14 @@ async def save_conversation(
     user_id: str,
     new_messages: list[dict],
     title: str | None = None,
+    replace: bool = False,
 ) -> None:
-    """保存会话历史（upsert）。首次创建时设置 title，后续追加不改 title。自动截断到最近 20 条。"""
+    """保存会话历史（upsert）。replace=True 时直接覆盖，否则追加。自动截断到最近 20 条。"""
     result = await db.execute(
         select(Conversation).where(Conversation.conversation_id == conversation_id)
     )
     row = result.scalar_one_or_none()
-    existing_messages = list(row.messages) if row else []
+    existing_messages = [] if replace else (list(row.messages) if row else [])
     merged = existing_messages + new_messages
     if len(merged) > 20:
         merged = merged[-20:]

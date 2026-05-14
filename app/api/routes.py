@@ -140,9 +140,10 @@ async def _event_generator(
         }
 
         collected_answer = ""
+        saved_messages: list[dict] = []
         try:
             logger.info("开始处理请求: query=%s, cid=%s", query[:50], cid)
-            async for event in run_agent_stream(messages=messages):
+            async for event in run_agent_stream(messages=messages, output_messages=saved_messages):
                 if event.event_type == "final_answer":
                     collected_answer = str(event.data)
                 event_data = dumps_decimal(
@@ -161,14 +162,11 @@ async def _event_generator(
                 ),
             }
 
-        # 保存会话
-        clean_answer = _sanitize_history_answer(collected_answer)
+        # 保存会话：完整消息 + 最终回答
+        if saved_messages and collected_answer:
+            saved_messages.append({"role": "assistant", "content": collected_answer})
         title = query[:20] if is_new else None
-        await save_conversation(
-            db, cid, user_id,
-            [{"role": "user", "content": query}, {"role": "assistant", "content": clean_answer}],
-            title=title,
-        )
+        await save_conversation(db, cid, user_id, saved_messages, title=title, replace=True)
 
 
 @router.post("/chat/stream")
@@ -245,7 +243,8 @@ async def _dify_stream_generator(
     try:
         collected_answer = ""
 
-        async for event in run_agent_stream(messages=messages):
+        saved_messages: list[dict] = []
+        async for event in run_agent_stream(messages=messages, output_messages=saved_messages):
             if event.event_type == "token":
                 token_text = str(event.data)
                 collected_answer += token_text
@@ -291,11 +290,9 @@ async def _dify_stream_generator(
                     ),
                 }
 
-        clean_answer = _sanitize_history_answer(collected_answer)
-        await save_conversation(
-            db, conversation_id, user_id,
-            [{"role": "user", "content": user_query}, {"role": "assistant", "content": clean_answer}],
-        )
+        if saved_messages and collected_answer:
+            saved_messages.append({"role": "assistant", "content": collected_answer})
+        await save_conversation(db, conversation_id, user_id, saved_messages, replace=True)
 
         yield {
             "event": "message_end",
@@ -335,7 +332,8 @@ async def _run_blocking(
     collected_answer = ""
     token_count = 0
 
-    async for event in run_agent_stream(messages=messages):
+    saved_messages: list[dict] = []
+    async for event in run_agent_stream(messages=messages, output_messages=saved_messages):
         if event.event_type == "token":
             token_count += 1
         elif event.event_type == "final_answer":
@@ -344,11 +342,9 @@ async def _run_blocking(
         elif event.event_type == "error":
             raise Exception(str(event.data))
 
-    clean_answer = _sanitize_history_answer(collected_answer)
-    await save_conversation(
-        db, conversation_id, user_id,
-        [{"role": "user", "content": user_query}, {"role": "assistant", "content": clean_answer}],
-    )
+    if saved_messages and collected_answer:
+        saved_messages.append({"role": "assistant", "content": collected_answer})
+    await save_conversation(db, conversation_id, user_id, saved_messages, replace=True)
 
     return {
         "event": "message",
