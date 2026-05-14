@@ -22,7 +22,7 @@ logger = get_logger("main")
 
 def _register_tools() -> None:
     """显式注册所有工具模块，确保工具在服务启动时完成注册。"""
-    import app.tools.metric_query_tool  # noqa: F401
+    # import app.tools.metric_query_tool  # noqa: F401
     import app.tools.report_query_tool  # noqa: F401
     import app.tools.energy_saving_tool  # noqa: F401
     import app.tools.anomaly_query_tool  # noqa: F401

@@ -1,150 +1,113 @@
-"""
-能耗指标查询工具模块。
+"""指标查询工具 — 按指标名查值、支持自由 SQL 探索、小区级和汇总级。"""
 
-提供 4G/5G 能耗指标的预定义模板查询和基于 LLM 的自由 SQL 查询双引擎。
-"""
-
+from datetime import datetime, timedelta
 from typing import Any
-
-FILTER_FIELD_ALIASES: dict[str, dict[str, str]] = {
-    "collect": {
-        "dist_name": "dist_name",
-        "prod_name": "prod_name",
-        "freq_band": "freq_band",
-        "site_type": "site_type",
-        "area": "area",
-        "cgi": "cgi",
-    },
-    "detail": {
-        "dist_name": "dist_name",
-        "prod_name": "prod_name",
-        "freq_band": "freq_band",
-        "site_type": "site_type",
-        "area": "area",
-        "cgi": "cgi",
-    },
-}
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings, MAX_RETURN_ITEMS
 from app.core.logging import get_logger
+from app.core.metrics_registry import ALL_METRICS, get_metric_names
 from app.prompts.sql_generation import SQL_GENERATION_PROMPT
+from app.services.database import get_session_factory
 from app.services.llm_client import get_llm_client, LLMError
 from app.tools.registry import tool_registry
 from app.utils.export_util import export_to_excel
 
 logger = get_logger("metric_query_tool")
 
-# 获取数据库 schema，用于构造带 schema 前缀的表名
 DB_SCHEMA = get_settings().db_schema
+LTE_REPORT_TABLE = f"{DB_SCHEMA}.lte_report_day_collect"
+NR_REPORT_TABLE = f"{DB_SCHEMA}.nr_report_day_collect"
+LTE_CELL_TABLE = f"{DB_SCHEMA}.lte_report_day_detail"
+NR_CELL_TABLE = f"{DB_SCHEMA}.nr_report_day_detail"
 
-# 表名配置 - 使用环境变量注入的 schema
-LTE_TABLE = f"{DB_SCHEMA}.lte_report_day_collect"
-NR_TABLE = f"{DB_SCHEMA}.nr_report_day_collect"
-
-SQL_TEMPLATES: dict[str, dict] = {
-    "lte_summary": {
-        "description": "4G汇总指标查询（规模、能耗、能效、节电量）",
-        "sql": """
-            SELECT data_date, dist_name, prod_name, freq_band,
-                   bbu_total, logic_station_total, logic_read_station_total,
-                   all_cell_total, eightm_channel_total,
-                   lte_station_power, lte_station_split_power,
-                   nb_station_split_power, gms_station_split_power,
-                   bbu_power, rru_power,
-                   avg_energy_efficiency, low_energy_total, low_energy_ratio,
-                   upoctul_dl, lte_curmonthpower, lte_curmonthpower_rate,
-                   single_station_power, commode_station_total
-            FROM {schema}.lte_report_day_collect
-            WHERE 1=1 {conditions}
-            ORDER BY data_date DESC LIMIT 1000
-        """
-    },
-    "nr_summary": {
-        "description": "5G汇总指标查询（规模、能耗、能效、节电量）",
-        "sql": """
-            SELECT data_date, dist_name, prod_name, freq_band,
-                   sa_bbu_total, logic_station_total, logic_read_station_total,
-                   all_cell_total, thirtytwo_channel_total, sixtyfour_channel_total,
-                   nr_sa_station_power, nr_sa_station_split_power,
-                   sa_bbu_power, rru_power,
-                   sa_avg_energy_efficiency, low_energy_total, low_energy_ratio,
-                   upoctul_dl, nr_curmonthpower, nr_curmonthpower_rate,
-                   single_station_power, commode_station_total
-            FROM {schema}.nr_report_day_collect
-            WHERE 1=1 {conditions}
-            ORDER BY data_date DESC LIMIT 1000
-        """
-    },
-    "lte_energy_saving": {
-        "description": "4G节电功能生效情况查询（符号关断/通道关断/载波关断/深度休眠）",
-        "sql": """
-            SELECT data_date, dist_name, prod_name, all_cell_total,
-                   symdown_effect_total, symdown_effect_ratio, symdown_effect_hour,
-                   open_symdown_total, open_symdown_rate,
-                   chandown_effect_total, chandown_effect_ratio, chandown_effect_hour,
-                   open_chandown_total, open_chandown_rate,
-                   carrdown_effect_total, carrdown_effect_ratio, carrdown_effect_hour,
-                   open_carrdown_total, open_carrdown_rate,
-                   deepsleep_effect_total, deepsleep_effect_ratio, deepsleep_effect_hour,
-                   open_deepsleep_total, open_deepsleep_rate
-            FROM {schema}.lte_report_day_collect
-            WHERE 1=1 {conditions}
-            ORDER BY data_date DESC LIMIT 1000
-        """
-    },
-    "nr_energy_saving": {
-        "description": "5G节电功能生效情况查询（亚帧静默/通道静默/浅层休眠/深度休眠/极致休眠）",
-        "sql": """
-            SELECT data_date, dist_name, prod_name, all_cell_total,
-                   symdown_effect_total, symdown_effect_ratio, symdown_effect_hour,
-                   open_symdown_total, open_symdown_rate,
-                   chandown_effect_total, chandown_effect_ratio, chandown_effect_hour,
-                   open_chandown_total, open_chandown_rate,
-                   carrdown_effect_total, carrdown_effect_ratio, carrdown_effect_hour,
-                   open_carrdown_total, open_carrdown_rate,
-                   deepsleep_effect_total, deepsleep_effect_ratio, deepsleep_effect_hour,
-                   open_deepsleep_total, open_deepsleep_rate,
-                   aaurru_supersleep_effect_total, aaurru_supersleep_effect_ratio,
-                   aaurru_supersleep_effect_hour,
-                   open_supersleep_total, open_supersleep_rate
-            FROM {schema}.nr_report_day_collect
-            WHERE 1=1 {conditions}
-            ORDER BY data_date DESC LIMIT 1000
-        """
-    },
-    "lte_cell_detail": {
-        "description": "4G小区级节电明细查询",
-        "sql": """
-            SELECT data_date, dist_name, prod_name, cgi, chn_num, enbid,
-                   carrier_shutdown_hour, channel_shutdown_hour,
-                   symbol_shutdown_hour, deepsleep_hour,
-                   upoctul_dl, is_low_energy, is_common_mode_station,
-                   is_carrier_shutdown_switch, is_channel_shutdown_switch,
-                   is_symbol_shutdown_switch, is_deepsleep_switch
-            FROM {schema}.lte_report_day_detail
-            WHERE 1=1 {conditions}
-            ORDER BY data_date DESC LIMIT 1000
-        """
-    },
-    "nr_cell_detail": {
-        "description": "5G小区级节电明细查询",
-        "sql": """
-            SELECT data_date, dist_name, prod_name, cgi, chn_num, gnbid,
-                   carrier_shutdown_hour, channel_shutdown_hour,
-                   symbol_shutdown_hour, deepsleep_hour, supersleep_hour,
-                   upoctul_dl, is_low_energy, is_common_mode_station,
-                   is_carrier_shutdown_switch, is_channel_shutdown_switch,
-                   is_symbol_shutdown_switch, is_deepsleep_switch,
-                   is_nr_supersleep_switch
-            FROM {schema}.nr_report_day_detail
-            WHERE 1=1 {conditions}
-            ORDER BY data_date DESC LIMIT 1000
-        """
-    }
+# ── 指标组 (metric_names 中可直接用) ──
+METRIC_GROUPS: dict[str, list[str]] = {
+    "summary_4g": ["station_total", "station_online", "cell_total", "bbu_energy", "rru_energy",
+                    "station_energy", "traffic", "avg_energy_efficiency", "energy_saving_rate"],
+    "summary_5g": ["station_total", "station_online", "cell_total", "bbu_energy", "rru_energy",
+                    "station_energy", "traffic", "avg_energy_efficiency", "energy_saving_rate"],
+    "energy_saving_4g": ["symbol_shutdown_on_rate", "symbol_shutdown_hour", "channel_shutdown_on_rate",
+                          "channel_shutdown_hour", "carrier_shutdown_hour", "deepsleep_on_rate", "deepsleep_hour"],
+    "energy_saving_5g": ["symbol_shutdown_on_rate", "symbol_shutdown_hour", "channel_shutdown_on_rate",
+                          "channel_shutdown_hour", "carrier_shutdown_hour", "deepsleep_on_rate",
+                          "deepsleep_hour", "supersleep_hour"],
+    "cell_basic": ["cell_traffic", "cell_carrier_shutdown_hour", "cell_channel_shutdown_hour",
+                    "cell_symbol_shutdown_hour", "cell_deepsleep_hour", "cell_supersleep_hour"],
 }
+
+
+def _resolve_metric_names(raw_names: list[str]) -> list[str]:
+    """展开指标组为具体指标名。"""
+    result = []
+    for name in raw_names:
+        if name in METRIC_GROUPS:
+            result.extend(METRIC_GROUPS[name])
+        else:
+            result.append(name)
+    return result
+
+
+def _detect_network(cgi: str) -> str:
+    """根据 CGI 格式判断网络类型。460-00 开头为 5G，其余为 4G。"""
+    if cgi and cgi.startswith("460-00"):
+        return "5G"
+    return "4G"
+
+
+async def _get_latest_metric_date() -> datetime | None:
+    """获取指标表的最新数据日期（取 LTE/NR 两表最大日期的较大值）。"""
+    sql = text(f"""
+        SELECT MAX(data_date) FROM (
+            SELECT MAX(data_date) AS data_date FROM {LTE_REPORT_TABLE}
+            UNION ALL
+            SELECT MAX(data_date) FROM {NR_REPORT_TABLE}
+        ) t
+    """)
+    factory = get_session_factory()
+    async with factory() as sess:
+        result = await sess.execute(sql)
+        row = result.scalar()
+        return row if row else None
+
+
+def _build_query_sql(
+    metric_names: list[str],
+    table: str,
+    network: str = "5G",
+) -> str | None:
+    """根据指标名列表构建 SELECT SQL。"""
+    all_columns: list[str] = []
+    for name in metric_names:
+        metric = ALL_METRICS.get(name)
+        if not metric:
+            continue
+        cols = metric["columns_nr"] if network == "5G" else metric["columns_lte"]
+        if cols is None:
+            continue
+        for col in cols:
+            if col not in all_columns:
+                all_columns.append(col)
+
+    if not all_columns:
+        return None
+
+    cols_str = ", ".join(all_columns)
+    return f"SELECT data_date, dist_name, prod_name, freq_band, {cols_str} FROM {table}"
+
+
+def _apply_calc(row: dict, metric_name: str) -> float | None:
+    """对查询行应用指标计算函数。"""
+    metric = ALL_METRICS.get(metric_name)
+    if not metric:
+        return None
+    try:
+        return metric["calc"](row)
+    except Exception:
+        return None
+
 
 def _build_conditions(
     dist_name: str | None = None,
@@ -156,233 +119,102 @@ def _build_conditions(
     date_end: str | None = None,
     cgi: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """根据过滤参数构建安全条件字符串和参数字典。
-
-    Args:
-        dist_name: 地市名称。
-        prod_name: 设备厂家。
-        freq_band: 频段。
-        site_type: 站型。
-        area: 区域。
-        date_start: 开始日期 (YYYY-MM-DD)。
-        date_end: 结束日期 (YYYY-MM-DD)。
-        cgi: 小区全局标识。
-
-    Returns:
-        (条件字符串, 参数字典) 元组。
-    """
+    """构建 SQL WHERE 条件和参数字典。"""
     conditions: list[str] = []
     params: dict[str, Any] = {}
 
-    if dist_name:
-        conditions.append("dist_name = :dist_name")
-        params["dist_name"] = dist_name
-
-    if prod_name:
-        conditions.append("prod_name = :prod_name")
-        params["prod_name"] = prod_name
-
-    if freq_band:
-        conditions.append("freq_band = :freq_band")
-        params["freq_band"] = freq_band
-
-    if site_type:
-        conditions.append("site_type = :site_type")
-        params["site_type"] = site_type
-
-    if area:
-        conditions.append("area = :area")
-        params["area"] = area
+    for col, val in [("dist_name", dist_name), ("prod_name", prod_name),
+                      ("freq_band", freq_band), ("site_type", site_type),
+                      ("area", area), ("cgi", cgi)]:
+        if val:
+            conditions.append(f"{col} = :{col}")
+            params[col] = val
 
     if date_start:
         conditions.append("data_date >= :date_start")
         params["date_start"] = date_start
-
     if date_end:
         conditions.append("data_date <= :date_end")
         params["date_end"] = date_end
 
-    if cgi:
-        conditions.append("cgi = :cgi")
-        params["cgi"] = cgi
-
-    # 使用 AND 连接所有条件
     condition_sql = " AND ".join(conditions) if conditions else ""
     if condition_sql:
-        condition_sql = "AND " + condition_sql
-
+        condition_sql = "WHERE " + condition_sql
     return condition_sql, params
 
 
-def _extract_sql_from_llm_response(response_text: str) -> str:
-    """清理 LLM 返回的 Markdown 代码块。
-
-    Args:
-        response_text: LLM 返回的原始文本。
-
-    Returns:
-        清理后的 SQL 字符串。
-    """
-    sql = response_text.strip()
-
-    if sql.startswith("```sql"):
-        sql = sql[6:]
-    elif sql.startswith("```"):
-        sql = sql[3:]
-
-    if sql.endswith("```"):
-        sql = sql[:-3]
-
-    return sql.strip()
-
-
 def _is_safe_sql(sql: str) -> bool:
-    """检查 SQL 是否只包含 SELECT 语句。
-
-    Args:
-        sql: 要检查的 SQL 字符串。
-
-    Returns:
-        如果是安全的 SELECT 语句返回 True，否则返回 False。
-    """
-    upper_sql = sql.upper().strip()
-
-    dangerous_keywords = [
-        "INSERT",
-        "UPDATE",
-        "DELETE",
-        "DROP",
-        "TRUNCATE",
-        "ALTER",
-        "CREATE",
-        "EXEC",
-        "EXECUTE",
-        "UNION",
-    ]
-
-    for keyword in dangerous_keywords:
-        if keyword in upper_sql:
+    upper = sql.upper().strip()
+    for kw in ["INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "EXEC", "EXECUTE", "UNION"]:
+        if kw in upper:
             return False
-
-    if not upper_sql.startswith("SELECT"):
-        return False
-
-    return True
+    return upper.startswith("SELECT")
 
 
+# ── 自由探索 LLM 辅助 ──
 def _build_llm_prompt(
     metric_desc: str,
     dist_name: str | None = None,
     prod_name: str | None = None,
-    freq_band: str | None = None,
-    site_type: str | None = None,
-    area: str | None = None,
     date_start: str | None = None,
     date_end: str | None = None,
 ) -> str:
-    """构建 LLM 提示词。
-
-    Args:
-        metric_desc: 用户描述的指标查询需求。
-        dist_name: 地市名称。
-        prod_name: 设备厂家。
-        freq_band: 频段。
-        site_type: 站型。
-        area: 区域。
-        date_start: 开始日期。
-        date_end: 结束日期。
-
-    Returns:
-        完整的提示词字符串。
-    """
-    conditions = []
+    condition_parts = []
     if dist_name:
-        conditions.append(f"地市: {dist_name}")
+        condition_parts.append(f"地市: {dist_name}")
     if prod_name:
-        conditions.append(f"厂家: {prod_name}")
-    if freq_band:
-        conditions.append(f"频段: {freq_band}")
-    if site_type:
-        conditions.append(f"站型: {site_type}")
-    if area:
-        conditions.append(f"区域: {area}")
+        condition_parts.append(f"厂家: {prod_name}")
     if date_start:
-        conditions.append(f"开始日期: {date_start}")
+        condition_parts.append(f"开始日期: {date_start}")
     if date_end:
-        conditions.append(f"结束日期: {date_end}")
-
-    condition_str = "\n".join(conditions) if conditions else "无额外过滤条件"
-
+        condition_parts.append(f"结束日期: {date_end}")
     return SQL_GENERATION_PROMPT.format(
         schema=DB_SCHEMA,
         metric_desc=metric_desc,
-        condition_str=condition_str,
+        condition_str="，".join(condition_parts) if condition_parts else "无",
     )
 
 
-async def _execute_single_query(
-    db: AsyncSession,
-    sql: str,
-    params: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """执行单条 SQL 查询。
+def _extract_sql_from_llm_response(response_text: str) -> str:
+    sql = response_text.strip()
+    for prefix in ["```sql", "```"]:
+        if sql.startswith(prefix):
+            sql = sql[len(prefix):]
+    if sql.endswith("```"):
+        sql = sql[:-3]
+    return sql.strip()
 
-    Args:
-        db: 数据库会话。
-        sql: SQL 语句。
-        params: 查询参数。
 
-    Returns:
-        查询结果字典。
-    """
+async def _execute_single_query(db: AsyncSession, sql: str, params: dict | None = None) -> dict[str, Any]:
     try:
         result = await db.execute(text(sql), params or {})
         rows = result.mappings().all()
-        data = [dict(row) for row in rows]
-
-        return {
-            "success": True,
-            "row_count": len(data),
-            "data": data,
-        }
+        return {"success": True, "row_count": len(rows), "data": [dict(row) for row in rows]}
     except Exception as exc:
         logger.error("SQL 执行异常: %s", exc, exc_info=True)
-        return {
-            "success": False,
-            "error": f"SQL 执行失败: {exc}",
-        }
+        return {"success": False, "error": f"SQL 执行失败: {exc}"}
 
 
+# ── 主工具 ──
 @tool_registry.tool(
-    description="""查询 4G/5G 能耗指标数据，支持预定义模板和自由 SQL 探索。
-
-模板: lte_summary(4G汇总) / nr_summary(5G汇总) / lte_energy_saving(4G节电) / nr_energy_saving(5G节电) / lte_cell_detail(4G小区明细) / nr_cell_detail(5G小区明细) / freeform(自由探索)
-含特定CGI、对比、TOP排序时用 freeform，填写 metric_desc。
-""",
+    description="查询能耗指标数值。传 metric_names 按指标名或指标组查值，传 metric_desc 进行自由 SQL 探索。传 cgi 查小区级，不传查汇总级。",
     parameters={
         "type": "object",
         "properties": {
-            "template_key": {
-                "type": "string",
-                "enum": [
-                    "lte_summary",
-                    "nr_summary",
-                    "lte_energy_saving",
-                    "nr_energy_saving",
-                    "lte_cell_detail",
-                    "nr_cell_detail",
-                    "freeform",
-                ],
-                "description": "查询模板标识",
+            "metric_names": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": list(METRIC_GROUPS.keys()),
+                },
+                "description": "指标组或指标名列表。指标组: summary_4g,summary_5g,energy_saving_4g,energy_saving_5g,cell_basic。单指标如 bbu_energy,station_online_ratio,cell_traffic 等，传错返回可用列表",
             },
-            "dist_name": {
+            "metric_desc": {
                 "type": "string",
-                "description": "地市名称，如长沙市",
+                "description": "自由探索模式的查询需求描述，与 metric_names 互斥",
             },
-            "prod_name": {
-                "type": "string",
-                "description": "设备厂家，如华为",
-            },
+            "dist_name": {"type": "string", "description": "地市名称"},
+            "prod_name": {"type": "string", "description": "设备厂家"},
             "freq_band": {
                 "type": "string",
                 "description": "频段",
@@ -395,34 +227,25 @@ async def _execute_single_query(
                 "type": "string",
                 "description": "区域",
             },
-            "date_start": {
-                "type": "string",
-                "description": "开始日期 (YYYY-MM-DD)",
-            },
+            "date_start": {"type": "string", "description": "开始日期 (YYYY-MM-DD)"},
             "date_end": {
                 "type": "string",
                 "description": "结束日期 (YYYY-MM-DD)",
             },
-            "cgi": {
-                "type": "string",
-                "description": "小区全局标识，格式 460-00-基站号-小区号",
-            },
-            "metric_desc": {
-                "type": "string",
-                "description": "自由探索模式下的查询需求描述",
-            },
+            "cgi": {"type": "string", "description": "小区 CGI"},
             "export_excel": {
                 "type": "boolean",
                 "description": "是否导出 Excel",
                 "default": False,
             },
         },
-        "required": ["template_key"],
+        "required": [],
     },
 )
 async def query_metric(
-    template_key: str,
     db: AsyncSession,
+    metric_names: list[str] | None = None,
+    metric_desc: str | None = None,
     dist_name: str | None = None,
     prod_name: str | None = None,
     freq_band: str | None = None,
@@ -431,234 +254,138 @@ async def query_metric(
     date_start: str | None = None,
     date_end: str | None = None,
     cgi: str | None = None,
-    metric_desc: str | None = None,
     export_excel: bool = False,
 ) -> dict[str, Any]:
-    """查询 4G/5G 能耗指标。
+    """查询能耗指标数值。"""
+    # 默认日期：优先取 DB 最新日期，DB 无数据时回退到当前时间
+    db_latest = await _get_latest_metric_date()
+    date_note = ""
 
-    支持预定义模板查询和自由 SQL 探索两种模式。
-
-    Args:
-        template_key: 模板标识，决定查询模式。
-        db: 数据库会话。
-        dist_name: 地市名称过滤。
-        prod_name: 设备厂家过滤。
-        freq_band: 频段过滤。
-        site_type: 站型过滤。
-        area: 区域过滤。
-        date_start: 开始日期。
-        date_end: 结束日期。
-        cgi: 小区标识过滤。
-        metric_desc: 自由探索模式的查询描述。
-
-    Returns:
-        包含查询结果的字典。
-    """
-    # 默认值处理
-    dist_name = dist_name or "全网"
-    prod_name = prod_name or "全网"
-    freq_band = freq_band or "全网"
-    site_type = site_type or "全网"
-    area = area or "全网"
-
-    logger.info(
-        "指标查询: template_key=%s, dist_name=%s, prod_name=%s, freq_band=%s, site_type=%s, area=%s, date_range=%s~%s",
-        template_key,
-        dist_name,
-        prod_name,
-        freq_band,
-        site_type,
-        area,
-        date_start,
-        date_end,
-    )
-
-    try:
-        if template_key == "freeform":
-            if not metric_desc:
-                return {
-                    "success": False,
-                    "error": "自由探索模式必须提供 metric_desc 参数",
-                }
-
-            prompt = _build_llm_prompt(
-                metric_desc=metric_desc,
-                dist_name=dist_name,
-                prod_name=prod_name,
-                freq_band=freq_band,
-                site_type=site_type,
-                area=area,
-                date_start=date_start,
-                date_end=date_end,
-            )
-
-            messages = [
-                {"role": "system", "content": "你是一个专业的 SQL 查询生成助手。"},
-                {"role": "user", "content": prompt},
-            ]
-
-            try:
-                llm_response = await get_llm_client().chat(messages=messages)
-                response_content = llm_response.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-                if not response_content:
-                    return {
-                        "success": False,
-                        "error": "LLM 返回空响应",
-                    }
-
-                sql_content = _extract_sql_from_llm_response(response_content)
-
-                if "### SQL_4G ###" in sql_content and "### SQL_5G ###" in sql_content:
-                    parts = sql_content.split("### SQL_5G ###")
-                    sql_4g = parts[0].replace("### SQL_4G ###", "").strip()
-                    sql_5g = parts[1].strip()
-
-                    if not _is_safe_sql(sql_4g) or not _is_safe_sql(sql_5g):
-                        return {
-                            "success": False,
-                            "error": "LLM 生成的 SQL 包含不安全操作",
-                        }
-
-                    lte_result = await _execute_single_query(db, sql_4g)
-                    nr_result = await _execute_single_query(db, sql_5g)
-
-                    # 合并数据用于导出
-                    combined_data = []
-                    for item in lte_result.get("data", []):
-                        item["network_type"] = "4G"
-                        combined_data.append(item)
-                    for item in nr_result.get("data", []):
-                        item["network_type"] = "5G"
-                        combined_data.append(item)
-
-                    # 数据截断逻辑：超过50条时只返回前50条，完整数据走Excel
-                    is_truncated = len(combined_data) > MAX_RETURN_ITEMS
-                    if is_truncated:
-                        logger.info("数据量超过%d条，已截断返回前%d条", MAX_RETURN_ITEMS, MAX_RETURN_ITEMS)
-
-                    result = {
-                        "success": True,
-                        "template_key": template_key,
-                        "is_cross_table": True,
-                        "lte_data": lte_result.get("data", [])[:MAX_RETURN_ITEMS] if len(lte_result.get("data", [])) > MAX_RETURN_ITEMS else lte_result.get("data", []),
-                        "nr_data": nr_result.get("data", [])[:MAX_RETURN_ITEMS] if len(nr_result.get("data", [])) > MAX_RETURN_ITEMS else nr_result.get("data", []),
-                        "lte_row_count": lte_result.get("row_count", 0),
-                        "nr_row_count": nr_result.get("row_count", 0),
-                        "total_count": len(combined_data),
-                        "returned_count": min(len(combined_data), MAX_RETURN_ITEMS),
-                        "is_truncated": is_truncated,
-                    }
-
-                    # Excel 导出逻辑
-                    # 1. 显式要求导出 或 2. 结果超过50条自动导出 或 3. 数据被截断时强制导出
-                    should_export = export_excel or (len(combined_data) > 50) or is_truncated
-                    if should_export and combined_data:
-                        download_url = export_to_excel(combined_data, prefix="metric_query")
-                        if download_url:
-                            result["download_url"] = download_url
-                            result["auto_exported"] = not export_excel  # 标记是否为自动导出
-
-                    return result
-
-                sql = sql_content
-
-                if not _is_safe_sql(sql):
-                    return {
-                        "success": False,
-                        "error": "LLM 生成的 SQL 包含不安全操作",
-                    }
-
-                result = await _execute_single_query(db, sql)
-
-                # 数据截断逻辑：超过50条时只返回前50条，完整数据走Excel
-                data = result.get("data", [])
-                is_truncated = len(data) > MAX_RETURN_ITEMS
-                if is_truncated:
-                    result["data"] = data[:MAX_RETURN_ITEMS]
-                    logger.info("数据量超过%d条，已截断返回前%d条", MAX_RETURN_ITEMS, MAX_RETURN_ITEMS)
-
-                response = {
-                    "success": True,
-                    "template_key": template_key,
-                    **result,
-                    "total_count": len(data),
-                    "returned_count": len(result["data"]),
-                    "is_truncated": is_truncated,
-                }
-
-                # Excel 导出逻辑
-                # 1. 显式要求导出 或 2. 结果超过50条自动导出 或 3. 数据被截断时强制导出
-                should_export = export_excel or (len(data) > 50) or is_truncated
-                if should_export and data:
-                    download_url = export_to_excel(data, prefix="metric_query")
-                    if download_url:
-                        response["download_url"] = download_url
-                        response["auto_exported"] = not export_excel  # 标记是否为自动导出
-
-                return response
-
-            except LLMError as exc:
-                logger.error("LLM 调用失败: %s", exc)
-                return {
-                    "success": False,
-                    "error": f"LLM 调用失败: {exc}",
-                }
-
+    if not date_start and not date_end:
+        if db_latest:
+            date_end = db_latest.strftime("%Y-%m-%d")
+            date_start = (db_latest - timedelta(days=7)).strftime("%Y-%m-%d")
         else:
-            if template_key not in SQL_TEMPLATES:
-                available_keys = ", ".join(SQL_TEMPLATES.keys())
-                return {
-                    "success": False,
-                    "error": f"未知模板: {template_key}。可用模板: {available_keys}, freeform",
-                }
+            date_end = datetime.now().strftime("%Y-%m-%d")
+            date_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
 
-            template = SQL_TEMPLATES[template_key]
-            condition_sql, params = _build_conditions(
-                dist_name=dist_name,
-                prod_name=prod_name,
-                freq_band=freq_band,
-                site_type=site_type,
-                area=area,
-                date_start=date_start,
-                date_end=date_end,
-                cgi=cgi,
+    if date_start and db_latest:
+        db_latest_str = db_latest.strftime("%Y-%m-%d")
+        if date_start > db_latest_str:
+            date_note = f"您查询的日期 {date_start} 暂无最新数据，已自动调整至 {db_latest_str}"
+            date_end = db_latest_str
+            date_start = (db_latest - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    network = _detect_network(cgi or "")
+    is_cell = bool(cgi)
+
+    # ── 自由探索模式 ──
+    if metric_desc:
+        if not metric_desc.strip():
+            return {"success": False, "error": "metric_desc 不能为空"}
+        prompt = _build_llm_prompt(metric_desc, dist_name, prod_name, date_start, date_end)
+        messages = [
+            {"role": "system", "content": "你是一个专业的 SQL 查询生成助手。"},
+            {"role": "user", "content": prompt},
+        ]
+        try:
+            llm_response = await get_llm_client().chat(messages=messages)
+            sql = _extract_sql_from_llm_response(
+                llm_response.get("choices", [{}])[0].get("message", {}).get("content", "")
             )
-
-            # 构建 SQL - 使用模板中的 sql 字段，替换占位符
-            sql = template['sql'].format(schema=DB_SCHEMA, conditions=condition_sql)
-
+            if not sql:
+                return {"success": False, "error": "LLM 未生成有效 SQL"}
+            if not _is_safe_sql(sql):
+                return {"success": False, "error": "生成的 SQL 包含不安全操作"}
+            condition_sql, params = _build_conditions(dist_name, prod_name, freq_band, site_type, area, date_start, date_end, cgi)
+            sql = sql.rstrip(";") + " " + condition_sql
             result = await _execute_single_query(db, sql, params)
+        except LLMError as exc:
+            return {"success": False, "error": f"LLM 调用失败: {exc}"}
+        final = _finalize_result(result, export_excel)
+        if date_note:
+            final["date_note"] = date_note
+        return final
 
-            # 数据截断逻辑：超过50条时只返回前50条，完整数据走Excel
-            data = result.get("data", [])
-            is_truncated = len(data) > MAX_RETURN_ITEMS
-            if is_truncated:
-                result["data"] = data[:MAX_RETURN_ITEMS]
-                logger.info("数据量超过%d条，已截断返回前%d条", MAX_RETURN_ITEMS, MAX_RETURN_ITEMS)
+    # ── 指标名模式 ──
+    if not metric_names:
+        return {"success": False, "error": "请提供 metric_names 或 metric_desc"}
 
-            response = {
-                "template_key": template_key,
-                **result,
-                "total_count": len(data),
-                "returned_count": len(result["data"]),
-                "is_truncated": is_truncated,
-            }
+    # 检查无效指标名
+    unknown = [n for n in metric_names if n not in ALL_METRICS and n not in METRIC_GROUPS]
+    if unknown:
+        avail = sorted(ALL_METRICS.keys())
+        return {"success": False, "error": f"未知指标: {unknown}。可用: {avail}，指标组: {list(METRIC_GROUPS.keys())}"}
 
-            # Excel 导出逻辑
-            # 1. 显式要求导出 或 2. 结果超过50条自动导出 或 3. 数据被截断时强制导出
-            should_export = export_excel or (len(data) > 50) or is_truncated
-            if should_export and data:
-                download_url = export_to_excel(data, prefix=template_key)
-                if download_url:
-                    response["download_url"] = download_url
-                    response["auto_exported"] = not export_excel  # 标记是否为自动导出
+    resolved = _resolve_metric_names(metric_names)
+    table = (LTE_CELL_TABLE if network == "4G" else NR_CELL_TABLE) if is_cell else (LTE_REPORT_TABLE if network == "4G" else NR_REPORT_TABLE)
+    sql = _build_query_sql(resolved, table, network)
+    if not sql:
+        return {"success": False, "error": f"指标 {metric_names} 在当前网络类型下无可用列"}
 
-            return response
+    condition_sql, params = _build_conditions(dist_name, prod_name, freq_band, site_type, area, date_start, date_end, cgi)
+    sql = sql + " " + condition_sql
 
-    except Exception as exc:
-        logger.error("指标查询异常: %s", exc, exc_info=True)
-        return {
-            "success": False,
-            "error": f"查询执行失败: {exc}",
-        }
+    result = await _execute_single_query(db, sql, params)
+    if not result["success"]:
+        return result
+
+    # 对每行数据应用计算，构造 label:value 结构
+    data = result["data"]
+    values: dict[str, Any] = {}
+    detail_rows: list[dict] = []
+    for row in data:
+        row_values = {}
+        for name in resolved:
+            metric = ALL_METRICS.get(name)
+            if not metric:
+                continue
+            val = _apply_calc(row, name)
+            if val is not None:
+                key = metric["label"]
+                row_values[name] = {"label": metric["label"], "value": val, "unit": metric["unit"]}
+                if name not in values:
+                    values[name] = {"label": metric["label"], "value": val, "unit": metric["unit"]}
+        if row_values:
+            detail_rows.append({"date": row.get("data_date"), "dist_name": row.get("dist_name"),
+                                 "prod_name": row.get("prod_name"), "cgi": row.get("cgi"), **row_values})
+
+    is_truncated = len(detail_rows) > MAX_RETURN_ITEMS
+    if is_truncated:
+        detail_rows = detail_rows[:MAX_RETURN_ITEMS]
+
+    response = {
+        "success": True,
+        "metrics": values,
+        "rows": detail_rows,
+        "row_count": len(data),
+        "returned_count": len(detail_rows),
+        "is_truncated": is_truncated,
+        **({"date_note": date_note} if date_note else {}),
+    }
+
+    should_export = export_excel or (len(data) > 50) or is_truncated
+    if should_export and data:
+        download_url = export_to_excel(data, prefix="metric_query")
+        if download_url:
+            response["download_url"] = download_url
+
+    return response
+
+
+def _finalize_result(result: dict, export_excel: bool) -> dict:
+    """处理查询结果：截断 + Excel 导出。"""
+    if not result.get("success"):
+        return result
+    data = result.get("data", [])
+    is_truncated = len(data) > MAX_RETURN_ITEMS
+    if is_truncated:
+        result["data"] = data[:MAX_RETURN_ITEMS]
+    response = {"success": True, "total_count": len(data), "returned_count": len(result["data"]),
+                "is_truncated": is_truncated, **result}
+    should_export = export_excel or (len(data) > 50) or is_truncated
+    if should_export and data:
+        url = export_to_excel(data, prefix="metric_query")
+        if url:
+            response["download_url"] = url
+    return response
