@@ -61,7 +61,7 @@ MAX_UNQUALIFIED_ITEMS: int = 10
             },
             "analysis_target": {
                 "type": "string",
-                "enum": ["all", "expansion", "constriction", "load", "pre_sleep_load"],
+                "enum": ["all", "expansion", "constriction", "pre_sleep_load"],
                 "description": "分析目标",
             },
             "stat_time": {

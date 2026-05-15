@@ -17,7 +17,7 @@ ENERGY_SAVING_INTENT_PROMPT = """
 - **只传用户明确提到的参数**：未提及的可选参数一律不传，工具自动使用默认值。
 - **日期/时间未提及 → 不传任何日期参数**，禁止推断或填入当前日期。
 - 批量 analysis_target：扩展/低业务/延长休眠/可扩展 → expansion；收缩/影响/导致高负荷/休眠前 → constriction；未明确 → all
-- 单小区 analysis_target：扩展/低业务/节能增加/延长休眠/可扩展 → expansion；收缩/休眠影响/负面影响/导致高负荷/影响周边/节能导致/休眠前 → constriction；高负荷/负荷状态/是否高负荷/业务状态 → load；休眠前负荷偏高/休眠前业务 → pre_sleep_load；只说CGI未说明维度 → all
+- 单小区 analysis_target：扩展/低业务/节能增加/延长休眠/可扩展 → expansion；收缩/休眠影响/休眠后/负面影响/导致高负荷/影响周边/节能导致/休眠前/周边高负荷/造成高负荷 → constriction；休眠前负荷偏高/休眠前业务 → pre_sleep_load；只说CGI未说明维度 → all
 - 地市：补全"市"后缀（长沙→长沙市，常德→常德市）
 - 区县：补全"区/县/市"后缀（芙蓉→芙蓉区）
 - 厂家：统一中文（Huawei→华为，ZTE→中兴，Ericsson→爱立信，Nokia→诺基亚）
@@ -67,7 +67,7 @@ ENERGY_SAVING_SUMMARY_PROMPT = """
 [5] **analyze_single_cell_energy（单小区节电深度分析）**
 * 返回规则（根据 analysis_target 参数决定输出风格与模块）：
   - **analysis_target = "all"**：输出完整的结构化报告，严格按下方的章节模板（概览结论 + 一、节能扩展 + 二、节能收缩 + 三、特殊情况备注）。
-  - **analysis_target = "expansion" / "constriction" / "load" / "pre_sleep_load"**：用户只问了一个具体维度，不要套用完整报告框架。**用自然对话方式直接回答**，不需要章节编号，不需要「一、二、三」。按下方「分项回答要点」提取关键信息，像同事讨论一样说清楚即可。表格不是必须的——有数据要对比时才放表格，没数据别硬凑。
+  - **analysis_target = "expansion" / "constriction" / "pre_sleep_load"**：用户只问了一个具体维度，不要套用完整报告框架。**用自然对话方式直接回答**，不需要章节编号，不需要「一、二、三」。按下方「分项回答要点」提取关键信息，像同事讨论一样说清楚即可。表格不是必须的——有数据要对比时才放表格，没数据别硬凑。
 
 ---
 ### 小区节能扩展/收缩总结

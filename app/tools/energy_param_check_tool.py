@@ -1,19 +1,4 @@
 """
-节能参数核查工具模块。
-
-查询小区节能参数核查结果，生成标准化 Markdown 报告。
-
-表设计规则:
-- 统一表名: {schema}.eng_check_result
-- 按 check_time 进行分区和日期过滤
-
-日期规则:
-- 用户未传 check_date 时: 自动查询数据库中最新日期
-- 数据库查询失败时回退: 当前时间 < 15:00 用昨天，>= 15:00 用今天
-
-核心原则: 纯 Python 查询与报告生成，零 LLM 依赖。
-"""
-
 from datetime import datetime, timedelta, time
 from typing import Any
 
