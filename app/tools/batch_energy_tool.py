@@ -238,6 +238,23 @@ async def _do_analyze(
 # ═══════════════════════════════════════════════════════════════════
 
 
+def _ensure_datetime(val: Any) -> datetime | None:
+    """将 DB 返回的日期值归一化为 datetime，兼容 str/date/datetime。"""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, date):
+        return datetime.combine(val, datetime.min.time())
+    if isinstance(val, str):
+        for fmt in ["%Y-%m-%d", "%Y%m%d", "%Y-%m-%d %H:%M:%S"]:
+            try:
+                return datetime.strptime(val, fmt)
+            except ValueError:
+                continue
+    return None
+
+
 async def _resolve_latest_date(need_constriction: bool) -> datetime | None:
     """自动获取最新数据日期（使用独立 session）。
 
@@ -246,14 +263,14 @@ async def _resolve_latest_date(need_constriction: bool) -> datetime | None:
     """
     exp_sql = text(f"SELECT MAX(stat_time) as max_date FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day")
     rows = await _fetch_rows(exp_sql, {})
-    exp_max = rows[0]["max_date"] if rows else None
+    exp_max = _ensure_datetime(rows[0]["max_date"]) if rows else None
 
     if not need_constriction or not exp_max:
         return exp_max
 
     const_sql = text(f"SELECT MAX(stat_time) as max_date FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day")
     rows = await _fetch_rows(const_sql, {})
-    const_max = rows[0]["max_date"] if rows else None
+    const_max = _ensure_datetime(rows[0]["max_date"]) if rows else None
 
     return min(exp_max, const_max) if const_max else exp_max
 
@@ -367,8 +384,8 @@ def _build_table_data(
             stats["whitelist"] += 1
             reason = exp_info.get("reason") or "无"
             jd_type = exp_info.get("jd_type") or "无"
-            st = exp_info.get("starttime")
-            et = exp_info.get("endtime")
+            st = _ensure_datetime(exp_info.get("starttime"))
+            et = _ensure_datetime(exp_info.get("endtime"))
             st_str = st.strftime("%Y-%m-%d") if st else "无"
             et_str = et.strftime("%Y-%m-%d") if et else "无"
             row[_COL_WHITELIST] = (
