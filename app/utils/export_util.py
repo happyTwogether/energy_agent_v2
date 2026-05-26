@@ -11,7 +11,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from app.core.config import get_settings
+from app.core.config import get_settings, MAX_RETURN_ITEMS
 from app.core.logging import get_logger
 
 logger = get_logger("export_util")
@@ -183,3 +183,45 @@ def cleanup_old_exports(max_age_hours: int = 24) -> int:
         logger.error(f"清理导出文件失败: {str(e)}", exc_info=True)
 
     return deleted_count
+
+
+def truncate_and_export(
+    data: list[dict],
+    prefix: str,
+    export_excel: bool = False,
+    max_items: int = MAX_RETURN_ITEMS,
+) -> tuple[list[dict], dict]:
+    """截断数据列表并可选导出 Excel，返回 (截断后数据, 元信息字典)。
+
+    Args:
+        data: 原始数据列表。
+        prefix: 导出文件名前缀。
+        export_excel: 用户是否显式要求导出。
+        max_items: 截断阈值，默认使用全局配置 MAX_RETURN_ITEMS。
+
+    Returns:
+        (截断后数据, 元信息字典):
+        - is_truncated: 是否截断
+        - total_count: 原始数据条数
+        - returned_count: 返回数据条数
+        - download_url: Excel 下载链接（仅导出时）
+        - auto_exported: 是否自动导出（仅导出时）
+    """
+    total = len(data)
+    is_truncated = total > max_items
+    result_data = data[:max_items] if is_truncated else data
+
+    meta: dict = {
+        "is_truncated": is_truncated,
+        "total_count": total,
+        "returned_count": len(result_data),
+    }
+
+    should_export = export_excel or is_truncated
+    if should_export and data:
+        url = export_to_excel(data, prefix=prefix)
+        if url:
+            meta["download_url"] = url
+            meta["auto_exported"] = not export_excel
+
+    return result_data, meta
