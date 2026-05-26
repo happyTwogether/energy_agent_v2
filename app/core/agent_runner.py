@@ -406,6 +406,71 @@ async def _stream_llm_summary(
     return collected
 
 
+class _TokenStream:
+    """异步可迭代对象，迭代完成后通过 .result 获取 producer_fn 返回值。
+
+    封装了 asyncio.Queue + Event 模式：创建一个后台任务运行 producer_fn，
+    主流程从队列消费 token 并通过异步生成器 yield 给调用方。
+
+    Raises:
+        生产者函数中抛出的异常（在排空队列后重新抛出，保证调用方能收到所有已产生的 token）。
+    """
+
+    def __init__(self, producer_fn):
+        self._producer_fn = producer_fn
+        self.result = None
+
+    async def _consume(self):
+        token_queue: asyncio.Queue[str] = asyncio.Queue()
+        stream_done = asyncio.Event()
+        stream_result: list = []
+        _stream_error: BaseException | None = None
+
+        async def _stream_producer():
+            nonlocal _stream_error
+            try:
+                result = await self._producer_fn(lambda t: token_queue.put_nowait(t))
+                stream_result.append(result)
+            except BaseException as e:
+                _stream_error = e
+            finally:
+                stream_done.set()
+
+        stream_task = asyncio.create_task(_stream_producer())
+
+        try:
+            while not stream_done.is_set() or not token_queue.empty():
+                try:
+                    t = await asyncio.wait_for(token_queue.get(), timeout=0.1)
+                    yield t
+                except asyncio.TimeoutError:
+                    continue
+
+            if _stream_error is not None:
+                raise _stream_error
+
+            self.result = stream_result[0] if stream_result else None
+        finally:
+            if not stream_task.done():
+                stream_task.cancel()
+                try:
+                    await stream_task
+                except asyncio.CancelledError:
+                    pass
+
+    def __aiter__(self):
+        return self._consume()
+
+
+def _run_with_token_queue(producer_fn):
+    """执行流式生产者函数，通过异步生成器转发 token 输出。
+
+    返回 _TokenStream 实例，可异步迭代获取 token，
+    迭代完成后通过 .result 属性获取 producer_fn 的返回值。
+    """
+    return _TokenStream(producer_fn)
+
+
 def _extract_tool_calls_from_text(
     content: str,
     settings: Any,
@@ -465,50 +530,23 @@ async def run_agent_stream(
         suspected_tool_draft = False
         suspected_tool_name: str | None = None
 
-        token_queue: asyncio.Queue[str] = asyncio.Queue()
-        stream_done = asyncio.Event()
-        stream_result: list = []
-        _stream_error: BaseException | None = None
-
-        async def _run_phase1_stream():
-            nonlocal _stream_error
-            try:
-                result = await _collect_stream_chunks(
-                    messages, tools,
-                    lambda t: token_queue.put_nowait(t),
-                )
-                stream_result.extend(result)
-            except BaseException as e:
-                _stream_error = e
-            finally:
-                stream_done.set()
-
-        stream_task = asyncio.create_task(_run_phase1_stream())
-
+        stream_gen = _run_with_token_queue(
+            producer_fn=lambda cb: _collect_stream_chunks(messages, tools, cb),
+        )
         try:
-            while not stream_done.is_set() or not token_queue.empty():
+            ait = stream_gen.__aiter__()
+            while True:
                 try:
-                    t = await asyncio.wait_for(token_queue.get(), timeout=0.1)
-                    yield StreamEvent(event_type="token", data=t)
-                except asyncio.TimeoutError:
-                    continue
-
-            if _stream_error is not None:
-                if isinstance(_stream_error, LLMError):
-                    logger.error("LLM 调用失败: %s", _stream_error)
-                    yield StreamEvent(event_type="error", data=str(_stream_error))
-                    return
-                raise _stream_error
-
-            collected_content, collected_tool_calls, finish_reason, \
-                suspected_tool_draft, suspected_tool_name, _ = stream_result
-        finally:
-            if not stream_task.done():
-                stream_task.cancel()
-                try:
-                    await stream_task
-                except asyncio.CancelledError:
-                    pass
+                    token = await ait.__anext__()
+                    yield StreamEvent(event_type="token", data=token)
+                except StopAsyncIteration:
+                    collected_content, collected_tool_calls, finish_reason, \
+                        suspected_tool_draft, suspected_tool_name, _ = stream_gen.result
+                    break
+        except LLMError as llm_err:
+            logger.error("LLM 调用失败: %s", llm_err)
+            yield StreamEvent(event_type="error", data=str(llm_err))
+            return
 
         # ── Phase 2: 从文本中提取 <tool> 标签（DeepSeek 兼容） ──
         tool_calls: list[dict[str, Any]] | None = (
@@ -626,51 +664,24 @@ async def run_agent_stream(
                     return
 
             # LLM 总结工具结果（实时流式 yield token）
-            summary_queue: asyncio.Queue[str] = asyncio.Queue()
-            summary_done = asyncio.Event()
-            summary_result: list = []
-            _summary_error: BaseException | None = None
-
-            async def _run_summary_stream():
-                nonlocal _summary_error
-                try:
-                    text = await _stream_llm_summary(
-                        messages,
-                        lambda t: summary_queue.put_nowait(t),
-                    )
-                    summary_result.append(text)
-                except BaseException as e:
-                    _summary_error = e
-                finally:
-                    summary_done.set()
-
-            summary_task = asyncio.create_task(_run_summary_stream())
-
+            summary_gen = _run_with_token_queue(
+                producer_fn=lambda cb: _stream_llm_summary(messages, cb),
+            )
             try:
-                while not summary_done.is_set() or not summary_queue.empty():
+                ait = summary_gen.__aiter__()
+                while True:
                     try:
-                        t = await asyncio.wait_for(summary_queue.get(), timeout=0.1)
-                        yield StreamEvent(event_type="token", data=t)
-                    except asyncio.TimeoutError:
-                        continue
-
-                if _summary_error is not None:
-                    if isinstance(_summary_error, LLMError):
-                        logger.exception("LLM 总结失败")
-                        yield StreamEvent(event_type="error", data="工具执行完成，但总结生成失败，请重试。")
-                        return
-                    raise _summary_error
-
-                summary_text = summary_result[0] if summary_result else ""
+                        token = await ait.__anext__()
+                        yield StreamEvent(event_type="token", data=token)
+                    except StopAsyncIteration:
+                        summary_text = summary_gen.result or ""
+                        break
                 yield StreamEvent(event_type="final_answer", data=summary_text or "工具执行完成，但未能生成总结。")
                 return
-            finally:
-                if not summary_task.done():
-                    summary_task.cancel()
-                    try:
-                        await summary_task
-                    except asyncio.CancelledError:
-                        pass
+            except LLMError:
+                logger.exception("LLM 总结失败")
+                yield StreamEvent(event_type="error", data="工具执行完成，但总结生成失败，请重试。")
+                return
 
         # ── Phase 6: 兜底 ──
         if collected_content:
