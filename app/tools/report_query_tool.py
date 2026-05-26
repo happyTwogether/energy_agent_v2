@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.metrics_registry import safe_div, to_tb, to_wan_du
 from app.tools.registry import tool_registry
 
 logger = get_logger("report_query_tool")
@@ -17,8 +18,6 @@ logger = get_logger("report_query_tool")
 DB_SCHEMA = get_settings().db_schema          # PostgreSQL 的 schema 名
 BASELINE_LOOKBACK_DAYS: int = 7               # 基线回溯 7 天
 ANOMALY_THRESHOLD: float = 0.1              # 偏移 10% 以上算异常（双向）
-KWH_TO_WAN_DU: float = 10000                  # 1 万度 = 10000 千瓦时
-GB_TO_TB: float = 1024                        # 1 TB = 1024 GB
 
 # ---------------------------------------------------------------------------
 # 数值处理工具函数
@@ -34,38 +33,6 @@ def _get_num(data: dict[str, Any], key: str, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         logger.debug("字段 %s 无法转为 float: %r", key, val)
         return default
-
-
-def safe_div(a: float | None, b: float | None, decimals: int = 2) -> float:
-    """安全除法，若 b 为 0 或 None，返回 0.0。"""
-    try:
-        if b is None or float(b) == 0.0:
-            return 0.0
-        if a is None:
-            return 0.0
-        return round(float(a) / float(b), decimals)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def to_wan_du(value: float | None) -> float:
-    """千瓦时转万度 (value / KWH_TO_WAN_DU)，保留 2 位小数。"""
-    try:
-        if value is None:
-            return 0.0
-        return round(float(value) / KWH_TO_WAN_DU, 2)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def to_tb(value: float | None) -> float:
-    """GB 转 TB (value / GB_TO_TB)，保留 2 位小数。"""
-    try:
-        if value is None:
-            return 0.0
-        return round(float(value) / GB_TO_TB, 2)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def to_pct(numerator: float | None, denominator: float | None) -> str:

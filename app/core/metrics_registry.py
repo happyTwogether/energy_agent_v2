@@ -16,14 +16,14 @@ from app.core.config import get_settings
 DB_SCHEMA = get_settings().db_schema
 
 
-def _to_wan_du(value: float | None) -> float:
+def to_wan_du(value: float | None) -> float:
     try:
         return round(float(value or 0) / 10000, 2)
     except (TypeError, ValueError):
         return 0.0
 
 
-def _to_tb(value: float | None) -> float:
+def to_tb(value: float | None) -> float:
     try:
         return round(float(value or 0) / 1024, 2)
     except (TypeError, ValueError):
@@ -37,17 +37,18 @@ def _identity(value: float | None) -> float:
         return 0.0
 
 
-def _div(a: float | None, b: float | None) -> float:
+def safe_div(a: float | None, b: float | None, decimals: int = 2) -> float:
+    """安全除法：返回 a/b 的结果，b 为 0 或转换失败时返回 0.0。"""
     try:
         bval = float(b or 0)
         if bval == 0:
             return 0.0
-        return round(float(a or 0) / bval, 2)
+        return round(float(a or 0) / bval, decimals)
     except (TypeError, ValueError):
         return 0.0
 
 
-def _safe_div(row: dict, col_a: str, col_b: str, decimals: int = 2) -> float:
+def safe_div_row(row: dict, col_a: str, col_b: str, decimals: int = 2) -> float:
     try:
         bval = float(row.get(col_b) or 0)
         if bval == 0:
@@ -67,7 +68,7 @@ REPORT_METRICS: dict[str, MetricDef] = {
     "bbu_energy": {
         "columns_lte": ["bbu_power"],
         "columns_nr": ["sa_bbu_power"],
-        "calc": _to_wan_du,
+        "calc": to_wan_du,
         "label": "BBU能耗",
         "unit": "万度",
         "table": "report",
@@ -75,7 +76,7 @@ REPORT_METRICS: dict[str, MetricDef] = {
     "rru_energy": {
         "columns_lte": ["rru_power"],
         "columns_nr": ["rru_power"],
-        "calc": _to_wan_du,
+        "calc": to_wan_du,
         "label": "RRU/AAU能耗",
         "unit": "万度",
         "table": "report",
@@ -83,7 +84,7 @@ REPORT_METRICS: dict[str, MetricDef] = {
     "station_energy": {
         "columns_lte": ["lte_station_power"],
         "columns_nr": ["nr_sa_station_power"],
-        "calc": _to_wan_du,
+        "calc": to_wan_du,
         "label": "基站总能耗",
         "unit": "万度",
         "table": "report",
@@ -91,7 +92,7 @@ REPORT_METRICS: dict[str, MetricDef] = {
     "month_energy_saving": {
         "columns_lte": ["lte_curmonthpower"],
         "columns_nr": ["nr_curmonthpower"],
-        "calc": _to_wan_du,
+        "calc": to_wan_du,
         "label": "月节电量",
         "unit": "万度",
         "table": "report",
@@ -109,7 +110,7 @@ REPORT_METRICS: dict[str, MetricDef] = {
     "traffic": {
         "columns_lte": ["upoctul_dl"],
         "columns_nr": ["upoctul_dl"],
-        "calc": _to_tb,
+        "calc": to_tb,
         "label": "上下行业务量",
         "unit": "TB",
         "table": "report",
@@ -161,7 +162,7 @@ REPORT_METRICS: dict[str, MetricDef] = {
     "station_online_ratio": {
         "columns_lte": ["logic_station_total", "logic_read_station_total"],
         "columns_nr": ["logic_station_total", "logic_read_station_total"],
-        "calc": lambda row: _safe_div(row, "logic_read_station_total", "logic_station_total") * 100 if row.get("logic_station_total") else 0.0,
+        "calc": lambda row: safe_div_row(row, "logic_read_station_total", "logic_station_total") * 100 if row.get("logic_station_total") else 0.0,
         "label": "基站在线率",
         "unit": "%",
         "table": "report",
