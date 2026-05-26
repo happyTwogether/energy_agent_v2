@@ -1,4 +1,3 @@
-"""
 from datetime import datetime, timedelta, time
 from typing import Any
 
@@ -9,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings, MAX_RETURN_ITEMS
 from app.core.logging import get_logger
 from app.tools.registry import tool_registry
-from app.utils.export_util import export_to_excel
+from app.utils.export_util import truncate_and_export
 
 logger = get_logger("param_check_tool")
 
@@ -330,15 +329,18 @@ async def query_energy_param_check(
         unique_unqualified_cgis = len({item["cgi"] for item in unqualified_items if item.get("cgi")})
         is_single_cgi = bool(cgi)
 
-        # 数据截断逻辑：超过50条时只返回前50条，报告不显示明细表格
-        is_truncated = len(unqualified_items) > MAX_RETURN_ITEMS
-        if is_truncated:
+        # 数据截断逻辑
+        returned_items, meta = truncate_and_export(
+            unqualified_items, prefix="energy_param_check", export_excel=export_excel
+        )
+        if meta["is_truncated"]:
             logger.info("数据量超过%d条，报告将只显示摘要", MAX_RETURN_ITEMS)
+        show_detail = not meta["is_truncated"]
 
         # 生成报告，数据量大时不显示明细表格
         report_md = _generate_report(
             query_label, data, is_single_cgi,
-            show_detail=not is_truncated,
+            show_detail=show_detail,
             unqualified_items=unqualified_items,
             qualified_count=qualified_count,
             excluded_count=excluded_count,
@@ -349,7 +351,10 @@ async def query_energy_param_check(
             date_str, query_label, len(data), len(unqualified_items), excluded_count
         )
 
-        returned_items = unqualified_items[:MAX_RETURN_ITEMS] if is_truncated else unqualified_items
+        # 弹出 meta 中与 result 自身字段冲突的键，避免覆盖
+        is_truncated_val = meta.pop("is_truncated")
+        meta.pop("total_count", None)
+        meta.pop("returned_count", None)
 
         result = {
             "success": True,
@@ -363,19 +368,11 @@ async def query_energy_param_check(
             "report_content": report_md,
             "unqualified_items": returned_items,
             "returned_count": len(returned_items),
-            "is_truncated": is_truncated,
+            "is_truncated": is_truncated_val,
             "unqualified_cgi_count": unique_unqualified_cgis,
             **({"date_note": date_note} if date_note else {}),
+            **meta,  # download_url, auto_exported 等导出相关字段
         }
-
-        # Excel 导出逻辑
-        # 1. 显式要求导出 或 2. 不合规结果超过50条自动导出 或 3. 数据被截断时强制导出
-        should_export = export_excel or (len(unqualified_items) > 50) or is_truncated
-        if should_export and unqualified_items:
-            download_url = export_to_excel(unqualified_items, prefix="energy_param_check")
-            if download_url:
-                result["download_url"] = download_url
-                result["auto_exported"] = not export_excel  # 标记是否为自动导出
 
         return result
 

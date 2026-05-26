@@ -1,19 +1,19 @@
 """指标查询工具 — 按指标名查值、支持自由 SQL 探索、小区级和汇总级。"""
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings, MAX_RETURN_ITEMS
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.metrics_registry import ALL_METRICS, get_metric_names
 from app.prompts.sql_generation import SQL_GENERATION_PROMPT
 from app.services.database import get_session_factory
 from app.services.llm_client import get_llm_client, LLMError
 from app.tools.registry import tool_registry
-from app.utils.export_util import export_to_excel
+from app.utils.export_util import truncate_and_export
 
 logger = get_logger("metric_query_tool")
 
@@ -70,7 +70,13 @@ async def _get_latest_metric_date() -> datetime | None:
     async with factory() as sess:
         result = await sess.execute(sql)
         row = result.scalar()
-        return row if row else None
+        if row is None:
+            return None
+        if isinstance(row, str):
+            return datetime.strptime(row, "%Y-%m-%d")
+        if isinstance(row, date):
+            return datetime.combine(row, datetime.min.time())
+        return row
 
 
 def _build_query_sql(
@@ -350,25 +356,18 @@ async def query_metric(
             detail_rows.append({"date": row.get("data_date"), "dist_name": row.get("dist_name"),
                                  "prod_name": row.get("prod_name"), "cgi": row.get("cgi"), **row_values})
 
-    is_truncated = len(detail_rows) > MAX_RETURN_ITEMS
-    if is_truncated:
-        detail_rows = detail_rows[:MAX_RETURN_ITEMS]
-
+    # 截断返回数据，原始完整数据导出 Excel
+    detail_rows, meta = truncate_and_export(
+        data, prefix="metric_query", export_excel=export_excel
+    )
     response = {
         "success": True,
         "metrics": values,
         "rows": detail_rows,
-        "row_count": len(data),
-        "returned_count": len(detail_rows),
-        "is_truncated": is_truncated,
+        "is_truncated": meta.pop("is_truncated"),
+        **meta,
         **({"date_note": date_note} if date_note else {}),
     }
-
-    should_export = export_excel or (len(data) > 50) or is_truncated
-    if should_export and data:
-        download_url = export_to_excel(data, prefix="metric_query")
-        if download_url:
-            response["download_url"] = download_url
 
     return response
 
@@ -378,14 +377,8 @@ def _finalize_result(result: dict, export_excel: bool) -> dict:
     if not result.get("success"):
         return result
     data = result.get("data", [])
-    is_truncated = len(data) > MAX_RETURN_ITEMS
-    if is_truncated:
-        result["data"] = data[:MAX_RETURN_ITEMS]
-    response = {"success": True, "total_count": len(data), "returned_count": len(result["data"]),
-                "is_truncated": is_truncated, **result}
-    should_export = export_excel or (len(data) > 50) or is_truncated
-    if should_export and data:
-        url = export_to_excel(data, prefix="metric_query")
-        if url:
-            response["download_url"] = url
-    return response
+    truncated, meta = truncate_and_export(
+        data, prefix="metric_query", export_excel=export_excel
+    )
+    result["data"] = truncated
+    return {**result, "is_truncated": meta.pop("is_truncated"), **meta}
