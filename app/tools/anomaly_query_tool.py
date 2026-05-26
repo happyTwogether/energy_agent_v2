@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings, MAX_RETURN_ITEMS
 from app.core.logging import get_logger
 from app.tools.registry import tool_registry
-from app.utils.export_util import export_to_excel
+from app.utils.export_util import truncate_and_export
 
 logger = get_logger("anomaly_query_tool")
 
@@ -162,14 +162,16 @@ def _detect_anomalies(
     return anomalies
 
 
-async def _fetch_lte_data(
+async def _fetch_network_data(
     db: AsyncSession,
     dist_name: str,
     prod_name: str,
     baseline_start: str,
     target_date: str,
+    table: str,
+    column_names: list[str],
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    """拉取 4G 数据并分离目标日和基线数据。
+    """通用 4G/5G 数据拉取函数，表名和列名参数化。
 
     Args:
         db: 数据库会话。
@@ -177,20 +179,19 @@ async def _fetch_lte_data(
         prod_name: 厂家名称。
         baseline_start: 基线起始日期。
         target_date: 目标日期。
+        table: 数据库表名。
+        column_names: 查询的列名列表（不含 data_date）。
 
     Returns:
-        (目标日数据, 基线数据列表) 元组。
+        (target_data, baseline_data): 目标日期数据和基线数据列表。
     """
+    all_columns = ["data_date"] + column_names
+    columns_sql = ",\n            ".join(all_columns)
+
     sql = text(f"""
         SELECT
-            data_date,
-            upoctul_dl,
-            avg_energy_efficiency,
-            lte_curmonthpower_rate,
-            lte_station_power,
-            single_station_power,
-            low_energy_total
-        FROM {DB_SCHEMA}.lte_report_day_collect
+            {columns_sql}
+        FROM {DB_SCHEMA}.{table}
         WHERE dist_name = :dist_name
           AND prod_name = :prod_name
           AND data_date BETWEEN :baseline_start AND :target_date
@@ -211,70 +212,6 @@ async def _fetch_lte_data(
     if not rows:
         return None, []
 
-    # 分离目标日和基线数据
-    target_data = None
-    baseline_data = []
-
-    for row in rows:
-        row_dict = dict(row)
-        if str(row_dict.get("data_date")) == target_date:
-            target_data = row_dict
-        else:
-            baseline_data.append(row_dict)
-
-    return target_data, baseline_data
-
-
-async def _fetch_nr_data(
-    db: AsyncSession,
-    dist_name: str,
-    prod_name: str,
-    baseline_start: str,
-    target_date: str,
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    """拉取 5G 数据并分离目标日和基线数据。
-
-    Args:
-        db: 数据库会话。
-        dist_name: 地市名称。
-        prod_name: 厂家名称。
-        baseline_start: 基线起始日期。
-        target_date: 目标日期。
-
-    Returns:
-        (目标日数据, 基线数据列表) 元组。
-    """
-    sql = text(f"""
-        SELECT
-            data_date,
-            upoctul_dl,
-            sa_avg_energy_efficiency,
-            nr_curmonthpower_rate,
-            nr_sa_station_power,
-            single_station_power,
-            low_energy_total
-        FROM {DB_SCHEMA}.nr_report_day_collect
-        WHERE dist_name = :dist_name
-          AND prod_name = :prod_name
-          AND data_date BETWEEN :baseline_start AND :target_date
-        ORDER BY data_date DESC
-    """)
-
-    result = await db.execute(
-        sql,
-        {
-            "dist_name": dist_name,
-            "prod_name": prod_name,
-            "baseline_start": baseline_start,
-            "target_date": target_date,
-        },
-    )
-    rows = result.mappings().all()
-
-    if not rows:
-        return None, []
-
-    # 分离目标日和基线数据
     target_data = None
     baseline_data = []
 
@@ -326,8 +263,6 @@ async def query_anomaly(
     Returns:
         包含异常指标列表的字典。
     """
-    from datetime import datetime, timedelta
-
     dist_name = dist_name or "全网"
     prod_name = prod_name or "全网"
     target_date = target_date or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -345,11 +280,16 @@ async def query_anomaly(
         logger.debug("基线日期范围: %s ~ %s", baseline_start, target_date)
 
         # 2. 拉取 4G 和 5G 数据
-        lte_target, lte_baseline = await _fetch_lte_data(
-            db, dist_name, prod_name, baseline_start, target_date
+        lte_columns = [name for name, _, _ in LTE_CORE_METRICS]
+        nr_columns = [name for name, _, _ in NR_CORE_METRICS]
+
+        lte_target, lte_baseline = await _fetch_network_data(
+            db, dist_name, prod_name, baseline_start, target_date,
+            table="lte_report_day_collect", column_names=lte_columns,
         )
-        nr_target, nr_baseline = await _fetch_nr_data(
-            db, dist_name, prod_name, baseline_start, target_date
+        nr_target, nr_baseline = await _fetch_network_data(
+            db, dist_name, prod_name, baseline_start, target_date,
+            table="nr_report_day_collect", column_names=nr_columns,
         )
 
         # 3. 检测异常
@@ -362,7 +302,7 @@ async def query_anomaly(
         logger.info("5G基线: %s", nr_baseline)
         logger.info("5G异常指标: %s", nr_anomalies)
 
-        # 数据截断逻辑：超过50条时只返回前50条，完整数据走Excel
+        # 合并4G/5G异常数据
         combined_anomalies = []
         for item in lte_anomalies:
             item["network_type"] = "4G"
@@ -371,14 +311,14 @@ async def query_anomaly(
             item["network_type"] = "5G"
             combined_anomalies.append(item)
 
-        is_truncated = len(combined_anomalies) > MAX_RETURN_ITEMS
-        if is_truncated:
+        returned_combined, meta = truncate_and_export(
+            combined_anomalies, prefix="anomaly_diagnosis", export_excel=export_excel
+        )
+        if meta["is_truncated"]:
             logger.info("数据量超过%d条，已截断返回前%d条", MAX_RETURN_ITEMS, MAX_RETURN_ITEMS)
 
-        # 截断后的列表
         returned_lte = lte_anomalies[:MAX_RETURN_ITEMS] if len(lte_anomalies) > MAX_RETURN_ITEMS else lte_anomalies
         returned_nr = nr_anomalies[:MAX_RETURN_ITEMS] if len(nr_anomalies) > MAX_RETURN_ITEMS else nr_anomalies
-        returned_combined = combined_anomalies[:MAX_RETURN_ITEMS] if is_truncated else combined_anomalies
 
         # 4. 组装返回结果
         result = {
@@ -388,24 +328,16 @@ async def query_anomaly(
             "lte_anomalies": returned_lte,
             "nr_anomalies": returned_nr,
             "has_anomaly": len(lte_anomalies) > 0 or len(nr_anomalies) > 0,
-            "total_anomaly_count": len(combined_anomalies),
-            "returned_count": len(returned_combined),
-            "is_truncated": is_truncated,
+            "total_anomaly_count": meta.pop("total_count"),
+            "returned_count": meta.pop("returned_count"),
+            "is_truncated": meta.pop("is_truncated"),
+            **meta,  # download_url, auto_exported（存在时注入）
         }
 
         if lte_anomalies:
             result["lte_anomaly_count"] = len(lte_anomalies)
         if nr_anomalies:
             result["nr_anomaly_count"] = len(nr_anomalies)
-
-        # Excel 导出逻辑
-        # 1. 显式要求导出 或 2. 异常结果超过50条自动导出 或 3. 数据被截断时强制导出
-        should_export = export_excel or (len(combined_anomalies) > 50) or is_truncated
-        if should_export and combined_anomalies:
-            download_url = export_to_excel(combined_anomalies, prefix="anomaly_diagnosis")
-            if download_url:
-                result["download_url"] = download_url
-                result["auto_exported"] = not export_excel  # 标记是否为自动导出
 
         logger.info(
             "异常诊断完成: 4G异常%d个, 5G异常%d个",
