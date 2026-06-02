@@ -38,6 +38,8 @@ _SUSPECTED_TOOL_PATTERNS = [
     re.compile(r'"name"\s*:\s*"(?P<tool>[^"]+)"[\s\S]*?"arguments"\s*:', re.IGNORECASE),
     re.compile(r'调用\s*`?(?P<tool>[a-zA-Z_][\w]*)`?\s*工具'),
     re.compile(r'使用\s*`?(?P<tool>[a-zA-Z_][\w]*)`?\s*工具'),
+    # Qwen 口语化工具调用兜底：已调用 tool_name，参数：{...}
+    re.compile(r'已调用\s+(?P<tool>[a-zA-Z_]\w*)\s*[，,]\s*参数', re.IGNORECASE),
 ]
 
 
@@ -104,6 +106,25 @@ def _extract_tool_calls_from_content(content: str | None) -> list[dict[str, Any]
                         "name": data["name"],
                         "arguments": json.dumps(data["arguments"], ensure_ascii=False)
                     }
+                })
+        except json.JSONDecodeError:
+            continue
+
+    # Qwen 兼容：识别 "已调用 tool_name，参数：{...}" 格式
+    # 部分模型（如 Qwen3.6）倾向输出口语化工具调用而非 <tool> 标签或原生 FC
+    pattern_natural = r'(?:已)?调用\s+([a-zA-Z_]\w*)\s*(?:工具)?\s*[，,]\s*参数\s*[：:]\s*(\{[\s\S]*?\})\s*$'
+    for match in re.findall(pattern_natural, content, re.MULTILINE):
+        tool_name, args_str = match
+        try:
+            tool_args = json.loads(args_str)
+            if isinstance(tool_args, dict) and tool_args:
+                tool_calls.append({
+                    "id": f"call_{len(tool_calls)}",
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(tool_args, ensure_ascii=False),
+                    },
                 })
         except json.JSONDecodeError:
             continue
@@ -182,6 +203,7 @@ class LLMClient:
             kwargs["api_base"] = self.base_url
         if stream:
             kwargs["stream"] = True
+            kwargs["stream_options"] = {"include_usage": True}
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -190,6 +212,8 @@ class LLMClient:
         if "deepseek" in self.model.lower():
             kwargs.setdefault("extra_headers", {})
             kwargs["extra_headers"]["X-DeepSeek-Cache"] = "enabled"
+        if not settings.llm_enable_thinking:
+            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
         return kwargs
 
     async def chat(
@@ -232,10 +256,15 @@ class LLMClient:
             response = await litellm.acompletion(**self._build_kwargs(messages, tools, stream=True, max_tokens=max_tokens))
             chunk_count = 0
             collected_content = ""
+            api_usage: dict[str, Any] | None = None
             settings = get_settings()
 
             async for chunk in response:
                 chunk_count += 1
+                # 提取真实 API usage（流式最后一个 chunk 包含 usage）
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    api_usage = chunk_usage.model_dump() if hasattr(chunk_usage, "model_dump") else chunk_usage
                 choices = chunk.choices or []
 
                 if choices:
@@ -295,8 +324,25 @@ class LLMClient:
                 yield chunk.model_dump()
 
             elapsed = time.time() - t0
-            logger.info("LLM stream_chat 完成: chunks=%d, elapsed=%.1fs, estimated_tokens~%d",
-                        chunk_count, elapsed, estimated_tokens)
+            output_chars = len(collected_content)
+            output_estimated = output_chars // 2
+            if api_usage:
+                logger.info(
+                    "LLM stream_chat 完成: chunks=%d, elapsed=%.1fs, "
+                    "api_usage={prompt_tokens=%s, completion_tokens=%s, total_tokens=%s}, "
+                    "output_chars=%d, output_estimated~%d",
+                    chunk_count, elapsed,
+                    api_usage.get("prompt_tokens", "?"),
+                    api_usage.get("completion_tokens", "?"),
+                    api_usage.get("total_tokens", "?"),
+                    output_chars, output_estimated,
+                )
+            else:
+                logger.info(
+                    "LLM stream_chat 完成: chunks=%d, elapsed=%.1fs, "
+                    "input_estimated~%d, output_chars=%d, output_estimated~%d",
+                    chunk_count, elapsed, estimated_tokens, output_chars, output_estimated,
+                )
         except Exception as exc:
             logger.error("LLM stream_chat 调用失败: %s", exc, exc_info=True)
             raise LLMError(f"LLM 流式调用失败: {exc}") from exc

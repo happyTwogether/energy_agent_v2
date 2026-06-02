@@ -11,14 +11,18 @@ import time
 import uuid
 from typing import Any, AsyncGenerator
 
-from fastapi import APIRouter, Request, Response
+import httpx
+
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.agent_runner import run_agent_stream
+from app.core.config import get_settings
 from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
 from app.models.schemas import (
+    CellSearchItem,
     ChatRequest,
     ConversationDetailResponse,
     ConversationItem,
@@ -139,19 +143,21 @@ async def _event_generator(
             ),
         }
 
-        collected_answer = ""
         saved_messages: list[dict] = []
+        t_start = time.time()
         try:
             logger.info("开始处理请求: query=%s, cid=%s", query[:50], cid)
+            output_chars = 0
             async for event in run_agent_stream(messages=messages, output_messages=saved_messages):
-                if event.event_type == "final_answer":
-                    collected_answer = str(event.data)
+                if event.event_type == "token":
+                    output_chars += len(str(event.data))
                 event_data = dumps_decimal(
                     {"event_type": event.event_type, "data": event.data},
                     ensure_ascii=False,
                 )
                 yield {"event": event.event_type, "data": event_data}
-            logger.info("请求处理完成: cid=%s", cid)
+            logger.info("请求处理完成: cid=%s, elapsed=%.1fs", cid, time.time() - t_start)
+            logger.info("本次请求消耗token数(估算): %d, cid=%s", max(output_chars // 2, 1), cid)
         except Exception as exc:
             logger.error("SSE 事件生成异常: %s", exc, exc_info=True)
             yield {
@@ -162,9 +168,7 @@ async def _event_generator(
                 ),
             }
 
-        # 保存会话：完整消息 + 最终回答
-        if saved_messages and collected_answer:
-            saved_messages.append({"role": "assistant", "content": collected_answer})
+        # 保存会话：output_messages 已包含最终回答（由 agent_runner._emit_final 自动写入）
         title = query[:20] if is_new else None
         await save_conversation(db, cid, user_id, saved_messages, title=title, replace=True)
 
@@ -189,6 +193,27 @@ async def chat_stream(request: ChatRequest) -> EventSourceResponse:
     except Exception as exc:
         logger.error("聊天接口异常: %s", exc, exc_info=True)
         raise
+
+
+
+@router.get("/cells/search")
+async def search_cells(keyword: str = Query(..., min_length=1, description="小区名关键字")):
+    """模糊查询小区，代理调用 CGI 查询服务。"""
+    settings = get_settings()
+    url = f"{settings.cmdi_mcp_ai_url}/tableFieldCorrespondence/selectLteByCgiOrCellName"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+            resp = await client.post(url, json={"cgi": "", "cellName": keyword, "netWork": ""})
+            resp.raise_for_status()
+            data = resp.json()
+            items = [CellSearchItem(**item) for item in data.get("data", [])]
+            return {"code": 200, "msg": data.get("msg", "ok"), "data": [item.model_dump() for item in items]}
+    except httpx.TimeoutException:
+        logger.warning("小区查询超时: keyword=%s", keyword)
+        return {"code": 500, "msg": "查询超时", "data": []}
+    except Exception as exc:
+        logger.error("小区查询异常: %s", exc)
+        return {"code": 500, "msg": str(exc), "data": []}
 
 
 # ========== Dify 风格接口 ==========
@@ -240,13 +265,16 @@ async def _dify_stream_generator(
     db,
 ) -> AsyncGenerator[dict, None]:
     """Dify 风格的 SSE 流式响应生成器。"""
+    t_start = time.time()
     try:
         collected_answer = ""
 
         saved_messages: list[dict] = []
+        output_chars = 0
         async for event in run_agent_stream(messages=messages, output_messages=saved_messages):
             if event.event_type == "token":
                 token_text = str(event.data)
+                output_chars += len(token_text)
                 collected_answer += token_text
                 if "<tool>" not in token_text:
                     yield {
@@ -290,8 +318,7 @@ async def _dify_stream_generator(
                     ),
                 }
 
-        if saved_messages and collected_answer:
-            saved_messages.append({"role": "assistant", "content": collected_answer})
+        # output_messages 已包含最终回答（由 agent_runner._emit_final 自动写入）
         await save_conversation(db, conversation_id, user_id, saved_messages, replace=True)
 
         yield {
@@ -306,6 +333,9 @@ async def _dify_stream_generator(
                 ensure_ascii=False,
             ),
         }
+
+        logger.info("请求处理完成: cid=%s, elapsed=%.1fs", conversation_id, time.time() - t_start)
+        logger.info("本次请求消耗token数(估算): %d, cid=%s", max(output_chars // 2, 1), conversation_id)
 
     except Exception as exc:
         logger.error("Dify SSE 事件生成异常: %s", exc, exc_info=True)
@@ -329,22 +359,25 @@ async def _run_blocking(
     db,
 ) -> dict[str, Any]:
     """Dify Blocking 响应格式。"""
+    t_start = time.time()
     collected_answer = ""
     token_count = 0
 
     saved_messages: list[dict] = []
     async for event in run_agent_stream(messages=messages, output_messages=saved_messages):
         if event.event_type == "token":
-            token_count += 1
+            token_count += len(str(event.data))
         elif event.event_type == "final_answer":
             collected_answer = str(event.data)
             break
         elif event.event_type == "error":
             raise Exception(str(event.data))
 
-    if saved_messages and collected_answer:
-        saved_messages.append({"role": "assistant", "content": collected_answer})
+    # output_messages 已包含最终回答（由 agent_runner._emit_final 自动写入）
     await save_conversation(db, conversation_id, user_id, saved_messages, replace=True)
+
+    logger.info("请求处理完成: cid=%s, elapsed=%.1fs", conversation_id, time.time() - t_start)
+    logger.info("本次请求消耗token数(估算): %d, cid=%s", max(token_count // 2, 1), conversation_id)
 
     return {
         "event": "message",

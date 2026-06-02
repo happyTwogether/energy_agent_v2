@@ -78,6 +78,14 @@ class StreamEvent(BaseModel):
     data: dict | str = Field(..., description="事件数据")
 
 
+class CellSearchItem(BaseModel):
+    """小区模糊查询结果项。"""
+
+    cgi: str = Field(..., description="小区 CGI")
+    cellName: str = Field(..., description="小区名称")
+    netWork: str = Field(..., description="网络类型，4G 或 5G")
+
+
 class DifyChatRequest(BaseModel):
     """Dify 对话应用请求模型。
 

@@ -69,12 +69,12 @@ def _normalize_messages_with_system_prompt(messages: list[dict[str, Any]]) -> li
         if system_content.strip():
             context_text = system_content.strip()
     # 诊断日志：压缩前的原始消息
-    logger.info("原始消息数=%d (不含 system)", len(other_messages))
+    logger.debug("原始消息数=%d (不含 system)", len(other_messages))
     for i, m in enumerate(other_messages):
         c = m.get("content") or ""
         tc = m.get("tool_calls")
         tc_info = f" tool_calls={len(tc)}" if tc else ""
-        logger.info("  raw[%d] role=%s len=%d%s preview=%.200s", i, m.get("role"), len(c), tc_info, c)
+        logger.debug("  raw[%d] role=%s len=%d%s preview=%.200s", i, m.get("role"), len(c), tc_info, c)
 
     other_messages = _compact_history_messages(other_messages)
     return [{"role": "system", "content": _build_system_prompt(context_text)}, *other_messages]
@@ -97,16 +97,17 @@ def _compact_history_messages(messages: list[dict[str, Any]]) -> list[dict[str, 
                 summaries = []
                 for tc in tool_calls:
                     fn = tc.get("function") or {}
+                    tool_name = fn.get('name', 'unknown')
+                    tool_args = fn.get('arguments', '{}')
                     summaries.append(
-                        f"已调用 {fn.get('name', 'unknown')}，"
-                        f"参数：{fn.get('arguments', '{}')}"
+                        f"[上轮工具调用: {tool_name}({tool_args})]"
                     )
                 compacted.append({
                     "role": "assistant",
                     "content": "\n".join(summaries),
                 })
-            elif content and len(content) < 200:
-                # 只保留短消息（错误提示等），长文本（编造报告）移除
+            elif content:
+                # 无 tool_calls 的 assistant 消息 = 最终回答，完整保留
                 compacted.append(msg)
         # role == "tool" / content 为空 → 跳过
 
@@ -515,12 +516,17 @@ async def run_agent_stream(
     # 诊断日志：输出意图识别的 system prompt 和工具列表（使用缓存序列化避免重复 JSON 编码）
     tools_json = tool_registry.get_tools_json()
     system_msg = messages[0]["content"] if messages else ""
-    logger.info("意图识别 system_prompt (%d chars):\n%s", len(system_msg), system_msg)
-    logger.info("意图识别 tools 数量=%d, tools_json (%d chars):\n%s",
+    logger.debug("意图识别 system_prompt (%d chars):\n%s", len(system_msg), system_msg)
+    logger.debug("意图识别 tools 数量=%d, tools_json (%d chars):\n%s",
                 len(tools), len(tools_json), tools_json)
 
     # 兼容前端：发送固定 agent_step
     yield StreamEvent(event_type="agent_step", data={"step": 1, "max_steps": 1})
+
+    def _emit_final(text: str) -> StreamEvent:
+        """产出 final_answer 事件并同步写入消息历史，确保最终回答被持久化。"""
+        messages.append({"role": "assistant", "content": text})
+        return StreamEvent(event_type="final_answer", data=text)
 
     try:
         # ── Phase 1: 单次 LLM 流式调用（实时流式 yield token）──
@@ -590,18 +596,17 @@ async def run_agent_stream(
                         clean_content = _sanitize_tool_draft_text(retry_content or collected_content)
                         fallback_message = clean_content or "本次工具调用未生成有效参数，请重试。"
                         logger.warning("疑似工具草稿补救失败，返回安全提示")
-                        yield StreamEvent(event_type="final_answer", data=fallback_message)
+                        yield _emit_final(fallback_message)
                         return
                 except LLMError as retry_exc:
                     logger.error("疑似工具草稿补救异常: %s", retry_exc)
-                    yield StreamEvent(event_type="final_answer",
-                                      data="本次工具调用未生成有效参数，请重试。")
+                    yield _emit_final("本次工具调用未生成有效参数，请重试。")
                     return
 
             if not tool_calls:
                 clean_content = _sanitize_tool_draft_text(collected_content)
                 logger.info("Agent 直接回答: %s", clean_content[:200])
-                yield StreamEvent(event_type="final_answer", data=clean_content)
+                yield _emit_final(clean_content)
                 return
 
         # ── Phase 5: 执行工具调用 ──
@@ -613,9 +618,8 @@ async def run_agent_stream(
                 is_valid, tool_args, error_message = _is_valid_tool_call(tc, tools)
                 if not is_valid or tool_args is None:
                     logger.warning("拦截非法工具调用: %s", error_message)
-                    yield StreamEvent(
-                        event_type="final_answer",
-                        data=error_message or f"工具 {tool_name} 的参数无效，请重试。",
+                    yield _emit_final(
+                        error_message or f"工具 {tool_name} 的参数无效，请重试。",
                     )
                     return
 
@@ -660,7 +664,7 @@ async def run_agent_stream(
                 if direct_answer:
                     logger.info("命中工具结果直出: tool=%s, answer_len=%d",
                                 results[0].get("tool"), len(direct_answer))
-                    yield StreamEvent(event_type="final_answer", data=direct_answer)
+                    yield _emit_final(direct_answer)
                     return
 
             # LLM 总结工具结果（实时流式 yield token）
@@ -676,7 +680,7 @@ async def run_agent_stream(
                     except StopAsyncIteration:
                         summary_text = summary_gen.result or ""
                         break
-                yield StreamEvent(event_type="final_answer", data=summary_text or "工具执行完成，但未能生成总结。")
+                yield _emit_final(summary_text or "工具执行完成，但未能生成总结。")
                 return
             except LLMError:
                 logger.exception("LLM 总结失败")
@@ -685,11 +689,11 @@ async def run_agent_stream(
 
         # ── Phase 6: 兜底 ──
         if collected_content:
-            yield StreamEvent(event_type="final_answer", data=collected_content)
+            yield _emit_final(collected_content)
             return
 
         logger.warning("Agent 未产生最终回答")
-        yield StreamEvent(event_type="final_answer", data="未收到有效回答，请重试。")
+        yield _emit_final("未收到有效回答，请重试。")
 
     except Exception as exc:
         logger.error("Agent 运行异常: %s", exc, exc_info=True)
