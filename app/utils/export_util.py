@@ -130,7 +130,7 @@ def export_to_excel(
         # 导出 Excel (使用 openpyxl 引擎)
         df.to_excel(file_path, index=False, engine="openpyxl")
 
-        logger.info(f"Excel 导出成功: {file_path}, 数据量: {len(df)} 条")
+        logger.info("Excel 导出成功: %s, 数据量: %d 条", file_path, len(df))
 
         # 生成完整下载链接（使用服务配置的 base_url；未配置时返回相对路径）
         relative_url = f"/downloads/{filename}"
@@ -140,7 +140,7 @@ def export_to_excel(
         return relative_url
 
     except Exception as e:
-        logger.error(f"Excel 导出失败: {str(e)}", exc_info=True)
+        logger.error("Excel 导出失败: %s", e, exc_info=True)
         return None
 
 
@@ -174,13 +174,13 @@ def cleanup_old_exports(max_age_hours: int = 24) -> int:
             if current_time - file_mtime > max_age_seconds:
                 os.remove(file_path)
                 deleted_count += 1
-                logger.debug(f"删除过期导出文件: {filename}")
+                logger.debug("删除过期导出文件: %s", filename)
 
         if deleted_count > 0:
-            logger.info(f"清理过期导出文件完成，共删除 {deleted_count} 个文件")
+            logger.info("清理过期导出文件完成，共删除 %d 个文件", deleted_count)
 
     except Exception as e:
-        logger.error(f"清理导出文件失败: {str(e)}", exc_info=True)
+        logger.error("清理导出文件失败: %s", e, exc_info=True)
 
     return deleted_count
 

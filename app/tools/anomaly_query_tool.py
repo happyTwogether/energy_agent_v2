@@ -78,7 +78,7 @@ def _to_float(value: Any) -> float | None:
         try:
             return float(cleaned)
         except ValueError:
-            logger.warning(f"无法将字符串转换为浮点数: {value}")
+            logger.warning("无法将字符串转换为浮点数: %s", value)
             return None
     # 处理 Decimal 类型（SQLAlchemy 从数据库返回的数值类型）
     if isinstance(value, Decimal):
@@ -295,12 +295,7 @@ async def query_anomaly(
         # 3. 检测异常
         lte_anomalies = _detect_anomalies(lte_target, lte_baseline, LTE_CORE_METRICS)
         nr_anomalies = _detect_anomalies(nr_target, nr_baseline, NR_CORE_METRICS)
-        logger.info("4G指标: %s", lte_target)
-        logger.info("4G基线: %s", lte_baseline)
-        logger.info("4G异常指标: %s", lte_anomalies)
-        logger.info("5G指标: %s", nr_target)
-        logger.info("5G基线: %s", nr_baseline)
-        logger.info("5G异常指标: %s", nr_anomalies)
+        logger.debug("异常诊断完成: 4G异常=%d条, 5G异常=%d条", len(lte_anomalies), len(nr_anomalies))
 
         # 合并4G/5G异常数据
         combined_anomalies = []
