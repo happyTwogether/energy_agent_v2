@@ -3,10 +3,13 @@
 
 提供格式化的日志输出，支持从 Settings 读取日志级别。
 输出格式：[时间] [级别] [模块名] 消息内容
+同时输出到控制台和日志文件（自动轮转）。
 """
 
 import logging
+import os
 import sys
+from logging.handlers import RotatingFileHandler
 
 # Windows 控制台编码修复
 if sys.platform == "win32":
@@ -31,13 +34,27 @@ def _init_root_logger() -> None:
     root_logger.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
 
     if not root_logger.handlers:
-        handler = logging.StreamHandler(sys.stdout)
         formatter = logging.Formatter(
             fmt="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
-        handler.setFormatter(formatter)
-        root_logger.addHandler(handler)
+
+        # 控制台输出
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
+
+        # 文件输出（自动轮转）
+        log_dir = settings.log_dir
+        os.makedirs(log_dir, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            filename=os.path.join(log_dir, "energy_agent.log"),
+            maxBytes=settings.log_file_max_mb * 1024 * 1024,
+            backupCount=settings.log_file_backup_count,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
 
     _initialized = True
 

@@ -42,8 +42,12 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     default_model: str = ""
     log_level: str = "INFO"
+    log_dir: str = "logs"  # 日志文件目录，默认项目根目录下的 logs/
+    log_file_max_mb: int = 50  # 单日志文件最大 MB
+    log_file_backup_count: int = 5  # 保留的日志备份文件数
     llm_max_tokens: int = 4096  # LLM 最大输出 token 数
     llm_temperature: float = 0.3  # 生成温度，越低输出越确定
+    llm_enable_thinking: bool = True  # Qwen3 深度思考开关，默认开启
     summary_model: str = ""  # 总结模型名，不填则复用 default_model
     summary_api_key: str = ""  # 总结模型 API Key，不填则复用 llm_api_key
     summary_base_url: str = ""  # 总结模型 Base URL，不填则复用 llm_base_url
@@ -55,6 +59,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["*"]
     base_url: str = "http://10.159.55.28:9500/"  # 服务基础URL
     export_dir: str = "static/exports"  # Excel 导出文件目录
+    cmdi_mcp_ai_url: str = "http://10.159.55.28:18201/cmdi-mcp-ai"  # CGI 小区查询服务地址
 
     model_config = SettingsConfigDict(
         env_file=".env",
