@@ -507,6 +507,7 @@
 
   /* 底部输入区 */
   #input-area {
+    position: relative;
     padding: 16px 24px 20px;
     border-top: 1px solid var(--border);
     flex-shrink: 0;
@@ -867,6 +868,109 @@
 
   /* 浅色主题侧边栏覆盖 */
   :root[data-theme="light"] .conv-item.active { background: #f0f1f3; }
+
+  /* ============================================================
+     小区搜索下拉面板
+  ============================================================ */
+  #cell-suggestions {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    right: 0;
+    max-width: 95%;
+    margin: 0 auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    max-height: 260px;
+    overflow-y: auto;
+    z-index: 100;
+    box-shadow: 0 -4px 24px rgba(0,0,0,0.35);
+  }
+
+  #cell-suggestions::-webkit-scrollbar { width: 5px; }
+  #cell-suggestions::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 3px; }
+
+  .cell-suggestion-item {
+    padding: 10px 14px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+  }
+
+  .cell-suggestion-item:last-child { border-bottom: none; }
+
+  .cell-suggestion-item:hover,
+  .cell-suggestion-item.active {
+    background: var(--bg-tertiary);
+  }
+
+  .cell-suggestion-name {
+    font-size: 13.5px;
+    color: var(--text-primary);
+    line-height: 1.4;
+    word-break: break-all;
+  }
+
+  .cell-suggestion-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+  }
+
+  .cell-suggestion-cgi {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-family: "Consolas", "Monaco", monospace;
+  }
+
+  .cell-suggestion-net {
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+
+  .cell-suggestion-net.net-5g {
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+  }
+
+  .cell-suggestion-net.net-4g {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+  }
+
+  .cell-suggestion-empty {
+    padding: 20px 14px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .cell-suggestion-loading {
+    padding: 16px 14px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  :root[data-theme="light"] #cell-suggestions {
+    box-shadow: 0 -4px 24px rgba(0,0,0,0.1);
+  }
+
+  :root[data-theme="light"] .cell-suggestion-net.net-5g {
+    background: rgba(59, 130, 246, 0.1);
+    color: #2563eb;
+  }
+
+  :root[data-theme="light"] .cell-suggestion-net.net-4g {
+    background: rgba(16, 185, 129, 0.1);
+    color: #059669;
+  }
+
 </style>
 </head>
 <body>
@@ -929,6 +1033,7 @@
       </div>
 
       <div id="input-area">
+        <div id="cell-suggestions" class="cell-suggestions" style="display:none;"></div>
         <div class="input-wrapper">
           <textarea id="user-input" placeholder="输入问题... (Shift+Enter 换行，Enter 发送)" rows="1"></textarea>
           <button id="send-btn" title="发送 (Enter)">
@@ -958,17 +1063,13 @@ function getSystemTheme() {
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
-function getStoredTheme() {
-  return localStorage.getItem(THEME_KEY);
-}
-
 function setTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   localStorage.setItem(THEME_KEY, theme);
 }
 
 function initTheme() {
-  const stored = getStoredTheme();
+  const stored = localStorage.getItem(THEME_KEY);
   if (stored) {
     setTheme(stored);
   } else {
@@ -982,9 +1083,9 @@ function toggleTheme() {
   setTheme(next);
 }
 
-// 监听系统主题变化
+// 监听系统主题变化（仅在用户未手动选择主题时跟随系统）
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-  if (!getStoredTheme()) {
+  if (!localStorage.getItem(THEME_KEY)) {
     setTheme(e.matches ? 'dark' : 'light');
   }
 });
@@ -996,10 +1097,6 @@ initTheme();
 // 侧边栏折叠
 // ============================================================
 const SIDEBAR_KEY = 'sidebar-collapsed';
-
-function getSidebarState() {
-  return localStorage.getItem(SIDEBAR_KEY) === '1';
-}
 
 function setSidebarCollapsed(collapsed) {
   if (collapsed) {
@@ -1023,9 +1120,7 @@ function toggleSidebar() {
 // 基础 URL（自动检测当前主机地址）
 const BASE_URL = `${window.location.protocol}//${window.location.host}`;
 
-// const API_URL = 'http://localhost:8000/api/v1/chat/stream';
-
-const API_URL = `${BASE_URL}/api/v1/chat/stream`; // 'BASE_URL/api/v1/chat/stream';
+const API_URL = `${BASE_URL}/api/v1/chat/stream`;
 // ============================================================
 // 状态
 // ============================================================
@@ -1037,6 +1132,16 @@ let conversationHistory = [];     // 当前会话的消息（仅用于渲染）
 let isStreaming = false;
 let abortController = null;
 
+// 小区搜索状态
+let slashActive = false;
+let slashStartPos = -1;
+let slashSelectedIndex = -1;
+let slashSuggestions = [];
+let slashDebounceTimer = null;
+let cellSearchAbortController = null;
+let isComposing = false;
+let slashSearchPending = false;
+
 // ============================================================
 // DOM 引用
 // ============================================================
@@ -1047,10 +1152,11 @@ const stopBtn = document.getElementById('stop-btn');
 const sidebarToggle = document.getElementById('sidebar-toggle');
 const sidebarExpand = document.getElementById('sidebar-expand');
 const bodyLayout = document.getElementById('body-layout');
-const welcome = document.getElementById('welcome');
+
+const cellSuggestions = document.getElementById('cell-suggestions');
 
 // 初始化侧边栏状态
-if (getSidebarState()) {
+if (localStorage.getItem(SIDEBAR_KEY) === '1') {
   setSidebarCollapsed(true);
 }
 
@@ -1115,37 +1221,12 @@ function renderMarkdown(text) {
   return marked.parse(text);
 }
 
-/** 内联样式：粗体/斜体/行内代码/链接（用于工具卡片等简单场景） */
-function renderInline(text) {
-  return text
-    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/__(.+?)__/g, '<strong>$1</strong>')
-    .replace(/_([^_\n]+)_/g, '<em>$1</em>')
-    .replace(/`([^`\n]+)`/g, (_, c) => `<code>${esc(c)}</code>`)
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, p1, p2) => {
-      // 下载链接：检测是否包含 /downloads/，添加 download 属性
-      let href = p2;
-      let isExport = href.includes('/downloads/');
-      // 如果是相对路径，转为完整 URL
-      if (isExport && href.startsWith('/downloads/')) {
-        href = BASE_URL + href;
-      }
-      let downloadAttr = isExport ? ' download' : '';
-      return `<a href="${href}" target="_blank" rel="noopener"${downloadAttr}>${p1}</a>`;
-    });
-}
-
-function esc(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
 // ============================================================
 // 创建消息 DOM
 // ============================================================
 function appendUserMessage(text) {
-  if (welcome) welcome.style.display = 'none';
+  const welcomeEl = document.getElementById('welcome');
+  if (welcomeEl) welcomeEl.style.display = 'none';
 
   const row = document.createElement('div');
   row.className = 'message-row user';
@@ -1354,8 +1435,6 @@ async function switchConversation(cid) {
     // 清空并重新渲染
     const cc = document.getElementById('chat-container');
     cc.innerHTML = '';
-    const welcome = document.getElementById('welcome');
-    if (welcome) welcome.style.display = 'none';
 
     conversationHistory.forEach(msg => {
       if (msg.role === 'user') {
@@ -1490,7 +1569,7 @@ function processSseEvent(eventStr, ctx) {
             details.open = true;
           }
           ctx.streamingDiv.querySelector('.step-body').textContent = ctx.streamingText;
-          summary.innerHTML = '思考中<span class="thinking-dot">.</span><span class="thinking-dot">.</span><span class="thinking-dot">.</span></span>';
+          summary.innerHTML = '<span class="thinking-label">思考中<span class="thinking-dot">.</span><span class="thinking-dot">.</span><span class="thinking-dot">.</span></span>';
         }
         scrollToBottom();
       }
@@ -1680,12 +1759,151 @@ async function streamChat(userMessage) {
   }
 }
 
+
+// ============================================================
+// 小区搜索："/" 触发模糊查询
+// ============================================================
+function scheduleSlashSearch() {
+  if (slashSearchPending) return;
+  slashSearchPending = true;
+  setTimeout(() => {
+    slashSearchPending = false;
+    handleSlashSearch();
+  });
+}
+
+function handleSlashSearch() {
+  const cursorPos = userInput.selectionStart;
+  const textBeforeCursor = userInput.value.substring(0, cursorPos);
+
+  // 不含 "/" → 跳过后续逻辑
+  const lastSlashIndex = textBeforeCursor.lastIndexOf('/');
+  if (lastSlashIndex === -1) { hideCellSuggestions(); return; }
+
+  // "/" 前必须是行首或空白字符，避免匹配 URL 等场景
+  if (lastSlashIndex > 0 && textBeforeCursor[lastSlashIndex - 1] !== ' ' && textBeforeCursor[lastSlashIndex - 1] !== '\n') {
+    hideCellSuggestions();
+    return;
+  }
+
+  const searchTerm = textBeforeCursor.substring(lastSlashIndex + 1);
+
+  // 搜索词中包含空格说明已完成输入，关闭建议
+  if (searchTerm.includes(' ')) {
+    hideCellSuggestions();
+    return;
+  }
+
+  slashActive = true;
+  slashStartPos = lastSlashIndex;
+
+  clearTimeout(slashDebounceTimer);
+  if (searchTerm.length === 0) {
+    cellSuggestions.innerHTML = '<div class="cell-suggestion-empty">输入小区名关键字搜索...</div>';
+    cellSuggestions.style.display = 'block';
+    slashSuggestions = [];
+    slashSelectedIndex = -1;
+  } else {
+    slashDebounceTimer = setTimeout(() => fetchCellSuggestions(searchTerm), 500);
+  }
+}
+
+async function fetchCellSuggestions(keyword) {
+  cellSearchAbortController?.abort();
+  cellSearchAbortController = new AbortController();
+
+  cellSuggestions.innerHTML = '<div class="cell-suggestion-loading">搜索中...</div>';
+  cellSuggestions.style.display = 'block';
+  try {
+    const resp = await fetch(
+      BASE_URL + '/api/v1/cells/search?keyword=' + encodeURIComponent(keyword),
+      { signal: cellSearchAbortController.signal }
+    );
+    if (!resp.ok) {
+      slashSuggestions = [];
+    } else {
+      const data = await resp.json();
+      slashSuggestions = data.data || [];
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    console.error('[cellSearch]', err);
+    slashSuggestions = [];
+  }
+  slashSelectedIndex = -1;
+  renderCellSuggestions();
+}
+
+function renderCellSuggestions() {
+  if (!slashSuggestions.length) {
+    cellSuggestions.innerHTML = '<div class="cell-suggestion-empty">未找到匹配的小区</div>';
+  } else {
+    cellSuggestions.innerHTML = slashSuggestions.map((item, i) => {
+      const netClass = item.netWork === '5G' ? 'net-5g' : 'net-4g';
+      const activeClass = i === slashSelectedIndex ? ' active' : '';
+      return (
+        '<div class="cell-suggestion-item' + activeClass + '" data-index="' + i + '">' +
+        '<div class="cell-suggestion-name">' + escapeHtml(item.cellName) + '</div>' +
+        '<div class="cell-suggestion-meta">' +
+        '<span class="cell-suggestion-cgi">' + escapeHtml(item.cgi) + '</span>' +
+        '<span class="cell-suggestion-net ' + netClass + '">' + escapeHtml(item.netWork) + '</span>' +
+        '</div></div>'
+      );
+    }).join('');
+  }
+  cellSuggestions.style.display = 'block';
+}
+
+function selectCellSuggestion(index) {
+  const item = slashSuggestions[index];
+  if (!item) return;
+
+  const text = userInput.value;
+  const cursorPos = userInput.selectionStart;
+  const before = text.substring(0, slashStartPos);
+  const after = text.substring(cursorPos);
+  const replacement = '[' + item.cellName + '](' + item.cgi + ') ';
+
+  userInput.value = before + replacement + after;
+  const newPos = before.length + replacement.length;
+  userInput.setSelectionRange(newPos, newPos);
+
+  // 触发 input 事件以调整高度
+  userInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+  hideCellSuggestions();
+  userInput.focus();
+}
+
+function hideCellSuggestions() {
+  slashActive = false;
+  slashStartPos = -1;
+  slashSelectedIndex = -1;
+  slashSuggestions = [];
+  cellSuggestions.style.display = 'none';
+}
+
+function moveCellSelection(delta) {
+  if (!slashSuggestions.length) return;
+  slashSelectedIndex += delta;
+  if (slashSelectedIndex < 0) slashSelectedIndex = slashSuggestions.length - 1;
+  if (slashSelectedIndex >= slashSuggestions.length) slashSelectedIndex = 0;
+  renderCellSuggestions();
+}
+
 // ============================================================
 // 输入框自适应高度
 // ============================================================
+userInput.addEventListener('compositionstart', () => { isComposing = true; });
+userInput.addEventListener('compositionend', () => {
+  isComposing = false;
+  scheduleSlashSearch();
+});
+
 userInput.addEventListener('input', () => {
   userInput.style.height = 'auto';
   userInput.style.height = Math.min(userInput.scrollHeight, 180) + 'px';
+  if (!isComposing) scheduleSlashSearch();
 });
 
 // ============================================================
@@ -1716,6 +1934,34 @@ stopBtn.addEventListener('click', () => {
 });
 
 userInput.addEventListener('keydown', (e) => {
+  // 小区搜索建议导航
+  if (slashActive && cellSuggestions.style.display !== 'none') {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      moveCellSelection(1);
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      moveCellSelection(-1);
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (slashSelectedIndex >= 0 && slashSuggestions.length > 0) {
+        selectCellSuggestion(slashSelectedIndex);
+      } else {
+        hideCellSuggestions();
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      hideCellSuggestions();
+      return;
+    }
+  }
+
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     handleSend();
@@ -1723,6 +1969,30 @@ userInput.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && isStreaming) {
     e.preventDefault();
     abortController?.abort();
+  }
+});
+
+
+// 小区搜索建议：鼠标交互
+cellSuggestions.addEventListener('mouseover', (e) => {
+  const item = e.target.closest('.cell-suggestion-item');
+  if (item) {
+    slashSelectedIndex = parseInt(item.dataset.index);
+    renderCellSuggestions();
+  }
+});
+
+cellSuggestions.addEventListener('click', (e) => {
+  const item = e.target.closest('.cell-suggestion-item');
+  if (item) {
+    selectCellSuggestion(parseInt(item.dataset.index));
+  }
+});
+
+// 点击其他区域关闭建议
+document.addEventListener('click', (e) => {
+  if (!cellSuggestions.contains(e.target) && e.target !== userInput) {
+    hideCellSuggestions();
   }
 });
 
