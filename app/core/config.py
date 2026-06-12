@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["*"]
     base_url: str = "http://10.159.55.28:9500"  # 服务基础URL
 
+    # 消息存储接口配置
+    message_store_url: str = "http://10.159.55.28:6039/sendMsg"
+    message_store_enabled: bool = True
+    message_store_timeout: int = 5
+    model_id: int = 2064169133542531073  # 能效智能体
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

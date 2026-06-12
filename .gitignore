@@ -38,6 +38,7 @@ postgres_data/
 .ace-tool/
 .playwright-mcp/
 .serena/
+.spec-workspace/
 
 
 README.md
