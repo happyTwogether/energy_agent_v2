@@ -55,6 +55,7 @@ class StreamEvent(BaseModel):
         "tool_result",
         "agent_step",
         "final_answer",
+        "token_usage",
         "error",
     ] = Field(..., description="事件类型")
     data: dict | str = Field(..., description="事件数据")

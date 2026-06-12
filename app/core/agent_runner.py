@@ -328,6 +328,7 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
             _stream_fallback_needed = False
             suspected_tool_draft = False
             suspected_tool_name: str | None = None
+            last_usage: dict[str, Any] | None = None  # LLM 返回的 token 用量
 
             try:
                 async for chunk in _stream_with_idle_timeout(
@@ -337,6 +338,10 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     )
                 ):
                         choices = chunk.get("choices") or []
+                        # 捕获流式最后 chunk 的 usage
+                        if chunk.get("usage"):
+                            last_usage = chunk["usage"]
+                        
                         if not choices:
                             continue
                         choice = choices[0]
@@ -387,6 +392,10 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     fb_msg = fb_choice.get("message") or {}
                     fb_content = fb_msg.get("content") or ""
                     fb_tool_calls = fb_msg.get("tool_calls") or []
+
+                    # 捕获 non-streaming fallback 的 usage
+                    if fallback_resp.get("usage"):
+                        last_usage = fallback_resp["usage"]
 
                     # 【关键修复】输出降级后获取的内容（扣除已输出的部分）
                     if fb_content and len(fb_content) > len(collected_content):
@@ -442,6 +451,9 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     )
                     try:
                         retry_resp = await get_llm_client().chat(messages=messages, tools=tools or None)
+                        # 捕获重试的 usage
+                        if retry_resp.get("usage"):
+                            last_usage = retry_resp["usage"]
                         retry_choice = (retry_resp.get("choices") or [{}])[0]
                         retry_finish_reason = retry_choice.get("finish_reason")
                         retry_msg = retry_choice.get("message") or {}
@@ -460,6 +472,8 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                             fallback_message = clean_content or "本次工具调用未生成有效参数，请重试。"
                             logger.warning("疑似工具草稿补救失败（第 %d 步），返回安全提示", steps)
                             yield StreamEvent(event_type="final_answer", data=fallback_message)
+                            if last_usage:
+                                yield StreamEvent(event_type="token_usage", data=last_usage)
                             return
                     except LLMError as retry_exc:
                         logger.error("疑似工具草稿补救异常（第 %d 步）: %s", steps, retry_exc)
@@ -470,6 +484,8 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     clean_content = _sanitize_tool_draft_text(collected_content)
                     logger.info("Agent 最终回答（第 %d 步）: %s", steps, clean_content[:200])
                     yield StreamEvent(event_type="final_answer", data=clean_content)
+                    if last_usage:
+                        yield StreamEvent(event_type="token_usage", data=last_usage)
                     return
 
             if tool_calls:
@@ -521,6 +537,8 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     if direct_answer:
                         logger.info("第 %d 步命中工具结果直出: tool=%s, answer_len=%d", steps, results[0].get("tool"), len(direct_answer))
                         yield StreamEvent(event_type="final_answer", data=direct_answer)
+                        if last_usage:
+                            yield StreamEvent(event_type="token_usage", data=last_usage)
                         return
 
                 if steps == max_steps:
@@ -537,6 +555,8 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                             choices = chunk.get("choices") or []
                             if not choices:
                                 continue
+                            if chunk.get("usage"):
+                                last_usage = chunk["usage"]
                             delta = choices[0].get("delta", {})
                             if delta.get("content"):
                                 token_text = delta["content"]
@@ -548,6 +568,9 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     if _max_step_fallback:
                         try:
                             fb = await get_llm_client().chat(messages=messages, tools=None)
+                            # 捕获 max_step 降级的 usage
+                            if fb.get("usage"):
+                                last_usage = fb["usage"]
                             fb_content = ((fb.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
                             # 【关键修复】输出降级后获取的内容（扣除已输出的部分）
                             if fb_content and len(fb_content) > len(final_collected):
@@ -557,6 +580,8 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                         except LLMError:
                             pass
                     yield StreamEvent(event_type="final_answer", data=final_collected or "已达到最大推理步数，请重新提问。")
+                    if last_usage:
+                        yield StreamEvent(event_type="token_usage", data=last_usage)
                     return
 
                 continue
@@ -564,6 +589,8 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
             if collected_content:
                 logger.info("Agent 返回文本回答（第 %d 步）", steps)
                 yield StreamEvent(event_type="final_answer", data=collected_content)
+                if last_usage:
+                    yield StreamEvent(event_type="token_usage", data=last_usage)
                 return
 
         logger.warning("Agent 循环结束，未产生最终回答")
