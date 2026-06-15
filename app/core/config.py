@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     base_url: str = "http://10.159.55.28:9500/"  # 服务基础URL
     export_dir: str = "static/exports"  # Excel 导出文件目录
 
+    # 消息存储接口配置
+    message_store_url: str = "http://10.159.55.28:6039/sendMsg"
+    message_store_enabled: bool = True
+    message_store_timeout: int = 5
+    agent_max_steps: int = 5  # Agent ReAct Loop 最大推理步数
+    agent_bot_id: int = 2064169133542531073  # 能效智能体 Dify Bot ID
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

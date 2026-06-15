@@ -1047,7 +1047,7 @@ const stopBtn = document.getElementById('stop-btn');
 const sidebarToggle = document.getElementById('sidebar-toggle');
 const sidebarExpand = document.getElementById('sidebar-expand');
 const bodyLayout = document.getElementById('body-layout');
-const welcome = document.getElementById('welcome');
+let welcome = document.getElementById('welcome');
 
 // 初始化侧边栏状态
 if (getSidebarState()) {
@@ -1400,6 +1400,8 @@ function newConversation() {
       <div class="welcome-icon">⚡</div>
       <p>您好，我是能效智能体，请问有什么可以帮助您？</p>
     </div>`;
+  // 重建 DOM 后更新全局 welcome 引用
+  welcome = document.getElementById('welcome');
   loadConversationList();
 }
 
@@ -1431,18 +1433,16 @@ function processSseEvent(eventStr, ctx) {
   let eventType = '';
   let dataStr = '';
   for (const rawLine of eventStr.split('\n')) {
-    const line = rawLine.replace(/\r$/, ''); // 去掉 Windows \r
+    const line = rawLine.replace(/\r$/, '');
     if (line.startsWith('event:')) {
       eventType = line.slice(6).trim();
     } else if (line.startsWith('data:')) {
       dataStr = line.slice(5).trim();
     }
-    // 忽略注释行（: ping ...）和空行
   }
 
   if (!dataStr || dataStr === '[DONE]') return;
 
-  // 解析 JSON
   let data;
   try {
     data = JSON.parse(dataStr);
@@ -1451,112 +1451,76 @@ function processSseEvent(eventStr, ctx) {
     return;
   }
 
-  // 解包后端嵌套格式 {"event_type": "...", "data": ...}
-  const payload = (data !== null && typeof data === 'object' && 'data' in data)
-    ? data.data
-    : data;
-
-  // 如果没有 event: 行，则用 JSON 里的 event_type 字段作为 fallback
-  if (!eventType && data && data.event_type) {
-    eventType = data.event_type;
-  }
-
-  console.log('[SSE]', eventType, typeof payload === 'string' ? payload.slice(0, 60) : payload);
+  // Dify Agent 格式: data 内层 event 字段与 event: 行一致，直接使用整个 data 对象
+  console.log('[SSE]', eventType, typeof data === 'object' ? (data.event || data) : data);
 
   switch (eventType) {
-    case 'status': {
-      const statusMsg = typeof payload === 'object' ? payload.message || payload.status : String(payload);
-      if (statusMsg) {
-        appendStatusMessage(thinkingContent, statusMsg);
-      }
-      break;
-    }
-    case 'token': {
-      const token = typeof payload === 'object' ? payload.token : String(payload);
-      if (token) {
-        if (ctx.hasThinking) {
-          // 工具调用后的总结 token → 直接流到回答区
-          ctx.finalAnswerText += token;
-          answerContent.textContent = ctx.finalAnswerText;
-          answerContent.classList.add('streaming');
-        } else {
-          // 意图识别阶段的 token → 思考面板
-          ctx.streamingText += token;
-          if (!ctx.streamingDiv) {
-            ctx.streamingDiv = document.createElement('div');
-            ctx.streamingDiv.className = 'step-card';
-            ctx.streamingDiv.innerHTML = '<div class="step-header">推理中</div><div class="step-body"></div>';
-            thinkingContent.appendChild(ctx.streamingDiv);
-            details.open = true;
-          }
-          ctx.streamingDiv.querySelector('.step-body').textContent = ctx.streamingText;
-          summary.innerHTML = '思考中<span class="thinking-dot">.</span><span class="thinking-dot">.</span><span class="thinking-dot">.</span></span>';
-        }
-        scrollToBottom();
-      }
-      break;
-    }
-    case 'tool_call': {
-      // 移除流式推理文本（LLM 已确定工具调用，原始文本失去意义）
-      if (ctx.streamingDiv) {
-        ctx.streamingDiv.remove();
-        ctx.streamingDiv = null;
-        ctx.streamingText = '';
-      }
-      ctx.hasThinking = true;
-      const tcData = typeof payload === 'object' ? payload : { tool: String(payload) };
-      ctx.toolCalls.push({
-        id: tcData.call_id || `call_${ctx.toolCalls.length}`,
-        name: tcData.tool || 'unknown',
-        args: tcData.args || {}
-      });
-      appendToolCall(thinkingContent, tcData);
-      break;
-    }
-    case 'tool_result': {
-      ctx.hasThinking = true;
-      const trData = typeof payload === 'object' ? payload : { result: String(payload) };
-      ctx.toolResults.push({ id: trData.call_id || '', result: trData });
-      appendToolResult(thinkingContent, trData);
-      break;
-    }
-    case 'conversation': {
-      const cid = typeof payload === 'object' ? payload.conversation_id : payload;
-      if (cid) {
+    case 'agent_message': {
+      // 记录 conversation_id，更新前端状态
+      const cid = data.conversation_id;
+      if (cid && cid !== conversationId) {
         conversationId = cid;
         renderConversationList();
       }
       break;
     }
-    case 'agent_step': {
-      const step = typeof payload === 'object' ? payload.step : payload;
-      ctx.stepCount = step;
+    case 'message': {
+      // 流式回答 token
+      const token = data.answer || '';
+      if (token) {
+        ctx.finalAnswerText += token;
+        // 流式渲染 Markdown 到回答区
+        answerContent.innerHTML = renderMarkdown(ctx.finalAnswerText);
+        answerContent.classList.add('streaming');
+        if (details.style.display !== 'none') {
+          details.open = false;
+          summary.innerHTML = '输出中<span class="thinking-dot">.</span><span class="thinking-dot">.</span><span class="thinking-dot">.</span></span>';
+        }
+        scrollToBottom();
+      }
       break;
     }
-    case 'final_answer': {
-      // 始终用 final_answer 的完整数据覆盖，防止 token 流中途丢失导致显示不完整
-      if (payload) {
-        ctx.finalAnswerText = String(payload);
+    case 'agent_thought': {
+      // 工具调用卡片 — 复用 appendToolCall/appendToolResult（与旧版一致的卡片格式）
+      ctx.hasThinking = true;
+      const toolName = data.tool || '未知工具';
+      const toolInput = data.tool_input || '';
+      const observationStr = data.observation || '';
+      const position = data.position || (ctx.toolCalls.length + 1);
+
+      ctx.toolCalls.push({ name: toolName, input: toolInput });
+
+      // 解析 tool_input（后端以 JSON 字符串形式发送）
+      let args = toolInput;
+      if (typeof toolInput === 'string' && toolInput.trim()) {
+        try { args = JSON.parse(toolInput); } catch (e) {}
       }
-      // 完整 Markdown 渲染到回答区
-      answerContent.innerHTML = renderMarkdown(ctx.finalAnswerText);
+
+      const callId = 'step_' + position;
+      appendToolCall(thinkingContent, { tool: toolName, args: args, call_id: callId });
+      if (observationStr) {
+        appendToolResult(thinkingContent, { tool: toolName, result: observationStr, call_id: callId });
+      }
+
+      details.open = true;
+      summary.innerHTML = '步骤 ' + position + ': ' + escapeHtml(toolName);
+      scrollToBottom();
+      break;
+    }
+    case 'message_end': {
+      // 流式结束，最终渲染
       answerContent.classList.remove('streaming');
       if (ctx.hasThinking) {
         summary.innerHTML = `已完成推理（${ctx.toolCalls.length} 步）`;
         details.open = false;
       } else {
-        // 无工具调用：清理思考面板中的流式文本，折叠面板
-        if (ctx.streamingDiv) {
-          ctx.streamingDiv.remove();
-          ctx.streamingDiv = null;
-        }
         details.style.display = 'none';
       }
       scrollToBottom();
       break;
     }
     case 'error': {
-      const errMsg = typeof payload === 'string' ? payload : formatJson(payload);
+      const errMsg = data.message || data.event || formatJson(data);
       const errDiv = document.createElement('div');
       errDiv.className = 'error-message';
       errDiv.textContent = '错误：' + errMsg;
@@ -1598,7 +1562,7 @@ async function streamChat(userMessage) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        query: userMessage,
+        messages: [{ role: 'user', content: userMessage }],
         conversation_id: conversationId,
         user_id: userId,
       }),
@@ -1658,7 +1622,7 @@ async function streamChat(userMessage) {
   } catch (err) {
     if (err.name === 'AbortError') {
       if (ctx.hasThinking) {
-        summary.innerHTML = `已停止（${ctx.stepCount || 1} 步）`;
+        summary.innerHTML = `已停止（${ctx.toolCalls.length || 1} 步）`;
         details.open = false;
       }
       if (!answerContent.innerHTML.trim()) {
