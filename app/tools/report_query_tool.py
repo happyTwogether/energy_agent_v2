@@ -284,7 +284,7 @@ def _process_nr_data(
 
     # 能耗换算
     nr_bbu_power_wan = to_wan_du(target_data.get("sa_bbu_power"))
-    nr_rru_power_wan = to_wan_du(target_data.get("nr_rru_power"))
+    nr_rru_power_wan = to_wan_du(target_data.get("rru_power"))
     nr_sa_station_power_wan = to_wan_du(target_data.get("nr_sa_station_power"))
     nr_curmonthpower_wan = to_wan_du(target_data.get("nr_curmonthpower"))
 
