@@ -81,21 +81,65 @@ def _extract_tool_calls_from_content(content: str | None) -> list[dict[str, Any]
 
     格式: <tool>{"name": "tool_name", "arguments": {...}}</tool>
 
-    Args:
-        content: LLM 返回的文本内容。
-
-    Returns:
-        符合 OpenAI tool_calls 格式的工具调用列表，如果没有则返回 None。
+    使用大括号计数定位配对 }，正确处理 arguments 内嵌套 JSON 对象。
     """
     if not content:
         return None
 
-    tool_calls = []
-    pattern = r'<tool>\s*(\{[\s\S]*?\})\s*</tool>'
+    has_tool_tag = "<tool>" in content
+    logger.info("_extract_tool: content_len=%d, has_<tool>=%s", len(content), has_tool_tag)
+    if not has_tool_tag:
+        # 没有 <tool> 标签，打印内容尾部助诊
+        logger.info("_extract_tool: 无 <tool> 标签, content_tail=%.300s", content[-300:])
 
-    for match in re.findall(pattern, content):
+    tool_calls = []
+    pos = 0
+
+    while True:
+        # 查找 <tool> 标签
+        idx = content.find("<tool>", pos)
+        if idx == -1:
+            break
+        logger.info("_extract_tool: 找到 <tool> at pos=%d", idx)
+        json_start = idx + len("<tool>")
+
+        # 跳过空白
+        while json_start < len(content) and content[json_start] in (' ', '\t', '\n', '\r'):
+            json_start += 1
+        if json_start >= len(content) or content[json_start] != '{':
+            logger.info("_extract_tool: <tool> 后不是 '{', pos=%d, char=%.10s",
+                         json_start, content[json_start:json_start+10] if json_start < len(content) else "EOF")
+            pos = json_start
+            continue
+
+        # 大括号计数，匹配嵌套 JSON
+        depth = 0
+        json_end = json_start
+        while json_end < len(content):
+            ch = content[json_end]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            json_end += 1
+        if depth != 0:  # 未闭合，跳过
+            logger.info("_extract_tool: JSON 未闭合 at pos=%d, depth=%d, tail=%.100s",
+                         json_start, depth, content[json_end:json_end+100])
+            pos = json_start
+            continue
+
+        json_str = content[json_start:json_end + 1]
+
+        # 检查 </tool> 闭合标签（缺失时仅告警，JSON 完整就接受）
+        after = content[json_end + 1:json_end + 30].strip()
+        has_close = after.startswith("</tool>")
+        if not has_close:
+            logger.info("_extract_tool: </tool> 缺失或未到达 at pos=%d, after=%.30s", json_end + 1, after)
+
         try:
-            data = json.loads(match)
+            data = json.loads(json_str)
             if "name" in data and "arguments" in data:
                 tool_calls.append({
                     "id": f"call_{len(tool_calls)}",
@@ -105,8 +149,58 @@ def _extract_tool_calls_from_content(content: str | None) -> list[dict[str, Any]
                         "arguments": json.dumps(data["arguments"], ensure_ascii=False)
                     }
                 })
-        except json.JSONDecodeError:
-            continue
+                logger.info("_extract_tool: 成功提取 tool=%s", data["name"])
+            else:
+                logger.info("_extract_tool: JSON 缺 name/arguments, keys=%s", list(data.keys()))
+        except json.JSONDecodeError as e:
+            logger.info("_extract_tool: JSON 解析失败 at pos=%d: %s, json=%.200s",
+                         json_start, e, json_str[:200])
+
+        pos = json_end + 1
+
+    # 回退：如果没有 <tool> 标签，尝试匹配裸 {"name": "...", "arguments": {...}} JSON
+    if not tool_calls:
+        bare_pos = 0
+        while True:
+            # 查找 {"name" 模式（可能跟在其他文字后面）
+            idx = content.find('{"name"', bare_pos)
+            if idx == -1:
+                break
+            # 跳过前面的空白行等，回溯找到真正的大括号起始
+            json_start = idx
+            # 大括号计数
+            depth = 0
+            json_end = json_start
+            while json_end < len(content):
+                ch = content[json_end]
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                json_end += 1
+            if depth != 0:
+                bare_pos = json_start + 1
+                continue
+
+            json_str = content[json_start:json_end + 1]
+            try:
+                data = json.loads(json_str)
+                if "name" in data and "arguments" in data:
+                    tool_calls.append({
+                        "id": f"call_{len(tool_calls)}",
+                        "type": "function",
+                        "function": {
+                            "name": data["name"],
+                            "arguments": json.dumps(data["arguments"], ensure_ascii=False)
+                        }
+                    })
+                    logger.info("_extract_tool: 裸 JSON 提取成功 tool=%s", data["name"])
+            except json.JSONDecodeError:
+                pass
+
+            bare_pos = json_end + 1
 
     return tool_calls if tool_calls else None
 
