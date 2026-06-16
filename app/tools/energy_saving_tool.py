@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.database import get_session_factory
 from app.tools.registry import tool_registry
+from app.utils.sql_helpers import ensure_datetime, fetch_rows
 
 DB_SCHEMA_AGENT = get_settings().db_schema_agent
 
@@ -33,30 +34,6 @@ def _build_md_table(headers: list[str], rows: list[str], empty_msg: str = "暂�
     header_line = "| " + " | ".join(headers) + " |"
     sep_line = "|" + "|".join(["---"] * len(headers)) + "|"
     return header_line + "\n" + sep_line + "\n" + "\n".join(rows)
-
-
-async def _fetch_rows(sql, params):
-    """使用独立 session 执行查询并返回 mappings 列表。"""
-    async with get_session_factory()() as sess:
-        result = await sess.execute(sql, params)
-        return result.mappings().all()
-
-
-def _ensure_datetime(val: Any) -> datetime | None:
-    """将 DB 返回的日期值归一化为 datetime，兼容 str/date/datetime。"""
-    if val is None:
-        return None
-    if isinstance(val, datetime):
-        return val
-    if isinstance(val, date):
-        return datetime.combine(val, datetime.min.time())
-    if isinstance(val, str):
-        for fmt in ["%Y-%m-%d", "%Y%m%d", "%Y-%m-%d %H:%M:%S"]:
-            try:
-                return datetime.strptime(val, fmt)
-            except ValueError:
-                continue
-    return None
 
 
 # 周边小区距离阈值（单位：米）
@@ -129,7 +106,7 @@ async def analyze_single_cell_energy(
 
     latest_result = await db.execute(latest_sql)
     latest_row = latest_result.mappings().first()
-    db_latest_date = _ensure_datetime(latest_row["max_date"]) if latest_row else None
+    db_latest_date = ensure_datetime(latest_row["max_date"]) if latest_row else None
 
     if not db_latest_date:
         return {"success": False, "error": "暂无节电分析数据。"}
@@ -277,8 +254,8 @@ async def _query_expansion_data(
     """)
 
     base_rows, sleep_rows = await asyncio.gather(
-        _fetch_rows(expansion_sql, {"cgi": cgi, "stat_time": stat_time}),
-        _fetch_rows(sleep_sql, {
+        fetch_rows(expansion_sql, {"cgi": cgi, "stat_time": stat_time}),
+        fetch_rows(sleep_sql, {
             "cgi": cgi, "start_date": start_date, "end_date": stat_time, "night_hours": night_hours
         }),
     )
@@ -399,8 +376,8 @@ async def _query_constriction_data(
     """)
 
     constriction_rows, around_rows = await asyncio.gather(
-        _fetch_rows(constriction_sql, {"cgi": cgi, "stat_time": stat_time}),
-        _fetch_rows(around_sql, {"cgi": cgi, "distance_threshold": AROUND_DISTANCE_THRESHOLD}),
+        fetch_rows(constriction_sql, {"cgi": cgi, "stat_time": stat_time}),
+        fetch_rows(around_sql, {"cgi": cgi, "distance_threshold": AROUND_DISTANCE_THRESHOLD}),
     )
 
     # 构建周边小区距离映射
@@ -658,8 +635,8 @@ async def _query_pre_sleep_load_data(
     """)
 
     detail_rows, stat_rows = await asyncio.gather(
-        _fetch_rows(detail_sql, {"cgi": cgi, "stat_time": stat_time}),
-        _fetch_rows(stat_sql, {
+        fetch_rows(detail_sql, {"cgi": cgi, "stat_time": stat_time}),
+        fetch_rows(stat_sql, {
             "cgi": cgi,
             "start_date": start_date_7d,
             "end_date": stat_time,
@@ -690,7 +667,7 @@ async def _query_pre_sleep_load_data(
         )
 
         # 格式化时间：stat_time + prb_hour
-        stat_time_val = _ensure_datetime(row.get("stat_time"))
+        stat_time_val = ensure_datetime(row.get("stat_time"))
         prb_hour_val = row.get("prb_hour")
         if stat_time_val and prb_hour_val is not None:
             time_display = f"{stat_time_val.strftime('%Y-%m-%d')} {prb_hour_val:02d}:00:00"

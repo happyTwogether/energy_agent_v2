@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -8,9 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.services.database import get_session_factory
 from app.tools.registry import tool_registry
 from app.utils.export_util import export_to_excel
+from app.utils.sql_helpers import ensure_datetime, fetch_rows
 
 logger = get_logger("batch_energy_tool")
 
@@ -149,7 +149,7 @@ async def _do_analyze(
         WHERE {where_sql}
     """)
 
-    query_tasks = [_fetch_rows(expansion_sql, bind_params)]
+    query_tasks = [fetch_rows(expansion_sql, bind_params)]
 
     if need_constriction:
         constriction_sql = text(f"""
@@ -165,8 +165,8 @@ async def _do_analyze(
             WHERE stat_time >= :start_date
             GROUP BY cgi
         """)
-        query_tasks.append(_fetch_rows(constriction_sql, bind_params))
-        query_tasks.append(_fetch_rows(sleep_count_sql, {"start_date": start_date_7d}))
+        query_tasks.append(fetch_rows(constriction_sql, bind_params))
+        query_tasks.append(fetch_rows(sleep_count_sql, {"start_date": start_date_7d}))
 
     gathered = await asyncio.gather(*query_tasks)
     expansion_rows = gathered[0]
@@ -238,23 +238,6 @@ async def _do_analyze(
 # ═══════════════════════════════════════════════════════════════════
 
 
-def _ensure_datetime(val: Any) -> datetime | None:
-    """将 DB 返回的日期值归一化为 datetime，兼容 str/date/datetime。"""
-    if val is None:
-        return None
-    if isinstance(val, datetime):
-        return val
-    if isinstance(val, date):
-        return datetime.combine(val, datetime.min.time())
-    if isinstance(val, str):
-        for fmt in ["%Y-%m-%d", "%Y%m%d", "%Y-%m-%d %H:%M:%S"]:
-            try:
-                return datetime.strptime(val, fmt)
-            except ValueError:
-                continue
-    return None
-
-
 async def _resolve_latest_date(need_constriction: bool) -> datetime | None:
     """自动获取最新数据日期（使用独立 session）。
 
@@ -262,25 +245,17 @@ async def _resolve_latest_date(need_constriction: bool) -> datetime | None:
     确保两表都有数据；否则只查 expansion 表。
     """
     exp_sql = text(f"SELECT MAX(stat_time) as max_date FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day")
-    rows = await _fetch_rows(exp_sql, {})
-    exp_max = _ensure_datetime(rows[0]["max_date"]) if rows else None
+    rows = await fetch_rows(exp_sql, {})
+    exp_max = ensure_datetime(rows[0]["max_date"]) if rows else None
 
     if not need_constriction or not exp_max:
         return exp_max
 
     const_sql = text(f"SELECT MAX(stat_time) as max_date FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day")
-    rows = await _fetch_rows(const_sql, {})
-    const_max = _ensure_datetime(rows[0]["max_date"]) if rows else None
+    rows = await fetch_rows(const_sql, {})
+    const_max = ensure_datetime(rows[0]["max_date"]) if rows else None
 
     return min(exp_max, const_max) if const_max else exp_max
-
-
-async def _fetch_rows(sql: Any, params: dict[str, Any]) -> list[dict[str, Any]]:
-    """使用独立 session 执行查询并返回 mappings 列表。"""
-    factory = get_session_factory()
-    async with factory() as sess:
-        result = await sess.execute(sql, params)
-        return [dict(r) for r in result.mappings().all()]
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -384,8 +359,8 @@ def _build_table_data(
             stats["whitelist"] += 1
             reason = exp_info.get("reason") or "无"
             jd_type = exp_info.get("jd_type") or "无"
-            st = _ensure_datetime(exp_info.get("starttime"))
-            et = _ensure_datetime(exp_info.get("endtime"))
+            st = ensure_datetime(exp_info.get("starttime"))
+            et = ensure_datetime(exp_info.get("endtime"))
             st_str = st.strftime("%Y-%m-%d") if st else "无"
             et_str = et.strftime("%Y-%m-%d") if et else "无"
             row[_COL_WHITELIST] = (
