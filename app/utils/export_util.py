@@ -144,47 +144,6 @@ def export_to_excel(
         return None
 
 
-def cleanup_old_exports(max_age_hours: int = 24) -> int:
-    """
-    清理过期的导出文件。
-
-    Args:
-        max_age_hours: 文件最大保留时间（小时），默认 24 小时。
-
-    Returns:
-        int: 成功删除的文件数量。
-    """
-    import time
-
-    if not os.path.exists(EXPORT_DIR):
-        return 0
-
-    deleted_count = 0
-    current_time = time.time()
-    max_age_seconds = max_age_hours * 3600
-
-    try:
-        for filename in os.listdir(EXPORT_DIR):
-            if not filename.endswith(".xlsx"):
-                continue
-
-            file_path = os.path.join(EXPORT_DIR, filename)
-            file_mtime = os.path.getmtime(file_path)
-
-            if current_time - file_mtime > max_age_seconds:
-                os.remove(file_path)
-                deleted_count += 1
-                logger.debug(f"删除过期导出文件: {filename}")
-
-        if deleted_count > 0:
-            logger.info(f"清理过期导出文件完成，共删除 {deleted_count} 个文件")
-
-    except Exception as e:
-        logger.error(f"清理导出文件失败: {str(e)}", exc_info=True)
-
-    return deleted_count
-
-
 def truncate_and_export(
     data: list[dict],
     prefix: str,

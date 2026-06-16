@@ -405,23 +405,3 @@ def get_llm_client() -> LLMClient:
     if _llm_client is None:
         _llm_client = LLMClient()
     return _llm_client
-
-
-_summary_llm_client: LLMClient | None = None
-
-
-def get_summary_llm_client() -> LLMClient:
-    """获取总结模型 LLM 客户端。
-
-    使用 summary_model / summary_api_key / summary_base_url 配置，
-    未配置时回退到主模型配置。
-    """
-    global _summary_llm_client
-    if _summary_llm_client is None:
-        settings = get_settings()
-        _summary_llm_client = LLMClient(
-            model=settings.summary_model,
-            api_key=settings.summary_api_key,
-            base_url=settings.summary_base_url,
-        )
-    return _summary_llm_client

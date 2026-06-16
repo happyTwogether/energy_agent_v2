@@ -1,15 +1,12 @@
 """
 数据库服务模块。
 
-管理 async SQLAlchemy 引擎与会话，定义 ORM 模型，
-提供 FastAPI 依赖注入的 get_db() 函数。
+管理 async SQLAlchemy 引擎与会话，定义 ORM 模型。
 """
 
-import uuid
 from datetime import datetime, timezone
-from typing import AsyncGenerator
 
-from sqlalchemy import DateTime, JSON, String, Text, Uuid, select
+from sqlalchemy import DateTime, JSON, String, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -53,25 +50,6 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 class Base(DeclarativeBase):
     """SQLAlchemy ORM 基类。"""
     pass
-
-
-class AgentSession(Base):
-    """Agent 会话 ORM 模型，用于持久化用户请求与响应。"""
-
-    __tablename__ = "agent_sessions"
-    __table_args__ = {"schema": "jd_agent"}
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-    request: Mapped[str] = mapped_column(Text, nullable=False)
-    response: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-    )
 
 
 class Conversation(Base):
@@ -180,20 +158,3 @@ async def init_db() -> None:
         logger.info("数据库表初始化完成")
     except Exception as exc:
         logger.warning("数据库表自动创建失败（可能是权限不足），请手动执行 DDL: %s", exc)
-
-
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI 依赖注入：获取异步数据库会话。
-
-    使用 async with 管理会话生命周期，确保会话在请求结束后正确关闭。
-
-    Yields:
-        AsyncSession: 异步数据库会话实例。
-    """
-    async with get_session_factory()() as session:
-        try:
-            yield session
-        except Exception as exc:
-            logger.error("数据库会话异常: %s", exc, exc_info=True)
-            await session.rollback()
-            raise
