@@ -262,7 +262,7 @@ async def query_metric(
     cgi: str | None = None,
     export_excel: bool = False,
 ) -> dict[str, Any]:
-    """查询能耗指标数值。"""
+    """查询能耗指标数值（调度器）。"""
     # 默认日期：优先取 DB 最新日期，DB 无数据时回退到当前时间
     db_latest = await _get_latest_metric_date()
     date_note = ""
@@ -282,61 +282,83 @@ async def query_metric(
             date_end = db_latest_str
             date_start = (db_latest - timedelta(days=7)).strftime("%Y-%m-%d")
 
-    network = _detect_network(cgi or "")
-    is_cell = bool(cgi)
+    common = dict(
+        dist_name=dist_name, prod_name=prod_name, freq_band=freq_band,
+        site_type=site_type, area=area, date_start=date_start, date_end=date_end,
+    )
 
-    # ── 自由探索模式 ──
     if metric_desc:
-        if not metric_desc.strip():
-            return {"success": False, "error": "metric_desc 不能为空"}
-        prompt = _build_llm_prompt(metric_desc, dist_name, prod_name, date_start, date_end)
-        messages = [
-            {"role": "system", "content": "你是一个专业的 SQL 查询生成助手。"},
-            {"role": "user", "content": prompt},
-        ]
-        try:
-            llm_response = await get_llm_client().chat(messages=messages)
-            sql = _extract_sql_from_llm_response(
-                llm_response.get("choices", [{}])[0].get("message", {}).get("content", "")
-            )
-            if not sql:
-                return {"success": False, "error": "LLM 未生成有效 SQL"}
-            if not _is_safe_sql(sql):
-                return {"success": False, "error": "生成的 SQL 包含不安全操作"}
-            condition_sql, params = _build_conditions(dist_name, prod_name, freq_band, site_type, area, date_start, date_end, cgi)
-            sql = sql.rstrip(";") + " " + condition_sql
-            result = await _execute_single_query(db, sql, params)
-        except LLMError as exc:
-            return {"success": False, "error": f"LLM 调用失败: {exc}"}
-        final = _finalize_result(result, export_excel)
-        if date_note:
-            final["date_note"] = date_note
-        return final
+        return await _query_freeform(db, metric_desc, export_excel, date_note, cgi=cgi, **common)
+    if metric_names:
+        return await _query_named_metrics(db, metric_names, cgi or "", export_excel, date_note, cgi=cgi, **common)
+    return {"success": False, "error": "请提供 metric_names 或 metric_desc"}
 
-    # ── 指标名模式 ──
-    if not metric_names:
-        return {"success": False, "error": "请提供 metric_names 或 metric_desc"}
 
-    # 检查无效指标名
+async def _query_freeform(
+    db: AsyncSession,
+    metric_desc: str,
+    export_excel: bool,
+    date_note: str,
+    **kwargs,
+) -> dict[str, Any]:
+    """自由 SQL 探索模式。"""
+    if not metric_desc.strip():
+        return {"success": False, "error": "metric_desc 不能为空"}
+    prompt = _build_llm_prompt(metric_desc, kwargs.get("dist_name"), kwargs.get("prod_name"),
+                               kwargs.get("date_start"), kwargs.get("date_end"))
+    messages = [
+        {"role": "system", "content": "你是一个专业的 SQL 查询生成助手。"},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        llm_response = await get_llm_client().chat(messages=messages)
+        sql = _extract_sql_from_llm_response(
+            llm_response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        )
+        if not sql:
+            return {"success": False, "error": "LLM 未生成有效 SQL"}
+        if not _is_safe_sql(sql):
+            return {"success": False, "error": "生成的 SQL 包含不安全操作"}
+        condition_sql, params = _build_conditions(**kwargs)
+        sql = sql.rstrip(";") + " " + condition_sql
+        result = await _execute_single_query(db, sql, params)
+    except LLMError as exc:
+        return {"success": False, "error": f"LLM 调用失败: {exc}"}
+    final = _finalize_result(result, export_excel)
+    if date_note:
+        final["date_note"] = date_note
+    return final
+
+
+async def _query_named_metrics(
+    db: AsyncSession,
+    metric_names: list[str],
+    cgi: str,
+    export_excel: bool,
+    date_note: str,
+    **kwargs,
+) -> dict[str, Any]:
+    """按指标名查询模式。"""
     unknown = [n for n in metric_names if n not in ALL_METRICS and n not in METRIC_GROUPS]
     if unknown:
         avail = sorted(ALL_METRICS.keys())
         return {"success": False, "error": f"未知指标: {unknown}。可用: {avail}，指标组: {list(METRIC_GROUPS.keys())}"}
 
     resolved = _resolve_metric_names(metric_names)
+    network = _detect_network(cgi)
+    is_cell = bool(cgi)
     table = (LTE_CELL_TABLE if network == "4G" else NR_CELL_TABLE) if is_cell else (LTE_REPORT_TABLE if network == "4G" else NR_REPORT_TABLE)
     sql = _build_query_sql(resolved, table, network)
     if not sql:
         return {"success": False, "error": f"指标 {metric_names} 在当前网络类型下无可用列"}
 
-    condition_sql, params = _build_conditions(dist_name, prod_name, freq_band, site_type, area, date_start, date_end, cgi)
+    condition_sql, params = _build_conditions(**kwargs)
     sql = sql + " " + condition_sql
 
     result = await _execute_single_query(db, sql, params)
     if not result["success"]:
         return result
 
-    # 对每行数据应用计算，构造 label:value 结构
     data = result["data"]
     values: dict[str, Any] = {}
     detail_rows: list[dict] = []
@@ -348,7 +370,6 @@ async def query_metric(
                 continue
             val = _apply_calc(row, name)
             if val is not None:
-                key = metric["label"]
                 row_values[name] = {"label": metric["label"], "value": val, "unit": metric["unit"]}
                 if name not in values:
                     values[name] = {"label": metric["label"], "value": val, "unit": metric["unit"]}
@@ -356,11 +377,8 @@ async def query_metric(
             detail_rows.append({"date": row.get("data_date"), "dist_name": row.get("dist_name"),
                                  "prod_name": row.get("prod_name"), "cgi": row.get("cgi"), **row_values})
 
-    # 截断返回数据，原始完整数据导出 Excel
-    detail_rows, meta = truncate_and_export(
-        data, prefix="metric_query", export_excel=export_excel
-    )
-    response = {
+    detail_rows, meta = truncate_and_export(data, prefix="metric_query", export_excel=export_excel)
+    return {
         "success": True,
         "metrics": values,
         "rows": detail_rows,
@@ -368,8 +386,6 @@ async def query_metric(
         **meta,
         **({"date_note": date_note} if date_note else {}),
     }
-
-    return response
 
 
 def _finalize_result(result: dict, export_excel: bool) -> dict:

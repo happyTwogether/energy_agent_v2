@@ -19,33 +19,10 @@ DB_SCHEMA = get_settings().db_schema          # PostgreSQL 的 schema 名
 BASELINE_LOOKBACK_DAYS: int = 7               # 基线回溯 7 天
 ANOMALY_THRESHOLD: float = 0.1              # 偏移 10% 以上算异常（双向）
 
-# ---------------------------------------------------------------------------
-# 数值处理工具函数
-# ---------------------------------------------------------------------------
-
-def _get_num(data: dict[str, Any], key: str, default: float = 0.0) -> float:
-    """从字典中安全提取数值，None 或转换失败时返回 default。"""
-    val = data.get(key)
-    if val is None:
-        return default
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        logger.debug("字段 %s 无法转为 float: %r", key, val)
-        return default
-
-
 def to_pct(numerator: float | None, denominator: float | None) -> str:
-    """安全计算百分比，返回格式如 "12.34%"，分母为 0 返回 "0.00%"。"""
-    try:
-        if denominator is None or float(denominator) == 0.0:
-            return "0.00%"
-        if numerator is None:
-            return "0.00%"
-        pct = (float(numerator) / float(denominator)) * 100
-        return f"{pct:.2f}%"
-    except (TypeError, ValueError):
-        return "0.00%"
+    """安全计算百分比，返回格式如 "12.34%"，分母为 0 返回 "0.00%"."""
+    ratio = safe_div(float(numerator or 0) * 100, denominator)
+    return f"{ratio:.2f}%"
 
 # ---------------------------------------------------------------------------
 # 数据获取（通用：参数化表名消除 LTE/NR 重复）
@@ -144,8 +121,6 @@ def _diagnose_anomalies(
     metrics: list[tuple[str, str, Any, str]],
 ) -> list[str]:
     """通用异常诊断：当前值与 7 天基线峰值比较，偏移 ≥ 10% 标记异常（双向）。"""
-    # TODO: 暂时关闭异常诊断，后续开启时删除下面这行 return
-    return []
     anomalies: list[str] = []
 
     for field_name, display_name, convert_fn, unit in metrics:

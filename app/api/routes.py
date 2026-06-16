@@ -1,17 +1,9 @@
 """
 API 路由模块。
-
-定义 REST API 端点，接收用户请求，
-通过 SSE 流式推送 Agent 执行过程与结果。
-
-端点说明：
-- /api/v1/chat/stream   → PC Web 端（source=1），Dify Agent 格式 SSE
-- /api/v1/chat-messages  → App 端（source=0），Dify 兼容，支持 blocking + streaming
 """
 
 import asyncio
 import json
-import re
 import time
 import uuid
 from typing import Any, AsyncGenerator
@@ -20,7 +12,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
-from app.core.agent_runner import run_agent_stream
+from app.core.agent_runner import run_agent_stream, sanitize_tool_draft_text
 from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
 from app.models.schemas import (
@@ -48,43 +40,8 @@ logger = get_logger("routes")
 router = APIRouter()
 
 
-def _sanitize_history_answer(answer: str) -> str:
-    """清理历史消息中的工具调用痕迹。"""
-    if not answer:
-        return ""
-
-    cleaned = answer
-
-    # 1. 清理 <tool> 标签
-    if "<tool>" in cleaned and "</tool>" in cleaned:
-        cleaned = re.sub(r"<tool>\s*\{[\s\S]*?\}\s*</tool>", "", cleaned)
-
-    # 2. 清理 JSON 代码块
-    json_block_start = re.search(r"```json\s*\{", cleaned, flags=re.IGNORECASE)
-    if json_block_start:
-        cleaned = cleaned[:json_block_start.start()]
-
-    # 3. 清理工具调用 JSON 开头
-    tool_json_start = re.search(r"\{\s*\"name\"\s*:\s*\"[^\"]+\"", cleaned)
-    if tool_json_start:
-        cleaned = cleaned[:tool_json_start.start()]
-
-    # 4. 清理工具调用相关的文字表述
-    cleaned = re.sub(r"我(调用|使用)\s*\w+\s*工具[，,。]?\s*", "", cleaned)
-    cleaned = re.sub(r"通过\s*\w+\s*工具\s*(查询|获取|调取)[到]?[，,。]?\s*", "查询到", cleaned)
-
-    return cleaned.strip()
-
-
 def _build_usage_metadata(token_usage: dict[str, Any] | None) -> dict[str, Any]:
-    """从 LLM usage 构建 Dify metadata.usage 格式。
-
-    Args:
-        token_usage: LiteLLM 返回的 usage 对象，如 {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
-
-    Returns:
-        Dify metadata.usage 格式的字典。
-    """
+    """构建 Dify metadata.usage 格式。"""
     if token_usage:
         return {
             "usage": {
@@ -168,6 +125,58 @@ def _try_exit_tool_block(buf: str, depth: int) -> str | None:
     return None
 
 
+def _process_token_for_tool_block(
+    token_text: str,
+    in_tool_block: bool,
+    tool_buf: str,
+    tool_depth: int,
+) -> tuple[str, bool, str, int]:
+    """处理单个 token，隔离工具调用块输出。
+
+    支持 <tool> 标签和裸 {"name" JSON 两种格式。
+
+    Returns:
+        (clean_text_to_yield, new_in_tool_block, new_tool_buf, new_tool_depth)
+    """
+    clean_text = ""
+    if not in_tool_block:
+        # 检测 <tool> 或裸 {"name" JSON 工具调用
+        tool_tag_idx = token_text.find("<tool>")
+        bare_json_idx = token_text.find('{"name"')
+        if tool_tag_idx != -1 and (bare_json_idx == -1 or tool_tag_idx <= bare_json_idx):
+            # <tool> 标签
+            clean_text = token_text[:tool_tag_idx]
+            in_tool_block = True
+            tool_buf = token_text[tool_tag_idx + len("<tool>"):]
+            tool_depth = -1
+            _out = _try_exit_tool_block(tool_buf, tool_depth)
+            if _out is not None:
+                clean_text += _out
+                in_tool_block = False
+                tool_buf = ""
+        elif bare_json_idx != -1:
+            # 裸 {"name" JSON（无 <tool> 包装）
+            clean_text = token_text[:bare_json_idx]
+            in_tool_block = True
+            tool_buf = token_text[bare_json_idx:]
+            tool_depth = 0
+            _out = _try_exit_tool_block(tool_buf, tool_depth)
+            if _out is not None:
+                clean_text += _out
+                in_tool_block = False
+                tool_buf = ""
+        else:
+            clean_text = token_text
+    else:
+        tool_buf += token_text
+        _out = _try_exit_tool_block(tool_buf, tool_depth)
+        if _out is not None:
+            clean_text = _out
+            in_tool_block = False
+            tool_buf = ""
+    return clean_text, in_tool_block, tool_buf, tool_depth
+
+
 async def _dify_sse_generator(
     messages: list[dict[str, Any]],
     *,
@@ -177,7 +186,7 @@ async def _dify_sse_generator(
 ) -> AsyncGenerator[dict[str, Any], None]:
     """共享的 Dify Agent 格式 SSE 生成器。
 
-    产出事件序列：agent_message → agent_thought* → message* → message_end
+    产出事件序列：message → agent_thought* → message* → message_end
     PC 端和 App 端的流式接口共用此生成器。
 
     Args:
@@ -191,18 +200,17 @@ async def _dify_sse_generator(
     created_at = int(time.time())
 
     collected_answer = ""
-    yielded_clean_text = ""  # 已推送给前端的干净文本（避免 final_answer 重复推送）
+    yielded_clean_text = ""  # 推送给前端的文本
     token_usage: dict[str, Any] | None = None
     thought_position = 0
     # 暂存 tool_call，等待 tool_result 时合成为 agent_thought
     pending_tool_calls: dict[str, dict[str, Any]] = {}
-
-    # 1. agent_message — 标记 Agent 消息开始
+    # 1. message — 标记 Agent 消息开始
     yield {
-        "event": "agent_message",
+        "event": "message",
         "data": dumps_decimal(
             {
-                "event": "agent_message",
+                "event": "message",
                 "task_id": task_id,
                 "message_id": message_id,
                 "conversation_id": conversation_id,
@@ -222,44 +230,9 @@ async def _dify_sse_generator(
                 token_text = str(event.data)
                 collected_answer += token_text
 
-                clean_text = ""
-                if not in_tool_block:
-                    # 检测 <tool> 或裸 {"name" JSON 工具调用
-                    tool_tag_idx = token_text.find("<tool>")
-                    bare_json_idx = token_text.find('{"name"')
-                    if tool_tag_idx != -1 and (bare_json_idx == -1 or tool_tag_idx <= bare_json_idx):
-                        # <tool> 标签
-                        before = token_text[:tool_tag_idx]
-                        clean_text = before
-                        in_tool_block = True
-                        tool_buf = token_text[tool_tag_idx + len("<tool>"):]
-                        tool_depth = -1
-                        _out = _try_exit_tool_block(tool_buf, tool_depth)
-                        if _out is not None:
-                            clean_text += _out
-                            in_tool_block = False
-                            tool_buf = ""
-                    elif bare_json_idx != -1:
-                        # 裸 {"name" JSON（无 <tool> 包装）
-                        before = token_text[:bare_json_idx]
-                        clean_text = before
-                        in_tool_block = True
-                        tool_buf = token_text[bare_json_idx:]
-                        tool_depth = 0  # {"name" 已经有了 {
-                        _out = _try_exit_tool_block(tool_buf, tool_depth)
-                        if _out is not None:
-                            clean_text += _out
-                            in_tool_block = False
-                            tool_buf = ""
-                    else:
-                        clean_text = token_text
-                else:
-                    tool_buf += token_text
-                    _out = _try_exit_tool_block(tool_buf, tool_depth)
-                    if _out is not None:
-                        clean_text = _out
-                        in_tool_block = False
-                        tool_buf = ""
+                clean_text, in_tool_block, tool_buf, tool_depth = _process_token_for_tool_block(
+                    token_text, in_tool_block, tool_buf, tool_depth
+                )
 
                 if clean_text:
                     yielded_clean_text += clean_text
@@ -304,6 +277,7 @@ async def _dify_sse_generator(
                     "data": dumps_decimal(
                         {
                             "event": "agent_thought",
+                            "id": f"agent_thought_{thought_position}",
                             "task_id": task_id,
                             "message_id": message_id,
                             "conversation_id": conversation_id,
@@ -367,7 +341,7 @@ async def _dify_sse_generator(
                 user_input = str(msg.get("content", ""))
                 break
 
-        clean_answer = _sanitize_history_answer(collected_answer)
+        clean_answer = sanitize_tool_draft_text(collected_answer)
 
         # 消息存储（异步，不阻塞 SSE 流），仅在有有效回答时存储
         if clean_answer:
@@ -510,7 +484,7 @@ async def _pc_sse_generator(
             user_query = str(msg.get("content", ""))
             break
 
-    clean_answer = _sanitize_history_answer(collected_answer)
+    clean_answer = sanitize_tool_draft_text(collected_answer)
     if clean_answer:
         await save_conversation(
             db,
@@ -654,7 +628,7 @@ async def _dify_stream_generator(
         yield sse_event
 
     # 保存对话历史到数据库（仅在有有效回答时）
-    clean_answer = _sanitize_history_answer(collected_answer)
+    clean_answer = sanitize_tool_draft_text(collected_answer)
     if clean_answer:
         await save_conversation(
             db,
@@ -698,7 +672,7 @@ async def _run_blocking(
         elif event.event_type == "error":
             raise Exception(str(event.data))
 
-    clean_answer = _sanitize_history_answer(collected_answer)
+    clean_answer = sanitize_tool_draft_text(collected_answer)
 
     # 保存对话历史到数据库（仅在有有效回答时）
     if clean_answer:

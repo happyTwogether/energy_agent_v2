@@ -34,11 +34,28 @@ _MAX_TOOL_RESULT_CHARS = 5000  # 单个工具结果最大字符数
 _MAX_TOTAL_CONTEXT_CHARS = 50000  # 总上下文最大字符数（约 15k tokens）
 
 
-def _sanitize_tool_draft_text(content: str) -> str:
-    """清理回答中的工具调用草稿。"""
-    cleaned = re.sub(r'<tool>\s*\{[\s\S]*?\}\s*</tool>', '', content)
+def sanitize_tool_draft_text(content: str) -> str:
+    """清理回答中的工具调用草稿和工具调用痕迹。
+
+    用于: final_answer 预处理、历史消息存储前的清洗。
+    """
+    if not content:
+        return ""
+    cleaned = content
+
+    # 1. 清理 <tool> 标签
+    cleaned = re.sub(r'<tool>\s*\{[\s\S]*?\}\s*</tool>', '', cleaned)
+
+    # 2. 清理不完整的 JSON 代码块
     cleaned = re.sub(r'```json\s*\{[\s\S]*?$', '', cleaned, flags=re.IGNORECASE)
+
+    # 3. 清理裸工具调用 JSON 开头
     cleaned = re.sub(r'\{\s*"name"\s*:\s*"[^"]+"[\s\S]*?$', '', cleaned)
+
+    # 4. 清理工具调用的文字表述
+    cleaned = re.sub(r"我(调用|使用)\s*\w+\s*工具[，,。]?\s*", "", cleaned)
+    cleaned = re.sub(r"通过\s*\w+\s*工具\s*(查询|获取|调取)[到]?[，,。]?\s*", "查询到", cleaned)
+
     return cleaned.strip()
 
 
@@ -203,6 +220,24 @@ def _prune_old_messages(messages: list[dict], max_chars: int = _MAX_TOTAL_CONTEX
 
     result = [system_msg] + pruned_msgs if system_msg else pruned_msgs
     return result
+
+
+async def _non_streaming_fallback(
+    messages: list[dict], tools: list[dict] | None
+) -> tuple[str, dict | None, list[dict], str | None]:
+    """非流式回退调用 LLM，统一处理流式超时/中断后的降级。
+
+    Returns:
+        (content, usage_dict, tool_calls, finish_reason)
+    """
+    resp = await get_llm_client().chat(messages=messages, tools=tools)
+    usage = resp.get("usage")
+    choice = (resp.get("choices") or [{}])[0]
+    finish = choice.get("finish_reason")
+    msg = choice.get("message") or {}
+    content = msg.get("content") or ""
+    tool_calls = msg.get("tool_calls") or []
+    return content, usage, tool_calls, finish
 
 
 async def _stream_with_idle_timeout(
@@ -395,18 +430,11 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
 
             if _stream_fallback_needed:
                 try:
-                    fallback_resp = await get_llm_client().chat(
-                        messages=messages, tools=tools or None
+                    fb_content, fb_usage, fb_tool_calls, finish_reason = await _non_streaming_fallback(
+                        messages, tools or None
                     )
-                    fb_choice = (fallback_resp.get("choices") or [{}])[0]
-                    finish_reason = fb_choice.get("finish_reason")
-                    fb_msg = fb_choice.get("message") or {}
-                    fb_content = fb_msg.get("content") or ""
-                    fb_tool_calls = fb_msg.get("tool_calls") or []
-
-                    # 捕获 non-streaming fallback 的 usage
-                    if fallback_resp.get("usage"):
-                        last_usage = fallback_resp["usage"]
+                    if fb_usage:
+                        last_usage = fb_usage
 
                     # 【关键修复】输出降级后获取的内容（扣除已输出的部分）
                     if fb_content and len(fb_content) > len(collected_content):
@@ -463,15 +491,11 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                         suspected_tool_name or "unknown",
                     )
                     try:
-                        retry_resp = await get_llm_client().chat(messages=messages, tools=tools or None)
-                        # 捕获重试的 usage
-                        if retry_resp.get("usage"):
-                            last_usage = retry_resp["usage"]
-                        retry_choice = (retry_resp.get("choices") or [{}])[0]
-                        retry_finish_reason = retry_choice.get("finish_reason")
-                        retry_msg = retry_choice.get("message") or {}
-                        retry_tool_calls = retry_msg.get("tool_calls") or []
-                        retry_content = retry_msg.get("content") or ""
+                        retry_content, retry_usage, retry_tool_calls, retry_finish_reason = await _non_streaming_fallback(
+                            messages, tools or None
+                        )
+                        if retry_usage:
+                            last_usage = retry_usage
 
                         if retry_tool_calls:
                             tool_calls = retry_tool_calls
@@ -481,7 +505,7 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                             messages[-1] = assistant_message
                             logger.info("疑似工具草稿补救成功（第 %d 步）: tool_calls=%d", steps, len(tool_calls))
                         else:
-                            clean_content = _sanitize_tool_draft_text(retry_content or collected_content)
+                            clean_content = sanitize_tool_draft_text(retry_content or collected_content)
                             fallback_message = clean_content or "本次工具调用未生成有效参数，请重试。"
                             logger.warning("疑似工具草稿补救失败（第 %d 步），返回安全提示", steps)
                             yield StreamEvent(event_type="final_answer", data=fallback_message)
@@ -494,7 +518,7 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                         return
 
                 if not tool_calls:
-                    clean_content = _sanitize_tool_draft_text(collected_content)
+                    clean_content = sanitize_tool_draft_text(collected_content)
                     logger.info("Agent 最终回答（第 %d 步）: %s", steps, clean_content[:200])
                     yield StreamEvent(event_type="final_answer", data=clean_content)
                     if last_usage:
@@ -521,16 +545,17 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
 
                     yield StreamEvent(event_type="tool_call", data=call_info)
 
-                # 【核心补丁】创建数据库会话并注入到需要 db 的工具
+                # 并发执行工具：每个工具独立 session，避免 SQLAlchemy async session 并发限制
                 results: list[dict[str, Any]] = []
                 session_factory = get_session_factory()
-                async with session_factory() as db:
-                    async with asyncio.TaskGroup() as tg:
-                        tasks = [
-                            tg.create_task(_execute_tool(name, args, db=db))
-                            for name, args in parsed_calls
-                        ]
-                    results = [t.result() for t in tasks]
+
+                async def _run_with_session(name, args):
+                    async with session_factory() as sess:
+                        return await _execute_tool(name, args, db=sess)
+
+                async with asyncio.TaskGroup() as tg:
+                    tasks = [tg.create_task(_run_with_session(n, a)) for n, a in parsed_calls]
+                results = [t.result() for t in tasks]
 
                 for idx, result in enumerate(results):
                     tc_id: str = tool_calls[idx].get("id", f"call_{idx}")
@@ -580,11 +605,11 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                         _max_step_fallback = True
                     if _max_step_fallback:
                         try:
-                            fb = await get_llm_client().chat(messages=messages, tools=None)
-                            # 捕获 max_step 降级的 usage
-                            if fb.get("usage"):
-                                last_usage = fb["usage"]
-                            fb_content = ((fb.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+                            fb_content, fb_usage, _, _ = await _non_streaming_fallback(
+                                messages, None
+                            )
+                            if fb_usage:
+                                last_usage = fb_usage
                             # 【关键修复】输出降级后获取的内容（扣除已输出的部分）
                             if fb_content and len(fb_content) > len(final_collected):
                                 remaining = fb_content[len(final_collected):]

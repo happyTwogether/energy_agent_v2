@@ -1455,21 +1455,17 @@ function processSseEvent(eventStr, ctx) {
   console.log('[SSE]', eventType, typeof data === 'object' ? (data.event || data) : data);
 
   switch (eventType) {
-    case 'agent_message': {
+    case 'message': {
       // 记录 conversation_id，更新前端状态
       const cid = data.conversation_id;
       if (cid && cid !== conversationId) {
         conversationId = cid;
         renderConversationList();
       }
-      break;
-    }
-    case 'message': {
-      // 流式回答 token
+      // 流式回答 token（非空时才渲染）
       const token = data.answer || '';
       if (token) {
         ctx.finalAnswerText += token;
-        // 流式渲染 Markdown 到回答区
         answerContent.innerHTML = renderMarkdown(ctx.finalAnswerText);
         answerContent.classList.add('streaming');
         if (details.style.display !== 'none') {
