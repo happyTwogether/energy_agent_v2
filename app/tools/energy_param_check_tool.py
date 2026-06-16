@@ -371,8 +371,11 @@ async def query_energy_param_check(
             "is_truncated": is_truncated_val,
             "unqualified_cgi_count": unique_unqualified_cgis,
             **({"date_note": date_note} if date_note else {}),
-            **meta,  # download_url, auto_exported 等导出相关字段
+            "download_url": meta.pop("download_url", None),
+            **meta,
         }
+        if result["download_url"] is None:
+            del result["download_url"]
 
         return result
 

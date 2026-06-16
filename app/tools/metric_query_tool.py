@@ -290,7 +290,7 @@ async def query_metric(
     if metric_desc:
         return await _query_freeform(db, metric_desc, export_excel, date_note, cgi=cgi, **common)
     if metric_names:
-        return await _query_named_metrics(db, metric_names, cgi or "", export_excel, date_note, cgi=cgi, **common)
+        return await _query_named_metrics(db, metric_names, cgi or "", export_excel, date_note, **common)
     return {"success": False, "error": "请提供 metric_names 或 metric_desc"}
 
 
@@ -378,8 +378,10 @@ async def _query_named_metrics(
                                  "prod_name": row.get("prod_name"), "cgi": row.get("cgi"), **row_values})
 
     detail_rows, meta = truncate_and_export(data, prefix="metric_query", export_excel=export_excel)
+    download_url = meta.pop("download_url", None)
     return {
         "success": True,
+        **({"download_url": download_url} if download_url else {}),
         "metrics": values,
         "rows": detail_rows,
         "is_truncated": meta.pop("is_truncated"),

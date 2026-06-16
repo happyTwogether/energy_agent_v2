@@ -321,8 +321,10 @@ async def query_anomaly(
         returned_nr = nr_anomalies[:MAX_RETURN_ITEMS] if len(nr_anomalies) > MAX_RETURN_ITEMS else nr_anomalies
 
         # 4. 组装返回结果
+        download_url = meta.pop("download_url", None)
         result = {
             "success": True,
+            **({"download_url": download_url} if download_url else {}),
             "target_date": target_date,
             "baseline_range": f"{baseline_start} ~ {target_date}",
             "lte_anomalies": returned_lte,
@@ -331,7 +333,7 @@ async def query_anomaly(
             "total_anomaly_count": meta.pop("total_count"),
             "returned_count": meta.pop("returned_count"),
             "is_truncated": meta.pop("is_truncated"),
-            **meta,  # download_url, auto_exported（存在时注入）
+            **meta,
         }
 
         if lte_anomalies:
