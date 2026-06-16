@@ -16,7 +16,7 @@ from app.core.config import get_settings
 from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
 from app.models.schemas import StreamEvent
-from app.prompts import ENERGY_SAVING_PROMPT_APPENDIX
+from app.prompts import AGENT_EXECUTION_PROMPT, get_synthesis_prompt
 from app.services.database import get_session_factory
 from app.services.llm_client import (
     LLMError,
@@ -60,21 +60,36 @@ def sanitize_tool_draft_text(content: str) -> str:
 
 
 def _build_system_prompt(
+    phase: str = "execution",
+    tool_name: str | None = None,
     context_text: str | None = None,
 ) -> str:
-    """统一构建 system prompt。"""
+    """统一构建 system prompt，支持两阶段分离。
+
+    phase="execution": 意图识别 + 工具调用（Phase 1，带 tools）
+    phase="synthesis": 结果总结（Phase 3，不带 tools，按工具选模板）
+    """
     settings = get_settings()
     current_date = datetime.now().strftime("%Y-%m-%d")
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    system_prompt = settings.agent_system_prompt + ENERGY_SAVING_PROMPT_APPENDIX.format(
-        current_date=current_date,
-        yesterday=yesterday,
-    )
+
+    if phase == "synthesis":
+        prompt = get_synthesis_prompt(tool_name).format(
+            current_date=current_date, yesterday=yesterday
+        )
+    else:
+        prompt = AGENT_EXECUTION_PROMPT.format(
+            current_date=current_date, yesterday=yesterday
+        )
+
+    # .env 的 agent_system_prompt 作为前置角色注入
+    if settings.agent_system_prompt:
+        prompt = settings.agent_system_prompt + "\n\n" + prompt
 
     if context_text:
-        system_prompt += f"\n\n# User Context\n{context_text}"
+        prompt += f"\n\n# User Context\n{context_text}"
 
-    return system_prompt
+    return prompt
 
 
 def _normalize_messages_with_system_prompt(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -351,8 +366,9 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
     max_steps: int = settings.agent_max_steps
 
     messages = _normalize_messages_with_system_prompt(messages)
-    
+
     steps: int = 0
+    _tools_used: set[str] = set()  # 本轮已调用的工具名集合
     tools: list[dict[str, Any]] = tool_registry.get_tools_for_llm()
 
     try:
@@ -367,6 +383,13 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                 event_type="agent_step",
                 data={"step": steps, "max_steps": max_steps},
             )
+
+            # Phase 切换：工具已执行过 → 后续调用换 synthesis prompt
+            if _tools_used and messages and messages[0].get("role") == "system":
+                primary_tool = next(iter(_tools_used)) if _tools_used else None
+                messages[0]["content"] = _build_system_prompt(
+                    phase="synthesis", tool_name=primary_tool
+                )
 
             collected_content = ""
             collected_tool_calls: dict[int, dict] = {}
@@ -528,22 +551,33 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
             if tool_calls:
                 parsed_calls: list[tuple[str, dict[str, Any]]] = []
 
+                _has_invalid = False
                 for i, tc in enumerate(tool_calls):
                     tool_name = (tc.get("function") or {}).get("name") or "unknown"
+                    tc_id = tc.get("id", f"call_{i}")
                     is_valid, tool_args, error_message = _is_valid_tool_call(tc, tools)
                     if not is_valid or tool_args is None:
                         logger.warning("拦截非法工具调用（第 %d 步）: %s", steps, error_message)
+                        _has_invalid = True
+                        # 将解析错误作为 tool result 反馈给 LLM，给它重试机会
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": f"工具调用格式错误: {error_message}。请修正后重试。",
+                        })
                         yield StreamEvent(
-                            event_type="final_answer",
-                            data=error_message or f"工具 {tool_name} 的参数无效，请重试。",
+                            event_type="tool_result",
+                            data={"tool": tool_name, "error": error_message, "call_id": tc_id},
                         )
-                        return
-
-                    tc_id = tc.get("id", f"call_{i}")
+                        continue
                     call_info: dict[str, Any] = {"tool": tool_name, "args": tool_args, "call_id": tc_id}
                     parsed_calls.append((tool_name, tool_args))
+                    _tools_used.add(tool_name)
 
                     yield StreamEvent(event_type="tool_call", data=call_info)
+
+                if _has_invalid:
+                    continue  # 有工具调用校验失败，已反馈错误给 LLM，让它重试
 
                 # 并发执行工具：每个工具独立 session，避免 SQLAlchemy async session 并发限制
                 results: list[dict[str, Any]] = []
@@ -581,6 +615,11 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
 
                 if steps == max_steps:
                     logger.warning("达到最大步数 %d，强制终止", max_steps)
+                    # 切换到 synthesis prompt 做最终汇总
+                    primary_tool = next(iter(_tools_used)) if _tools_used else None
+                    messages[0]["content"] = _build_system_prompt(
+                        phase="synthesis", tool_name=primary_tool
+                    )
                     final_collected = ""
                     _max_step_fallback = False
                     try:

@@ -571,14 +571,11 @@ async def _build_messages_from_dify(
 
     history = await load_conversation(db, conversation_id)
 
-    system_content = (
-        "你是一个4G/5G网络节能分析助手。"
-        "对于 query_report、query_metric、query_anomaly 这类查询，若用户未明确提及地市/厂家/日期，"
-        "必须静默使用默认值直接调用工具，禁止追问确认。"
-        "其中 query_report 未提及日期时默认昨天，未提及厂家时默认全网。"
-    )
+    # system prompt 由 agent_runner._normalize_messages_with_system_prompt() 统一构建
+    # 这里只传用户上下文，与 PC 端保持一致
+    system_content = ""
     if request.inputs:
-        system_content += f"\n\n用户上下文信息：{json.dumps(request.inputs, ensure_ascii=False)}"
+        system_content = f"用户上下文信息：{json.dumps(request.inputs, ensure_ascii=False)}"
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
     messages.extend(history)
