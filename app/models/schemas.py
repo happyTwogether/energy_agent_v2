@@ -10,21 +10,6 @@ from typing import Literal, Any
 from pydantic import BaseModel, Field
 
 
-class ChatRequest(BaseModel):
-    """用户聊天请求模型（OpenAI 格式）。"""
-
-    messages: list[dict[str, Any]] = Field(..., min_items=1, description="对话消息列表，OpenAI 格式")
-    conversation_id: str | None = Field(default=None, description="会话ID，为空则创建新会话")
-    user_id: str = Field(default="anonymous", description="用户唯一标识")
-
-
-class ChatResponse(BaseModel):
-    """聊天响应模型（OpenAI 格式）。"""
-
-    choices: list[dict[str, Any]] = Field(..., description="响应选择列表")
-    usage: dict[str, Any] | None = Field(default=None, description="Token 使用统计")
-
-
 class ConversationItem(BaseModel):
     """会话列表中的单个会话项。"""
 

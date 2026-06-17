@@ -1558,9 +1558,11 @@ async function streamChat(userMessage) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        messages: [{ role: 'user', content: userMessage }],
-        conversation_id: conversationId,
-        user_id: userId,
+        inputs: {},
+        query: userMessage,
+        response_mode: 'streaming',
+        conversation_id: conversationId || '',
+        user: userId,
       }),
       signal: abortController.signal,
     });

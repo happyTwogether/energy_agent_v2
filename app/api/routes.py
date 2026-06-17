@@ -16,8 +16,6 @@ from app.core.agent_runner import run_agent_stream, sanitize_tool_draft_text
 from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
 from app.models.schemas import (
-    ChatRequest,
-    ChatResponse,
     ConversationDetailResponse,
     ConversationItem,
     ConversationListResponse,
@@ -442,105 +440,28 @@ async def delete_conversation(conversation_id: str) -> dict[str, str]:
     return {"status": "ok"}
 
 
-async def _pc_sse_generator(
-    messages: list[dict[str, Any]],
-    *,
-    conversation_id: str,
-    user_id: str,
-    db,
-) -> AsyncGenerator[dict[str, Any], None]:
-    """PC 端 SSE 生成器：委托 _dify_sse_generator 流式输出，完成后保存到 DB。
-
-    Args:
-        messages: 对话消息列表（已包含历史）
-        conversation_id: 会话 ID
-        user_id: 用户标识
-        db: 数据库会话
-    """
-    collected_answer = ""
-
-    async for sse_event in _dify_sse_generator(
-        messages=messages,
-        conversation_id=conversation_id,
-        user=user_id,
-        source=1,
-    ):
-        # 收集回答文本
-        data_str = sse_event.get("data", "")
-        try:
-            data_obj = json.loads(data_str)
-        except (json.JSONDecodeError, TypeError):
-            data_obj = {}
-
-        if data_obj.get("event") == "message":
-            collected_answer += data_obj.get("answer", "")
-
-        yield sse_event
-
-    # 提取用户最后一条消息
-    user_query = ""
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            user_query = str(msg.get("content", ""))
-            break
-
-    clean_answer = sanitize_tool_draft_text(collected_answer)
-    if clean_answer:
-        await save_conversation(
-            db,
-            conversation_id,
-            user_id=user_id,
-            new_messages=[
-                {"role": "user", "content": user_query},
-                {"role": "assistant", "content": clean_answer},
-            ],
-            title=user_query[:20],
-            replace=False,
-        )
-
-
 @router.post("/chat/stream")
-async def chat_stream(request: ChatRequest) -> EventSourceResponse:
-    """PC Web 端 SSE 流式聊天接口。
+async def chat_stream(http_request: Request, req: DifyChatRequest) -> Response:
+    """PC Web 端流式聊天接口（Dify 格式）。
 
-    接收用户消息，调用 Agent Runner 执行 ReAct Loop，
-    以 Dify Agent 格式 SSE 事件推送给客户端。
-
-    消息存储：source=1 (PC端)。
-
-    Args:
-        request: 用户聊天请求，包含 messages 数组。
-
-    Returns:
-        EventSourceResponse: SSE 流式响应。
+    与 App 端 /chat-messages 共用同一逻辑，source=1(PC端)。
     """
     try:
-        logger.info("PC端 聊天请求: messages_count=%d, cid=%s",
-                     len(request.messages), request.conversation_id)
-        conversation_id = request.conversation_id or str(uuid.uuid4())
+        logger.info("PC端 聊天请求: query=%s, cid=%s, user=%s",
+                     req.query, req.conversation_id, req.user)
 
         session_factory = get_session_factory()
         async with session_factory() as db:
-            # 从数据库加载历史消息
-            history = await load_conversation(db, conversation_id)
-
-            # 构建完整消息列表：system(如有) + 历史 + 当前用户消息
-            req_msgs = request.messages
-            full_messages: list[dict[str, Any]] = []
-            if req_msgs and req_msgs[0].get("role") == "system":
-                full_messages.append(req_msgs[0])
-                full_messages.extend(history)
-                full_messages.extend(req_msgs[1:])
-            else:
-                full_messages.extend(history)
-                full_messages.extend(req_msgs)
+            conversation_id, messages = await _build_messages_from_dify(req, db)
 
             return EventSourceResponse(
-                content=_pc_sse_generator(
-                    messages=full_messages,
+                content=_dify_stream_generator(
                     conversation_id=conversation_id,
-                    user_id=request.user_id,
+                    messages=messages,
+                    user=req.user,
+                    user_query=req.query,
                     db=db,
+                    source=1,
                 ),
                 media_type="text/event-stream",
             )
@@ -590,8 +511,10 @@ async def _dify_stream_generator(
     user: str,
     user_query: str,
     db,
+    *,
+    source: int = 0,
 ) -> AsyncGenerator[dict[str, Any], None]:
-    """App 端 Dify 流式 SSE 响应生成器。
+    """Dify 流式 SSE 响应生成器（PC 端和 App 端共用）。
 
     委托给共享的 _dify_sse_generator，并在完成后保存到数据库。
 
@@ -601,6 +524,7 @@ async def _dify_stream_generator(
         user: DifyChatRequest.user
         user_query: 用户问题原文
         db: 数据库会话
+        source: 0=App端, 1=PC端
     """
     collected_answer = ""
 
@@ -608,7 +532,7 @@ async def _dify_stream_generator(
         messages=messages,
         conversation_id=conversation_id,
         user=user,
-        source=0,
+        source=source,
     ):
         # 收集回答文本用于会话历史
         data_str = sse_event.get("data", "")

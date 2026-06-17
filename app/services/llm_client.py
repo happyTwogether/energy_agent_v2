@@ -330,6 +330,7 @@ class LLMClient:
 
             async for chunk in response:
                 chunk_count += 1
+                chunk_dict = chunk.model_dump()
                 choices = chunk.choices or []
 
                 if choices:
@@ -341,6 +342,14 @@ class LLMClient:
 
                     # 检查是否是结束 chunk，尝试提取工具调用
                     finish_reason = choice.finish_reason
+                    if finish_reason:
+                        # qwen 流式 API 不返回 usage，估算注入到 chunk 供下游使用
+                        if not chunk_dict.get("usage"):
+                            chunk_dict["usage"] = {
+                                "prompt_tokens": estimated_tokens,
+                                "completion_tokens": len(collected_content) // 2,
+                                "total_tokens": estimated_tokens + len(collected_content) // 2,
+                            }
                     if finish_reason and collected_content and tools and settings.llm_tool_call_fallback_enabled:
                         inspection = inspect_tool_call_content(collected_content)
                         if inspection.tool_calls:
@@ -386,7 +395,7 @@ class LLMClient:
                             }
                             continue
 
-                yield chunk.model_dump()
+                yield chunk_dict
 
             elapsed = time.time() - t0
             logger.info("LLM stream_chat 完成: chunks=%d, elapsed=%.1fs, estimated_tokens~%d",
