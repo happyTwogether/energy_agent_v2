@@ -311,7 +311,7 @@ async def query_anomaly(
             item["network_type"] = "5G"
             combined_anomalies.append(item)
 
-        returned_combined, meta = truncate_and_export(
+        _, meta = truncate_and_export(
             combined_anomalies, prefix="anomaly_diagnosis", export_excel=export_excel
         )
         if meta["is_truncated"]:

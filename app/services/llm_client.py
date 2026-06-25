@@ -87,10 +87,10 @@ def _extract_tool_calls_from_content(content: str | None) -> list[dict[str, Any]
         return None
 
     has_tool_tag = "<tool>" in content
-    logger.info("_extract_tool: content_len=%d, has_<tool>=%s", len(content), has_tool_tag)
+    logger.debug("_extract_tool: content_len=%d, has_<tool>=%s", len(content), has_tool_tag)
     if not has_tool_tag:
         # 没有 <tool> 标签，打印内容尾部助诊
-        logger.info("_extract_tool: 无 <tool> 标签, content_tail=%.300s", content[-300:])
+        logger.debug("_extract_tool: 无 <tool> 标签, content_tail=%.300s", content[-300:])
 
     tool_calls = []
     pos = 0
@@ -100,14 +100,14 @@ def _extract_tool_calls_from_content(content: str | None) -> list[dict[str, Any]
         idx = content.find("<tool>", pos)
         if idx == -1:
             break
-        logger.info("_extract_tool: 找到 <tool> at pos=%d", idx)
+        logger.debug("_extract_tool: 找到 <tool> at pos=%d", idx)
         json_start = idx + len("<tool>")
 
         # 跳过空白
         while json_start < len(content) and content[json_start] in (' ', '\t', '\n', '\r'):
             json_start += 1
         if json_start >= len(content) or content[json_start] != '{':
-            logger.info("_extract_tool: <tool> 后不是 '{', pos=%d, char=%.10s",
+            logger.debug("_extract_tool: <tool> 后不是 '{', pos=%d, char=%.10s",
                          json_start, content[json_start:json_start+10] if json_start < len(content) else "EOF")
             pos = json_start
             continue
@@ -125,7 +125,7 @@ def _extract_tool_calls_from_content(content: str | None) -> list[dict[str, Any]
                     break
             json_end += 1
         if depth != 0:  # 未闭合，跳过
-            logger.info("_extract_tool: JSON 未闭合 at pos=%d, depth=%d, tail=%.100s",
+            logger.debug("_extract_tool: JSON 未闭合 at pos=%d, depth=%d, tail=%.100s",
                          json_start, depth, content[json_end:json_end+100])
             pos = json_start
             continue
@@ -136,7 +136,7 @@ def _extract_tool_calls_from_content(content: str | None) -> list[dict[str, Any]
         after = content[json_end + 1:json_end + 30].strip()
         has_close = after.startswith("</tool>")
         if not has_close:
-            logger.info("_extract_tool: </tool> 缺失或未到达 at pos=%d, after=%.30s", json_end + 1, after)
+            logger.debug("_extract_tool: </tool> 缺失或未到达 at pos=%d, after=%.30s", json_end + 1, after)
 
         try:
             data = json.loads(json_str)
@@ -149,11 +149,11 @@ def _extract_tool_calls_from_content(content: str | None) -> list[dict[str, Any]
                         "arguments": json.dumps(data["arguments"], ensure_ascii=False)
                     }
                 })
-                logger.info("_extract_tool: 成功提取 tool=%s", data["name"])
+                logger.debug("_extract_tool: 成功提取 tool=%s", data["name"])
             else:
-                logger.info("_extract_tool: JSON 缺 name/arguments, keys=%s", list(data.keys()))
+                logger.debug("_extract_tool: JSON 缺 name/arguments, keys=%s", list(data.keys()))
         except json.JSONDecodeError as e:
-            logger.info("_extract_tool: JSON 解析失败 at pos=%d: %s, json=%.200s",
+            logger.debug("_extract_tool: JSON 解析失败 at pos=%d: %s, json=%.200s",
                          json_start, e, json_str[:200])
 
         pos = json_end + 1
@@ -196,7 +196,7 @@ def _extract_tool_calls_from_content(content: str | None) -> list[dict[str, Any]
                             "arguments": json.dumps(data["arguments"], ensure_ascii=False)
                         }
                     })
-                    logger.info("_extract_tool: 裸 JSON 提取成功 tool=%s", data["name"])
+                    logger.debug("_extract_tool: 裸 JSON 提取成功 tool=%s", data["name"])
             except json.JSONDecodeError:
                 pass
 

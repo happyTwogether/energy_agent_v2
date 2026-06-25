@@ -38,37 +38,34 @@ logger = get_logger("routes")
 router = APIRouter()
 
 
+async def _save_answer_to_db(
+    db, conversation_id: str, user_id: str, user_query: str, answer: str
+) -> None:
+    """保存对话到数据库（save_conversation 封装）。"""
+    if answer:
+        await save_conversation(
+            db, conversation_id, user_id=user_id,
+            new_messages=[
+                {"role": "user", "content": user_query},
+                {"role": "assistant", "content": answer},
+            ],
+            title=user_query[:20], replace=False,
+        )
+
+
 def _build_usage_metadata(token_usage: dict[str, Any] | None) -> dict[str, Any]:
     """构建 Dify metadata.usage 格式。"""
-    if token_usage:
-        return {
-            "usage": {
-                "prompt_tokens": token_usage.get("prompt_tokens", 0),
-                "prompt_unit_price": "0",
-                "prompt_price_unit": "0",
-                "prompt_price": "0",
-                "completion_tokens": token_usage.get("completion_tokens", 0),
-                "completion_unit_price": "0",
-                "completion_price_unit": "0",
-                "completion_price": "0",
-                "total_tokens": token_usage.get("total_tokens", 0),
-                "total_price": "0",
-                "currency": "USD",
-                "latency": 0,
-            },
-            "retriever_resources": [],
-        }
     return {
         "usage": {
-            "prompt_tokens": 0,
+            "prompt_tokens": token_usage.get("prompt_tokens", 0) if token_usage else 0,
             "prompt_unit_price": "0",
             "prompt_price_unit": "0",
             "prompt_price": "0",
-            "completion_tokens": 0,
+            "completion_tokens": token_usage.get("completion_tokens", 0) if token_usage else 0,
             "completion_unit_price": "0",
             "completion_price_unit": "0",
             "completion_price": "0",
-            "total_tokens": 0,
+            "total_tokens": token_usage.get("total_tokens", 0) if token_usage else 0,
             "total_price": "0",
             "currency": "USD",
             "latency": 0,
@@ -548,20 +545,11 @@ async def _dify_stream_generator(
 
         yield sse_event
 
-    # 保存对话历史到数据库（仅在有有效回答时）
-    clean_answer = sanitize_tool_draft_text(collected_answer)
-    if clean_answer:
-        await save_conversation(
-            db,
-            conversation_id,
-            user_id=user,
-            new_messages=[
-                {"role": "user", "content": user_query},
-                {"role": "assistant", "content": clean_answer},
-            ],
-            title=user_query[:20],
-            replace=False,
-        )
+    # 保存对话历史到数据库
+    await _save_answer_to_db(
+        db, conversation_id, user, user_query,
+        sanitize_tool_draft_text(collected_answer),
+    )
 
 
 async def _run_blocking(
@@ -595,21 +583,10 @@ async def _run_blocking(
 
     clean_answer = sanitize_tool_draft_text(collected_answer)
 
-    # 保存对话历史到数据库（仅在有有效回答时）
-    if clean_answer:
-        await save_conversation(
-            db,
-            conversation_id,
-            user_id=user,
-            new_messages=[
-                {"role": "user", "content": user_query},
-                {"role": "assistant", "content": clean_answer},
-            ],
-            title=user_query[:20],
-            replace=False,
-        )
+    # 保存对话 + 异步消息存储
+    await _save_answer_to_db(db, conversation_id, user, user_query, clean_answer)
 
-        # 消息存储（异步）
+    if clean_answer and token_usage:
         prompt_tokens, completion_tokens, total_tokens = _extract_usage_tokens(token_usage)
         asyncio.create_task(
             store_message(
