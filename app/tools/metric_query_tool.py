@@ -1,4 +1,10 @@
-"""指标查询工具 — 按指标名查值、支持自由 SQL 探索、小区级和汇总级。"""
+"""指标查询工具 — 结构化参数驱动的汇总级指标查询。
+
+特点：
+- 预定义指标 + 指标组，SQL 由代码拼接，100% 不会列名错误
+- 支持聚合（GROUP BY）、排序（ORDER BY）、Top N（LIMIT）
+- 显式 4G/5G 网络选择
+"""
 
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -8,10 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.core.metrics_registry import ALL_METRICS, get_metric_names
-from app.prompts.sql_generation import SQL_GENERATION_PROMPT
+from app.core.metrics_registry import ALL_METRICS, REPORT_METRICS
 from app.services.database import get_session_factory
-from app.services.llm_client import get_llm_client, LLMError
 from app.tools.registry import tool_registry
 from app.utils.export_util import truncate_and_export
 
@@ -20,10 +24,11 @@ logger = get_logger("metric_query_tool")
 DB_SCHEMA = get_settings().db_schema
 LTE_REPORT_TABLE = f"{DB_SCHEMA}.lte_report_day_collect"
 NR_REPORT_TABLE = f"{DB_SCHEMA}.nr_report_day_collect"
-LTE_CELL_TABLE = f"{DB_SCHEMA}.lte_report_day_detail"
-NR_CELL_TABLE = f"{DB_SCHEMA}.nr_report_day_detail"
 
-# ── 指标组 (metric_names 中可直接用) ──
+_DIMENSION_COLS = ["dist_name", "prod_name", "freq_band", "site_type", "area"]
+_GROUP_BY_DIMS = _DIMENSION_COLS + ["data_date"]
+
+# -- 指标组 --
 METRIC_GROUPS: dict[str, list[str]] = {
     "summary_4g": ["station_total", "station_online", "cell_total", "bbu_energy", "rru_energy",
                     "station_energy", "traffic", "avg_energy_efficiency", "energy_saving_rate"],
@@ -34,13 +39,13 @@ METRIC_GROUPS: dict[str, list[str]] = {
     "energy_saving_5g": ["symbol_shutdown_on_rate", "symbol_shutdown_hour", "channel_shutdown_on_rate",
                           "channel_shutdown_hour", "carrier_shutdown_hour", "deepsleep_on_rate",
                           "deepsleep_hour", "supersleep_hour"],
-    "cell_basic": ["cell_traffic", "cell_carrier_shutdown_hour", "cell_channel_shutdown_hour",
-                    "cell_symbol_shutdown_hour", "cell_deepsleep_hour", "cell_supersleep_hour"],
 }
+
+_GROUP_NAMES = list(METRIC_GROUPS.keys())
+_ALL_METRIC_NAMES = sorted(REPORT_METRICS.keys())
 
 
 def _resolve_metric_names(raw_names: list[str]) -> list[str]:
-    """展开指标组为具体指标名。"""
     result = []
     for name in raw_names:
         if name in METRIC_GROUPS:
@@ -50,15 +55,113 @@ def _resolve_metric_names(raw_names: list[str]) -> list[str]:
     return result
 
 
-def _detect_network(cgi: str) -> str:
-    """根据 CGI 格式判断网络类型。460-00 开头为 5G，其余为 4G。"""
-    if cgi and cgi.startswith("460-00"):
-        return "5G"
-    return "4G"
+def _resolve_columns(metric_names: list[str], network: str) -> list[tuple[str, str]]:
+    """解析指标名为数据库列名。返回 [(metric_name, db_column), ...]"""
+    cols = []
+    for name in metric_names:
+        metric = ALL_METRICS.get(name)
+        if not metric:
+            continue
+        candidates = metric["columns_nr"] if network == "5G" else metric["columns_lte"]
+        if not candidates:
+            continue
+        for col in candidates:
+            if col not in [c[1] for c in cols]:
+                cols.append((name, col))
+    return cols
+
+
+def _agg_func(metric_name: str) -> str:
+    """根据指标名推断聚合函数：rate 类用 AVG，其他用 SUM。"""
+    if "rate" in metric_name or "ratio" in metric_name or "efficiency" in metric_name:
+        return "AVG"
+    return "SUM"
+
+
+def _build_agg_sql(
+    metric_names: list[str],
+    table: str,
+    network: str,
+    group_by: list[str] | None,
+    order_by: list[dict] | None,
+    limit_val: int | None,
+    conditions: str,
+) -> str:
+    """构建含聚合/排序/限制的 SELECT SQL。"""
+    resolved_metrics = _resolve_metric_names(metric_names)
+    cols = _resolve_columns(resolved_metrics, network)
+
+    select_parts: list[str] = []
+    if group_by:
+        for dim in group_by:
+            if dim in _GROUP_BY_DIMS:
+                select_parts.append(dim)
+        for metric_name, db_col in cols:
+            agg = _agg_func(metric_name)
+            select_parts.append(f"{agg}({db_col}) AS agg_{metric_name}")
+    else:
+        select_parts.append("data_date")
+        select_parts.extend(_DIMENSION_COLS)
+        for _, db_col in cols:
+            select_parts.append(db_col)
+
+    sql = f"SELECT {', '.join(select_parts)} FROM {table} {conditions}"
+
+    if group_by:
+        sql += " GROUP BY " + ", ".join(g for g in group_by if g in _GROUP_BY_DIMS)
+
+    if order_by:
+        order_clauses = []
+        for ob in order_by:
+            field = ob.get("field", "") if isinstance(ob, dict) else str(ob)
+            direction = ob.get("direction", "DESC") if isinstance(ob, dict) else "DESC"
+            direction = direction.upper()
+            if direction not in ("ASC", "DESC"):
+                direction = "DESC"
+            if field in _GROUP_BY_DIMS or field.startswith("agg_"):
+                order_clauses.append(f"{field} {direction}")
+            elif field in ALL_METRICS:
+                order_clauses.append(f"agg_{field} {direction}")
+        if order_clauses:
+            sql += " ORDER BY " + ", ".join(order_clauses)
+
+    if limit_val:
+        sql += f" LIMIT {int(limit_val)}"
+
+    return sql
+
+
+def _build_conditions(
+    dist_name: str | None = None,
+    prod_name: str | None = None,
+    freq_band: str | None = None,
+    site_type: str | None = None,
+    area: str | None = None,
+    date_start: str | None = None,
+    date_end: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """构建 SQL WHERE 条件。"""
+    conds = []
+    params: dict[str, Any] = {}
+    for col, val in [("dist_name", dist_name), ("prod_name", prod_name),
+                      ("freq_band", freq_band), ("site_type", site_type),
+                      ("area", area)]:
+        if val:
+            conds.append(f"{col} = :{col}")
+            params[col] = val
+    if date_start:
+        conds.append("data_date >= :date_start")
+        params["date_start"] = date_start
+    if date_end:
+        conds.append("data_date <= :date_end")
+        params["date_end"] = date_end
+    condition_sql = " AND ".join(conds)
+    if condition_sql:
+        return "WHERE " + condition_sql, params
+    return "", params
 
 
 async def _get_latest_metric_date() -> datetime | None:
-    """获取指标表的最新数据日期（取 LTE/NR 两表最大日期的较大值）。"""
     sql = text(f"""
         SELECT MAX(data_date) FROM (
             SELECT MAX(data_date) AS data_date FROM {LTE_REPORT_TABLE}
@@ -79,119 +182,7 @@ async def _get_latest_metric_date() -> datetime | None:
         return row
 
 
-def _build_query_sql(
-    metric_names: list[str],
-    table: str,
-    network: str = "5G",
-) -> str | None:
-    """根据指标名列表构建 SELECT SQL。"""
-    all_columns: list[str] = []
-    for name in metric_names:
-        metric = ALL_METRICS.get(name)
-        if not metric:
-            continue
-        cols = metric["columns_nr"] if network == "5G" else metric["columns_lte"]
-        if cols is None:
-            continue
-        for col in cols:
-            if col not in all_columns:
-                all_columns.append(col)
-
-    if not all_columns:
-        return None
-
-    cols_str = ", ".join(all_columns)
-    return f"SELECT data_date, dist_name, prod_name, freq_band, {cols_str} FROM {table}"
-
-
-def _apply_calc(row: dict, metric_name: str) -> float | None:
-    """对查询行应用指标计算函数。"""
-    metric = ALL_METRICS.get(metric_name)
-    if not metric:
-        return None
-    try:
-        return metric["calc"](row)
-    except Exception:
-        return None
-
-
-def _build_conditions(
-    dist_name: str | None = None,
-    prod_name: str | None = None,
-    freq_band: str | None = None,
-    site_type: str | None = None,
-    area: str | None = None,
-    date_start: str | None = None,
-    date_end: str | None = None,
-    cgi: str | None = None,
-) -> tuple[str, dict[str, Any]]:
-    """构建 SQL WHERE 条件和参数字典。"""
-    conditions: list[str] = []
-    params: dict[str, Any] = {}
-
-    for col, val in [("dist_name", dist_name), ("prod_name", prod_name),
-                      ("freq_band", freq_band), ("site_type", site_type),
-                      ("area", area), ("cgi", cgi)]:
-        if val:
-            conditions.append(f"{col} = :{col}")
-            params[col] = val
-
-    if date_start:
-        conditions.append("data_date >= :date_start")
-        params["date_start"] = date_start
-    if date_end:
-        conditions.append("data_date <= :date_end")
-        params["date_end"] = date_end
-
-    condition_sql = " AND ".join(conditions) if conditions else ""
-    if condition_sql:
-        condition_sql = "WHERE " + condition_sql
-    return condition_sql, params
-
-
-def _is_safe_sql(sql: str) -> bool:
-    upper = sql.upper().strip()
-    for kw in ["INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "EXEC", "EXECUTE", "UNION"]:
-        if kw in upper:
-            return False
-    return upper.startswith("SELECT")
-
-
-# ── 自由探索 LLM 辅助 ──
-def _build_llm_prompt(
-    metric_desc: str,
-    dist_name: str | None = None,
-    prod_name: str | None = None,
-    date_start: str | None = None,
-    date_end: str | None = None,
-) -> str:
-    condition_parts = []
-    if dist_name:
-        condition_parts.append(f"地市: {dist_name}")
-    if prod_name:
-        condition_parts.append(f"厂家: {prod_name}")
-    if date_start:
-        condition_parts.append(f"开始日期: {date_start}")
-    if date_end:
-        condition_parts.append(f"结束日期: {date_end}")
-    return SQL_GENERATION_PROMPT.format(
-        schema=DB_SCHEMA,
-        metric_desc=metric_desc,
-        condition_str="，".join(condition_parts) if condition_parts else "无",
-    )
-
-
-def _extract_sql_from_llm_response(response_text: str) -> str:
-    sql = response_text.strip()
-    for prefix in ["```sql", "```"]:
-        if sql.startswith(prefix):
-            sql = sql[len(prefix):]
-    if sql.endswith("```"):
-        sql = sql[:-3]
-    return sql.strip()
-
-
-async def _execute_single_query(db: AsyncSession, sql: str, params: dict | None = None) -> dict[str, Any]:
+async def _execute_query(db: AsyncSession, sql: str, params: dict) -> dict[str, Any]:
     try:
         result = await db.execute(text(sql), params or {})
         rows = result.mappings().all()
@@ -201,57 +192,71 @@ async def _execute_single_query(db: AsyncSession, sql: str, params: dict | None 
         return {"success": False, "error": f"SQL 执行失败: {exc}"}
 
 
-# ── 主工具 ──
+def _apply_calc(row: dict, metric_name: str) -> float | None:
+    metric = ALL_METRICS.get(metric_name)
+    if not metric:
+        return None
+    try:
+        return metric["calc"](row)
+    except Exception:
+        return None
+
+
 @tool_registry.tool(
-    description="查询能耗指标数值。传 metric_names 按指标名或指标组查值，传 metric_desc 进行自由 SQL 探索。传 cgi 查小区级，不传查汇总级。",
+    description="查询汇总级能耗指标。支持聚合（group_by）、排序（order_by）、Top N（limit）。传 metric_names 指定指标名或指标组。",
     parameters={
         "type": "object",
         "properties": {
             "metric_names": {
                 "type": "array",
-                "items": {
-                    "type": "string",
-                    "enum": list(METRIC_GROUPS.keys()),
-                },
-                "description": "指标组或指标名列表。指标组: summary_4g,summary_5g,energy_saving_4g,energy_saving_5g,cell_basic。单指标如 bbu_energy,station_online_ratio,cell_traffic 等，传错返回可用列表",
+                "items": {"type": "string", "enum": _ALL_METRIC_NAMES + _GROUP_NAMES},
+                "description": "指标名或指标组。指标组: summary_4g,summary_5g,energy_saving_4g,energy_saving_5g",
             },
-            "metric_desc": {
+            "network": {
                 "type": "string",
-                "description": "自由探索模式的查询需求描述，与 metric_names 互斥",
+                "enum": ["4G", "5G"],
+                "description": "网络类型。用户未指定时根据上下文推断，4G 选 4G，5G 选 5G，两者都需要时分两次调用",
             },
             "dist_name": {"type": "string", "description": "地市名称"},
             "prod_name": {"type": "string", "description": "设备厂家"},
-            "freq_band": {
-                "type": "string",
-                "description": "频段",
-            },
-            "site_type": {
-                "type": "string",
-                "description": "站型",
-            },
-            "area": {
-                "type": "string",
-                "description": "区域",
-            },
+            "freq_band": {"type": "string", "description": "频段"},
+            "site_type": {"type": "string", "description": "站型"},
+            "area": {"type": "string", "description": "区域"},
             "date_start": {"type": "string", "description": "开始日期 (YYYY-MM-DD)"},
-            "date_end": {
-                "type": "string",
-                "description": "结束日期 (YYYY-MM-DD)",
+            "date_end": {"type": "string", "description": "结束日期 (YYYY-MM-DD)"},
+            "group_by": {
+                "type": "array",
+                "items": {"type": "string", "enum": _GROUP_BY_DIMS},
+                "description": "聚合维度列表。传一个或多个: dist_name/prod_name/freq_band/site_type/area/data_date。不传则返回明细",
             },
-            "cgi": {"type": "string", "description": "小区 CGI"},
+            "order_by": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "field": {"type": "string", "description": "排序字段：指标名或维度名"},
+                        "direction": {"type": "string", "enum": ["asc", "desc"]},
+                    },
+                },
+                "description": "排序规则。field 传指标名或 group_by 中的维度名",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "返回 TOP N 条。用户说 TOP N 时设置",
+            },
             "export_excel": {
                 "type": "boolean",
                 "description": "是否导出 Excel",
                 "default": False,
             },
         },
-        "required": [],
+        "required": ["metric_names", "network"],
     },
 )
 async def query_metric(
     db: AsyncSession,
-    metric_names: list[str] | None = None,
-    metric_desc: str | None = None,
+    metric_names: list[str],
+    network: str,
     dist_name: str | None = None,
     prod_name: str | None = None,
     freq_band: str | None = None,
@@ -259,14 +264,15 @@ async def query_metric(
     area: str | None = None,
     date_start: str | None = None,
     date_end: str | None = None,
-    cgi: str | None = None,
+    group_by: list[str] | None = None,
+    order_by: list[dict] | None = None,
+    limit: int | None = None,
     export_excel: bool = False,
 ) -> dict[str, Any]:
-    """查询能耗指标数值（调度器）。"""
-    # 默认日期：优先取 DB 最新日期，DB 无数据时回退到当前时间
+    """查询汇总级能耗指标。"""
+    # 默认日期
     db_latest = await _get_latest_metric_date()
     date_note = ""
-
     if not date_start and not date_end:
         if db_latest:
             date_end = db_latest.strftime("%Y-%m-%d")
@@ -274,108 +280,59 @@ async def query_metric(
         else:
             date_end = datetime.now().strftime("%Y-%m-%d")
             date_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    if date_start and db_latest and date_start > db_latest.strftime("%Y-%m-%d"):
+        date_note = f"您查询的日期 {date_start} 暂无最新数据，已自动调整至 {db_latest.strftime('%Y-%m-%d')}"
+        date_end = db_latest.strftime("%Y-%m-%d")
+        date_start = (db_latest - timedelta(days=7)).strftime("%Y-%m-%d")
 
-    if date_start and db_latest:
-        db_latest_str = db_latest.strftime("%Y-%m-%d")
-        if date_start > db_latest_str:
-            date_note = f"您查询的日期 {date_start} 暂无最新数据，已自动调整至 {db_latest_str}"
-            date_end = db_latest_str
-            date_start = (db_latest - timedelta(days=7)).strftime("%Y-%m-%d")
+    # 选表
+    table = NR_REPORT_TABLE if network == "5G" else LTE_REPORT_TABLE
 
-    common = dict(
-        dist_name=dist_name, prod_name=prod_name, freq_band=freq_band,
-        site_type=site_type, area=area, date_start=date_start, date_end=date_end,
-    )
-
-    if metric_desc:
-        return await _query_freeform(db, metric_desc, export_excel, date_note, cgi=cgi, **common)
-    if metric_names:
-        return await _query_named_metrics(db, metric_names, cgi or "", export_excel, date_note, **common)
-    return {"success": False, "error": "请提供 metric_names 或 metric_desc"}
-
-
-async def _query_freeform(
-    db: AsyncSession,
-    metric_desc: str,
-    export_excel: bool,
-    date_note: str,
-    **kwargs,
-) -> dict[str, Any]:
-    """自由 SQL 探索模式。"""
-    if not metric_desc.strip():
-        return {"success": False, "error": "metric_desc 不能为空"}
-    prompt = _build_llm_prompt(metric_desc, kwargs.get("dist_name"), kwargs.get("prod_name"),
-                               kwargs.get("date_start"), kwargs.get("date_end"))
-    messages = [
-        {"role": "system", "content": "你是一个专业的 SQL 查询生成助手。"},
-        {"role": "user", "content": prompt},
-    ]
-    try:
-        llm_response = await get_llm_client().chat(messages=messages)
-        sql = _extract_sql_from_llm_response(
-            llm_response.get("choices", [{}])[0].get("message", {}).get("content", "")
-        )
-        if not sql:
-            return {"success": False, "error": "LLM 未生成有效 SQL"}
-        if not _is_safe_sql(sql):
-            return {"success": False, "error": "生成的 SQL 包含不安全操作"}
-        condition_sql, params = _build_conditions(**kwargs)
-        sql = sql.rstrip(";") + " " + condition_sql
-        result = await _execute_single_query(db, sql, params)
-    except LLMError as exc:
-        return {"success": False, "error": f"LLM 调用失败: {exc}"}
-    final = _finalize_result(result, export_excel)
-    if date_note:
-        final["date_note"] = date_note
-    return final
-
-
-async def _query_named_metrics(
-    db: AsyncSession,
-    metric_names: list[str],
-    cgi: str,
-    export_excel: bool,
-    date_note: str,
-    **kwargs,
-) -> dict[str, Any]:
-    """按指标名查询模式。"""
+    # 校验指标
     unknown = [n for n in metric_names if n not in ALL_METRICS and n not in METRIC_GROUPS]
     if unknown:
         avail = sorted(ALL_METRICS.keys())
-        return {"success": False, "error": f"未知指标: {unknown}。可用: {avail}，指标组: {list(METRIC_GROUPS.keys())}"}
+        return {"success": False, "error": f"未知指标: {unknown}。可用: {avail}，指标组: {_GROUP_NAMES}"}
 
-    resolved = _resolve_metric_names(metric_names)
-    network = _detect_network(cgi)
-    is_cell = bool(cgi)
-    table = (LTE_CELL_TABLE if network == "4G" else NR_CELL_TABLE) if is_cell else (LTE_REPORT_TABLE if network == "4G" else NR_REPORT_TABLE)
-    sql = _build_query_sql(resolved, table, network)
-    if not sql:
-        return {"success": False, "error": f"指标 {metric_names} 在当前网络类型下无可用列"}
+    # 构建 SQL
+    conditions, params = _build_conditions(
+        dist_name=dist_name, prod_name=prod_name, freq_band=freq_band,
+        site_type=site_type, area=area, date_start=date_start, date_end=date_end,
+    )
+    sql = _build_agg_sql(metric_names, table, network, group_by, order_by, limit, conditions)
 
-    condition_sql, params = _build_conditions(**kwargs)
-    sql = sql + " " + condition_sql
-
-    result = await _execute_single_query(db, sql, params)
+    # 执行
+    result = await _execute_query(db, sql, params)
     if not result["success"]:
         return result
 
+    # 处理结果
     data = result["data"]
+    resolved = _resolve_metric_names(metric_names)
     values: dict[str, Any] = {}
     detail_rows: list[dict] = []
     for row in data:
         row_values = {}
         for name in resolved:
             metric = ALL_METRICS.get(name)
-            if not metric:
+            if not metric or metric["table"] != "report":
                 continue
-            val = _apply_calc(row, name)
+            # 聚合模式用 agg_ 前缀的别名列
+            agg_col = f"agg_{name}"
+            if group_by and agg_col in row:
+                val = round(row[agg_col], 2) if row[agg_col] is not None else 0
+            else:
+                val = _apply_calc(row, name)
             if val is not None:
                 row_values[name] = {"label": metric["label"], "value": val, "unit": metric["unit"]}
                 if name not in values:
                     values[name] = {"label": metric["label"], "value": val, "unit": metric["unit"]}
         if row_values:
-            detail_rows.append({"date": row.get("data_date"), "dist_name": row.get("dist_name"),
-                                 "prod_name": row.get("prod_name"), "cgi": row.get("cgi"), **row_values})
+            row_out = {}
+            if group_by:
+                row_out = {dim: row.get(dim) for dim in group_by if dim in row}
+            row_out["date"] = row.get("data_date", "")
+            detail_rows.append({**row_out, **row_values})
 
     detail_rows, meta = truncate_and_export(data, prefix="metric_query", export_excel=export_excel)
     download_url = meta.pop("download_url", None)
@@ -388,15 +345,3 @@ async def _query_named_metrics(
         **meta,
         **({"date_note": date_note} if date_note else {}),
     }
-
-
-def _finalize_result(result: dict, export_excel: bool) -> dict:
-    """处理查询结果：截断 + Excel 导出。"""
-    if not result.get("success"):
-        return result
-    data = result.get("data", [])
-    truncated, meta = truncate_and_export(
-        data, prefix="metric_query", export_excel=export_excel
-    )
-    result["data"] = truncated
-    return {**result, "is_truncated": meta.pop("is_truncated"), **meta}
