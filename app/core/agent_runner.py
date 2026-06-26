@@ -30,8 +30,12 @@ logger = get_logger("agent_runner")
 _IDLE_TIMEOUT_SEC = 20  # 连续 N 秒无新 chunk 才认为流挂起
 
 # 上下文长度限制配置
-_MAX_TOOL_RESULT_CHARS = 5000  # 单个工具结果最大字符数
+_MAX_TOOL_RESULT_CHARS = 5000  # 单个工具结果最大字符数（默认）
 _MAX_TOTAL_CONTEXT_CHARS = 50000  # 总上下文最大字符数（约 15k tokens）
+# 按工具配置截断上限：图表需要保留完整 ECharts option JSON
+_TOOL_TRUNCATE_LIMITS: dict[str, int] = {
+    "generate_chart": 50000,
+}
 
 
 def sanitize_tool_draft_text(content: str) -> str:
@@ -170,12 +174,17 @@ def _is_valid_tool_call(tool_call: dict[str, Any], tools: list[dict[str, Any]]) 
 
 
 def _truncate_tool_result(result: Any, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
-    """截断工具结果，避免单次工具输出撑爆上下文。"""
+    """截断工具结果，避免单次工具输出撑爆上下文。
+
+    按工具类型使用不同上限（如 generate_chart 的 ECharts option 不能截）。
+    """
+    tool_name = result.get("tool", "") if isinstance(result, dict) else ""
+    limit = _TOOL_TRUNCATE_LIMITS.get(tool_name, max_chars)
     content = dumps_decimal(result, ensure_ascii=False)
-    if len(content) <= max_chars:
+    if len(content) <= limit:
         return content
-    truncated = content[:max_chars]
-    omitted = len(content) - max_chars
+    truncated = content[:limit]
+    omitted = len(content) - limit
     return f"{truncated}\n...(已截断 {omitted} 个字符)"
 
 

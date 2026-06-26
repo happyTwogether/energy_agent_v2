@@ -98,7 +98,12 @@ def _build_agg_sql(
                 select_parts.append(dim)
         for metric_name, db_col in cols:
             agg = _agg_func(metric_name)
-            select_parts.append(f"{agg}({db_col}) AS agg_{metric_name}")
+            if agg == "AVG":
+                # rate/ratio 列存 VARCHAR ("27.89%")→去%→CAST
+                col_expr = f"CAST(NULLIF(REPLACE({db_col}::TEXT,'%',''),'') AS DOUBLE PRECISION)"
+            else:
+                col_expr = db_col
+            select_parts.append(f"{agg}({col_expr}) AS agg_{metric_name}")
     else:
         select_parts.append("data_date")
         select_parts.extend(_DIMENSION_COLS)
@@ -334,14 +339,20 @@ async def query_metric(
             row_out["date"] = row.get("data_date", "")
             detail_rows.append({**row_out, **row_values})
 
-    detail_rows, meta = truncate_and_export(data, prefix="metric_query", export_excel=export_excel)
-    download_url = meta.pop("download_url", None)
+    # 截断返回行；Excel 用原始 SQL 数据导出（扁平列）
+    returned_rows = detail_rows[:50]
+    is_truncated = len(detail_rows) > 50
+    download_url = ""
+    if export_excel:
+        _, excel_meta = truncate_and_export(data, prefix="metric_query", export_excel=True)
+        download_url = excel_meta.get("download_url", "")
     return {
         "success": True,
         **({"download_url": download_url} if download_url else {}),
         "metrics": values,
-        "rows": detail_rows,
-        "is_truncated": meta.pop("is_truncated"),
-        **meta,
+        "rows": returned_rows,
+        "is_truncated": is_truncated,
+        "total_count": len(detail_rows),
+        "returned_count": len(returned_rows),
         **({"date_note": date_note} if date_note else {}),
     }

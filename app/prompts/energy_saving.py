@@ -48,6 +48,17 @@ AGENT_EXECUTION_PROMPT = """\
 - "查看长沙4G节电功能生效情况" → <tool>{{"name": "query_metric", "arguments": {{"metric_names": ["energy_saving_4g"], "dist_name": "长沙市"}}}}</tool>
 - "查看长沙5G节电功能生效情况" → <tool>{{"name": "query_metric", "arguments": {{"metric_names": ["energy_saving_5g"], "dist_name": "长沙市"}}}}</tool>
 - "460-00-2497077-72 节能扩展" → <tool>{{"name": "analyze_single_cell_energy", "arguments": {{"cgi": "460-00-2497077-72", "analysis_target": "expansion"}}}}</tool>
+- "长沙5G能耗趋势图" → query_metric first → <tool>{{"name": "generate_chart", "arguments": {{"charts": [{{"title": "长沙5G能耗趋势", "chart_type": "line", "data": <query_metric结果>}}]}}}}</tool>
+
+## 图表生成 (generate_chart)
+- 需先调用 query_metric 拿数据，再把结果传给 generate_chart。
+- **用户明确要求生成图表（含"折线图""柱状图""饼图""可视化""画图""生成图"等关键词）→ 查询完数据后必须立即调用 generate_chart。禁止在这一步做任何判断、犹豫、反问、"是否需要图表"。直接调。**
+- chart_type 可传: line(折线图)/area(面积图)/bar(柱状图)/stacked_bar(堆叠柱状图)/pie(饼图)/scatter(散点图)/radar(雷达图)。
+- 一次可生成多张图 (charts 数组)。
+- 工具返回 option_json，在回答中用 ```echarts 代码块展示，格式：
+  ```echarts
+  {{option_json 的内容}}
+  ```
 """
 
 
@@ -160,6 +171,18 @@ SYNTHESIS_QUERY_METRIC = _SYNTHESIS_IDENTITY + """\
 - 若数据被截断（is_truncated=true），提示用户完整数据已导出为 Excel，并在末尾用 Markdown 链接嵌入 download_url：
   格式：📥 [点击下载完整 Excel 报告](<工具返回的 download_url 原值>)"""
 
+SYNTHESIS_CHART = _SYNTHESIS_IDENTITY + """\
+## 你的任务
+你是数据可视化专家。工具返回了 ECharts option JSON，请嵌入图表到回答中。
+- 对每张图表用 ```echarts 代码块展示 option_json 字段，格式：
+
+  ```echarts
+  {{option_json 的内容}}
+  ```
+
+- 图表前后不要加额外的文字包裹，直接输出代码块即可。
+- 图表生成失败时说明原因。"""
+
 SYNTHESIS_GENERAL = _SYNTHESIS_IDENTITY + """\
 ## 你的任务
 你是 4G/5G 网络节能分析专家。根据工具返回的结果，生成清晰、专业的回答。
@@ -179,6 +202,7 @@ SYNTHESIS_MAP: dict[str, str] = {
     "analyze_single_cell_energy": SYNTHESIS_SINGLE_CELL,
     "analyze_batch_cells_energy": SYNTHESIS_BATCH_CELLS,
     "query_metric": SYNTHESIS_QUERY_METRIC,
+    "generate_chart": SYNTHESIS_CHART,
 }
 
 

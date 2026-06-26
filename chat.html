@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>能效智能体</title>
 <script src="static/js/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <style>
   :root {
     --bg-primary: #0f0f10;
@@ -1096,6 +1097,32 @@ renderer.link = function({ href, title, text }) {
   const titleAttr = title ? ` title="${title}"` : '';
 
   return `<a href="${fullHref}" target="_blank" rel="noopener"${downloadAttr}${titleAttr}>${textStr}</a>`;
+};
+
+// ECharts 图表渲染
+let _echartId = 0;
+renderer.code = function({ text, lang }) {
+  if (lang === 'echarts' || lang === 'echart') {
+    const id = 'echart_' + (++_echartId);
+    const escaped = text.replace(/`/g, '\\`').replace(/<\/script>/g, '<\\/script>');
+    // 用 setTimeout 确保 DOM 渲染后再初始化 ECharts
+    setTimeout(() => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      try {
+        const option = JSON.parse(text);
+        const chart = echarts.init(el);
+        chart.setOption(option);
+        // 响应式
+        window.addEventListener('resize', () => chart.resize());
+      } catch (e) {
+        el.innerHTML = '<pre style="color:#e04848">ECharts 解析错误: ' + (e.message || '') + '</pre>';
+      }
+    }, 50);
+    return `<div id="${id}" style="width:100%;min-height:400px"></div>`;
+  }
+  // 默认代码块渲染
+  return `<pre><code class="language-${lang || ''}">${text}</code></pre>`;
 };
 
 // 配置 marked

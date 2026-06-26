@@ -29,6 +29,7 @@ def _register_tools() -> None:
     import app.tools.anomaly_query_tool  # noqa: F401
     import app.tools.energy_param_check_tool  # noqa: F401
     import app.tools.batch_energy_tool  # noqa: F401
+    import app.tools.chart_tool  # noqa: F401
 
 
 @asynccontextmanager
@@ -62,7 +63,7 @@ def create_app() -> FastAPI:
 
     application.include_router(router, prefix="/api/v1")
 
-    # 挂载静态文件目录，提供 Excel 批量报告下载服务
+    # 静态文件目录
     export_dir = os.path.join(os.getcwd(), settings.export_dir)
     os.makedirs(export_dir, exist_ok=True)
     application.mount("/static", StaticFiles(directory="static"), name="static")
