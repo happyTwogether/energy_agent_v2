@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.core.config import get_settings
+from app.core.config import DB_MAX_OVERFLOW, DB_POOL_SIZE, MAX_HISTORY_MESSAGES, get_settings
 from app.core.logging import get_logger
 
 logger = get_logger("database")
@@ -28,8 +28,8 @@ def get_engine() -> AsyncEngine:
         _engine = create_async_engine(
             settings.database_url,
             echo=False,
-            pool_size=10,
-            max_overflow=20,
+            pool_size=DB_POOL_SIZE,
+            max_overflow=DB_MAX_OVERFLOW,
         )
         logger.info("数据库引擎已创建: %s", settings.db_host)
     return _engine
@@ -97,7 +97,7 @@ async def save_conversation(
     row = result.scalar_one_or_none()
     existing_messages = [] if replace else (list(row.messages) if row else [])
     merged = existing_messages + new_messages
-    if len(merged) > 20:
+    if len(merged) > MAX_HISTORY_MESSAGES:
         merged = merged[-20:]
 
     now = datetime.now(timezone.utc)

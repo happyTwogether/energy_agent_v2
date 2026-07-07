@@ -13,6 +13,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings, MAX_RETURN_ITEMS
+
+# 异常检测阈值
+_ANOMALY_LOWER_RATIO = 0.9      # 越高越好指标：目标值 < 基线 × 0.9 视为异常
+_ANOMALY_UPPER_RATIO = 1.1      # 越低越好指标：目标值 > 基线 × 1.1 视为异常
+_ANOMALY_SEVERITY_PCT = 20      # 劣化率超过此百分比为 high 严重级别
 from app.core.logging import get_logger
 from app.tools.registry import tool_registry
 from app.utils.export_util import truncate_and_export
@@ -133,8 +138,8 @@ def _detect_anomalies(
             continue
 
         if higher_is_better:
-            # 指标越大越好，目标值 < 基线MAX * 0.9 为异常
-            threshold = baseline_value * 0.9
+            # 指标越大越好，目标值 < 基线MAX × LOWER_RATIO 为异常
+            threshold = baseline_value * _ANOMALY_LOWER_RATIO
             if target_value < threshold:
                 drop_rate = (baseline_value - target_value) / baseline_value * 100
                 anomalies.append({
@@ -142,11 +147,11 @@ def _detect_anomalies(
                     "current_value": round(target_value, 2),
                     "baseline_max": round(baseline_value, 2),
                     "drop_rate": f"{drop_rate:.1f}%",
-                    "severity": "high" if drop_rate > 20 else "medium",
+                    "severity": "high" if drop_rate > _ANOMALY_SEVERITY_PCT else "medium",
                 })
         else:
-            # 指标越小越好，目标值 > 基线MAX * 1.1 为异常
-            threshold = baseline_value * 1.1
+            # 指标越小越好，目标值 > 基线MAX × UPPER_RATIO 为异常
+            threshold = baseline_value * _ANOMALY_UPPER_RATIO
             if target_value > threshold:
                 increase_rate = (target_value - baseline_value) / baseline_value * 100
                 anomalies.append({

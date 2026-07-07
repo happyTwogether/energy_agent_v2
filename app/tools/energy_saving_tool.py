@@ -1,5 +1,4 @@
 import asyncio
-import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -10,7 +9,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.database import get_session_factory
 from app.tools.registry import tool_registry
-from app.utils.sql_helpers import ensure_datetime, fetch_rows
+from app.utils.sql_helpers import ensure_datetime, error_response, fetch_rows, parse_list_field, success_response
 
 DB_SCHEMA_AGENT = get_settings().db_schema_agent
 
@@ -109,7 +108,7 @@ async def analyze_single_cell_energy(
     db_latest_date = ensure_datetime(latest_row["max_date"]) if latest_row else None
 
     if not db_latest_date:
-        return {"success": False, "error": "暂无节电分析数据。"}
+        return error_response("暂无节电分析数据。")
 
     date_note = ""
     if stat_time:
@@ -522,21 +521,8 @@ def _parse_stat_time(stat_time: str | datetime | None) -> datetime | None:
 
 
 def _parse_hour_detail(hour_detail_raw: Any) -> list[dict]:
-    """解析 hour_detail 字段。
-
-    格式：[{"hour": 0, "low_flow_pct": 85.5}, ...]
-    """
-    if not hour_detail_raw:
-        return []
-    if isinstance(hour_detail_raw, list):
-        return hour_detail_raw
-    if isinstance(hour_detail_raw, str):
-        try:
-            result = json.loads(hour_detail_raw)
-            return result if isinstance(result, list) else []
-        except json.JSONDecodeError:
-            return []
-    return []
+    """解析 hour_detail 字段。格式：[{"hour": 0, "low_flow_pct": 85.5}, ...]"""
+    return parse_list_field(hour_detail_raw)
 
 
 def _format_sleep_duration(seconds: int | None) -> str:

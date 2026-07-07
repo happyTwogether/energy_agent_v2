@@ -13,7 +13,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 # 业务常量
-MAX_RETURN_ITEMS: int = 50  # 单次查询最大返回条数
+TITLE_MAX_LENGTH: int = 20          # 对话标题最大长度
+MAX_RETURN_ITEMS: int = 50          # 单次查询最大返回条数
+DB_POOL_SIZE: int = 10              # 数据库连接池大小
+DB_MAX_OVERFLOW: int = 20           # 数据库连接池溢出上限
+MAX_HISTORY_MESSAGES: int = 20      # 对话历史最大保存条数
+DATA_REFRESH_HOUR: int = 15         # 数据刷新截止时间（小时）
 
 class Settings(BaseSettings):
     """应用全局配置，自动从环境变量和 .env 文件读取。"""

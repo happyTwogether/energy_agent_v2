@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.agent_runner import run_agent_stream, sanitize_tool_draft_text
+from app.core.config import TITLE_MAX_LENGTH
 from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
 from app.models.schemas import (
@@ -49,7 +50,29 @@ async def _save_answer_to_db(
                 {"role": "user", "content": user_query},
                 {"role": "assistant", "content": answer},
             ],
-            title=user_query[:20], replace=False,
+            title=user_query[:TITLE_MAX_LENGTH], replace=False,
+        )
+
+
+async def _persist_answer_and_notify(
+    db, conversation_id: str, user_id: str, user_query: str,
+    answer: str, token_usage: dict[str, Any] | None, source: int = 0,
+) -> None:
+    """保存对话到数据库，并异步发送消息存储通知（尽力而为模式）。"""
+    await _save_answer_to_db(db, conversation_id, user_id, user_query, answer)
+    if answer and token_usage:
+        prompt_tokens, completion_tokens, total_tokens = _extract_usage_tokens(token_usage)
+        asyncio.create_task(
+            store_message(
+                conversation_id=conversation_id,
+                user=user_id,
+                user_input=user_query,
+                system_output=answer,
+                source=source,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+            )
         )
 
 
@@ -584,22 +607,10 @@ async def _run_blocking(
     clean_answer = sanitize_tool_draft_text(collected_answer)
 
     # 保存对话 + 异步消息存储
-    await _save_answer_to_db(db, conversation_id, user, user_query, clean_answer)
-
-    if clean_answer and token_usage:
-        prompt_tokens, completion_tokens, total_tokens = _extract_usage_tokens(token_usage)
-        asyncio.create_task(
-            store_message(
-                conversation_id=conversation_id,
-                user=user,
-                user_input=user_query,
-                system_output=clean_answer,
-                source=0,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-            )
-        )
+    await _persist_answer_and_notify(
+        db, conversation_id, user, user_query,
+        clean_answer, token_usage, source=0,
+    )
 
     return {
         "event": "message",

@@ -141,11 +141,11 @@ def _extract_direct_answer_from_tool_result(result: dict[str, Any]) -> str | Non
     return direct_answer
 
 
-def _is_direct_answer_eligible(results: list[dict[str, Any]]) -> bool:
-    """判断工具结果是否适合跳过二次 LLM 总结而直接返回。"""
+def _try_extract_direct_answer(results: list[dict[str, Any]]) -> str | None:
+    """如果只有一个工具结果且包含 report_content，则直接返回其内容。"""
     if len(results) != 1:
-        return False
-    return _extract_direct_answer_from_tool_result(results[0]) is not None
+        return None
+    return _extract_direct_answer_from_tool_result(results[0])
 
 
 def _is_valid_tool_call(tool_call: dict[str, Any], tools: list[dict[str, Any]]) -> tuple[bool, dict[str, Any] | None, str | None]:
@@ -613,9 +613,8 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
 
                 logger.info("第 %d 步工具调用完成，共 %d 个工具", steps, len(results))
 
-                if _is_direct_answer_eligible(results):
-                    direct_answer = _extract_direct_answer_from_tool_result(results[0])
-                    if direct_answer:
+                direct_answer = _try_extract_direct_answer(results)
+                if direct_answer:
                         logger.info("第 %d 步命中工具结果直出: tool=%s, answer_len=%d", steps, results[0].get("tool"), len(direct_answer))
                         yield StreamEvent(event_type="final_answer", data=direct_answer)
                         if last_usage:

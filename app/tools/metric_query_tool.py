@@ -6,7 +6,7 @@
 - 显式 4G/5G 网络选择
 """
 
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -15,9 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.metrics_registry import ALL_METRICS, REPORT_METRICS
-from app.services.database import get_session_factory
 from app.tools.registry import tool_registry
 from app.utils.export_util import truncate_and_export
+from app.utils.sql_helpers import error_response, get_latest_date_standalone, success_response
 
 logger = get_logger("metric_query_tool")
 
@@ -166,35 +166,16 @@ def _build_conditions(
     return "", params
 
 
-async def _get_latest_metric_date() -> datetime | None:
-    sql = text(f"""
-        SELECT MAX(data_date) FROM (
-            SELECT MAX(data_date) AS data_date FROM {LTE_REPORT_TABLE}
-            UNION ALL
-            SELECT MAX(data_date) FROM {NR_REPORT_TABLE}
-        ) t
-    """)
-    factory = get_session_factory()
-    async with factory() as sess:
-        result = await sess.execute(sql)
-        row = result.scalar()
-        if row is None:
-            return None
-        if isinstance(row, str):
-            return datetime.strptime(row, "%Y-%m-%d")
-        if isinstance(row, date):
-            return datetime.combine(row, datetime.min.time())
-        return row
 
 
 async def _execute_query(db: AsyncSession, sql: str, params: dict) -> dict[str, Any]:
     try:
         result = await db.execute(text(sql), params or {})
         rows = result.mappings().all()
-        return {"success": True, "row_count": len(rows), "data": [dict(row) for row in rows]}
+        return success_response({"row_count": len(rows), "data": [dict(row) for row in rows]})
     except Exception as exc:
         logger.error("SQL 执行异常: %s", exc, exc_info=True)
-        return {"success": False, "error": f"SQL 执行失败: {exc}"}
+        return error_response(f"SQL 执行失败: {exc}")
 
 
 def _apply_calc(row: dict, metric_name: str) -> float | None:
@@ -276,7 +257,7 @@ async def query_metric(
 ) -> dict[str, Any]:
     """查询汇总级能耗指标。"""
     # 默认日期
-    db_latest = await _get_latest_metric_date()
+    db_latest = await get_latest_date_standalone([LTE_REPORT_TABLE, NR_REPORT_TABLE])
     date_note = ""
     if not date_start and not date_end:
         if db_latest:
@@ -297,7 +278,7 @@ async def query_metric(
     unknown = [n for n in metric_names if n not in ALL_METRICS and n not in METRIC_GROUPS]
     if unknown:
         avail = sorted(ALL_METRICS.keys())
-        return {"success": False, "error": f"未知指标: {unknown}。可用: {avail}，指标组: {_GROUP_NAMES}"}
+        return error_response(f"未知指标: {unknown}。可用: {avail}，指标组: {_GROUP_NAMES}")
 
     # 构建 SQL
     conditions, params = _build_conditions(

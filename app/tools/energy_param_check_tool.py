@@ -5,7 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings, MAX_RETURN_ITEMS
+from app.core.config import DATA_REFRESH_HOUR, get_settings, MAX_RETURN_ITEMS
 from app.core.logging import get_logger
 from app.tools.registry import tool_registry
 from app.utils.export_util import truncate_and_export
@@ -50,7 +50,7 @@ async def _get_check_date(db: AsyncSession, user_date: str | None) -> tuple[str,
 
     # 回退到时间推断
     now = datetime.now()
-    if now.hour < 15:
+    if now.hour < DATA_REFRESH_HOUR:
         return (now - timedelta(days=1)).strftime("%Y%m%d"), ""
     return now.strftime("%Y%m%d"), ""
 

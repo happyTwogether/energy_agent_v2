@@ -1,5 +1,4 @@
 import asyncio
-import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -10,7 +9,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.tools.registry import tool_registry
 from app.utils.export_util import export_to_excel
-from app.utils.sql_helpers import ensure_datetime, fetch_rows
+from app.utils.sql_helpers import ensure_datetime, error_response, fetch_rows, parse_list_field, success_response
 
 logger = get_logger("batch_energy_tool")
 
@@ -90,7 +89,7 @@ async def analyze_batch_cells_energy(
         )
     except Exception as exc:
         logger.exception("批量节电诊断失败")
-        return {"success": False, "error": f"批量分析异常：{exc}"}
+        return error_response(f"批量分析异常：{exc}")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -111,7 +110,7 @@ async def _do_analyze(
     need_constriction = analysis_target in (TARGET_ALL, TARGET_CONSTRICTION)
     db_latest_date = await _resolve_latest_date(need_constriction)
     if not db_latest_date:
-        return {"success": False, "error": "暂无节电分析数据。"}
+        return error_response("暂无节电分析数据。")
 
     date_note = ""
     if stat_time:
@@ -194,7 +193,7 @@ async def _do_analyze(
     # ── 5. 合并生成表格行 ──
     query_desc = _build_query_desc(dist_name, county_name, prod_name)
     if not all_cgis:
-        return {"success": False, "error": f"未查询到符合条件的数据（{query_desc}）。"}
+        return error_response(f"未查询到符合条件的数据（{query_desc}）。")
 
     table_data, stats = _build_table_data(
         all_cgis=all_cgis,
@@ -463,18 +462,11 @@ def _generate_batch_report_markdown(
 
 def _parse_hour_filter(raw: Any) -> list[int]:
     """解析 hour_filter 字段（兼容 JSON 数组和逗号分隔字符串）。"""
-    if not raw:
-        return []
-    if isinstance(raw, list):
-        return [int(x) for x in raw if isinstance(x, (int, float))]
-    if isinstance(raw, str) and raw.strip():
-        raw = raw.strip()
-        if raw.startswith("["):
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, list):
-                    return [int(x) for x in parsed if isinstance(x, (int, float))]
-            except json.JSONDecodeError:
-                pass
-        return [int(h.strip()) for h in raw.strip("[]").split(",") if h.strip().lstrip("-").isdigit()]
-    return []
+    parsed = parse_list_field(raw)
+    result: list[int] = []
+    for x in parsed:
+        if isinstance(x, (int, float)):
+            result.append(int(x))
+        elif isinstance(x, str) and x.lstrip("-").isdigit():
+            result.append(int(x))
+    return result
