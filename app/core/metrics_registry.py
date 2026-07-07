@@ -301,15 +301,3 @@ CELL_METRICS: dict[str, MetricDef] = {
 # 合并所有指标
 # ============================================================
 ALL_METRICS: dict[str, MetricDef] = {**REPORT_METRICS, **CELL_METRICS}
-
-
-def get_metric_names() -> list[str]:
-    return sorted(ALL_METRICS.keys())
-
-
-def get_report_metric_names() -> list[str]:
-    return sorted(REPORT_METRICS.keys())
-
-
-def get_cell_metric_names() -> list[str]:
-    return sorted(CELL_METRICS.keys())

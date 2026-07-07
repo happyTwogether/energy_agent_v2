@@ -35,20 +35,6 @@ def _extract_metric_cols(rows: list[dict]) -> list[str]:
     return result
 
 
-def _pivot_by_category(rows: list[dict], cat_col: str, date_col: str) -> dict[str, dict[str, float]]:
-    """按 category 列 pivot: {category: {date: {metric: value}}}"""
-    pivoted: dict[str, dict[str, float]] = {}
-    for r in rows:
-        cat = str(r.get(cat_col, "未知"))
-        date = str(r.get(date_col, r.get("date", "")))
-        if cat not in pivoted:
-            pivoted[cat] = {}
-        for k, v in r.items():
-            val = _extract_val(r, k)
-            pivoted[cat][f"{date}|{k}"] = val
-    return pivoted
-
-
 def _detect_category_dim(rows: list[dict]) -> str | None:
     """检测是否存在多类别维度（如多个地市）。返回维度列名或 None。"""
     if not rows:
