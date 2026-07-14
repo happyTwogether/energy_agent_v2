@@ -13,6 +13,34 @@ services:
     environment:
       - TZ=Asia/Shanghai
 
+  # 刷量服务：模拟真实用户，持续调用智能体接口
+  # 启动方式: docker-compose --profile load-test up -d
+  load-test:
+    image: energy_agent:v1.0.0
+    container_name: energy-load-test
+    restart: unless-stopped
+    command: >
+      python scripts/load_test.py
+      --url http://energy:8000
+      --daemon
+      --active-hours 8-22
+      --interval 2h
+      --jitter 30m
+      --sessions-per-round 8
+      --concurrency 3
+      --mode blocking
+      --log-file logs/load_test.log
+      --skip-health-check
+    volumes:
+      - /home/sunlu/energy_angent/docker_run:/app
+      - /home/sunlu/energy_angent/docker_runlogs:/app/logs
+    environment:
+      - TZ=Asia/Shanghai
+    depends_on:
+      - energy
+    profiles:
+      - load-test
+
 networks:
   default:
     external: true
