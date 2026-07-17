@@ -32,6 +32,7 @@ def to_pct(numerator: float | None, denominator: float | None) -> str:
 async def _fetch_data_with_baseline(
     db: AsyncSession,
     table: str,
+    province: str,
     dist_name: str,
     prod_name: str,
     freq_band: str,
@@ -43,7 +44,8 @@ async def _fetch_data_with_baseline(
     """拉取指定表数据并分离目标日（第一条）和基线数据（其余）。"""
     sql = text(f"""
         SELECT * FROM {DB_SCHEMA}.{table}
-        WHERE dist_name = :dist_name
+        WHERE province = :province
+          AND dist_name = :dist_name
           AND prod_name = :prod_name
           AND freq_band = :freq_band
           AND site_type = :site_type
@@ -55,6 +57,7 @@ async def _fetch_data_with_baseline(
     result = await db.execute(
         sql,
         {
+            "province": province,
             "dist_name": dist_name,
             "prod_name": prod_name,
             "freq_band": freq_band,
@@ -619,6 +622,7 @@ def _generate_report_markdown(
     parameters={
         "type": "object",
         "properties": {
+            "province": {"type": "string", "description": "省份名称（如湖南省、广东省），未传默认全网"},
             "dist_name": {"type": "string", "description": "地市名称"},
             "prod_name": {"type": "string", "description": "设备厂家"},
             "freq_band": {
@@ -631,7 +635,7 @@ def _generate_report_markdown(
             },
             "area": {
                 "type": "string",
-                "description": "区域",
+                "description": "区域类型（一般城区/主城区/乡镇/农村/县城/全网）",
             },
             "date_start": {
                 "type": "string",
@@ -647,6 +651,7 @@ def _generate_report_markdown(
 )
 async def query_report(
     db: AsyncSession,
+    province: str | None = None,
     dist_name: str | None = None,
     prod_name: str | None = None,
     freq_band: str | None = None,
@@ -659,17 +664,19 @@ async def query_report(
 
     Args:
         db: 数据库会话。
+        province: 省份名称，未传时默认全网。
         dist_name: 地市名称，未传时默认全网。
         prod_name: 设备厂家，未传时默认全网。
         freq_band: 频段，未传时默认全网。
         site_type: 站型，未传时默认全网。
-        area: 区域，未传时默认全网。
+        area: 区域类型（一般城区/主城区/乡镇/农村/县城），未传时默认全网。
         date_start: 报告日期，会暗中前推7天，未传时默认昨天。
         date_end: 结束日期，未传时默认与 date_start 相同。
 
     Returns:
         包含报告和数据的字典。
     """
+    province = province or "全网"
     dist_name = dist_name or "全网"
     prod_name = prod_name or "全网"
     freq_band = freq_band or "全网"
@@ -692,7 +699,8 @@ async def query_report(
         date_end = db_latest
 
     logger.info(
-        "报表查询: dist_name=%s, prod_name=%s, freq_band=%s, site_type=%s, area=%s, date_range=%s~%s",
+        "报表查询: province=%s, dist_name=%s, prod_name=%s, freq_band=%s, site_type=%s, area=%s, date_range=%s~%s",
+        province,
         dist_name,
         prod_name,
         freq_band,
@@ -712,7 +720,7 @@ async def query_report(
 
         # 2. 并行拉取 4G/5G 原始数据（目标日 + 基线）
         fetch_kwargs = dict(
-            db=db, dist_name=dist_name, prod_name=prod_name,
+            db=db, province=province, dist_name=dist_name, prod_name=prod_name,
             freq_band=freq_band, site_type=site_type, area=area,
             query_start=query_start, date_end=date_end,
         )

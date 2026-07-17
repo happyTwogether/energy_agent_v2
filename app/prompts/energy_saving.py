@@ -36,15 +36,18 @@ AGENT_EXECUTION_PROMPT = """\
 - **日期/时间未提及 → 不传任何日期参数**，禁止推断或填入当前日期。
 - 批量 analysis_target：扩展/低业务/延长休眠/可扩展 → expansion；收缩/影响/导致高负荷/休眠前 → constriction；未明确 → all
 - 单小区 analysis_target：扩展/低业务/节能增加/延长休眠/可扩展 → expansion；收缩/休眠影响/休眠后/负面影响/导致高负荷/影响周边/节能导致/休眠前/周边高负荷/造成高负荷 → constriction；休眠前负荷偏高/休眠前业务 → pre_sleep_load；只说CGI未说明维度 → all
+- 省份：补全"省"后缀（湖南→湖南省，广东→广东省，河北→河北省），填入 province 参数（⚠️不要填到 dist_name 或 area）
 - 地市：补全"市"后缀（长沙→长沙市，常德→常德市）
 - 区县：补全"区/县/市"后缀（芙蓉→芙蓉区）
+- area 参数含义：区域类型（一般城区/主城区/乡镇/农村/县城/全网），不是省份/地理区域，省份请用 province 参数
 - 厂家：统一中文（Huawei→华为，ZTE→中兴，Ericsson→爱立信，Nokia→诺基亚）
 - **禁止传 "all" 作为筛选参数值**：dist_name、county_name、prod_name 等筛选参数要么传具体值，要么不传。绝不传 "all"、"全部"、"所有" 等通配值。仅 analysis_target 可用 "all"。
 - **网络类型路由**：用户明确指定 4G → 用 query_metric + summary_4g/energy_saving_4g 指标组；指定 5G → 用 query_metric + summary_5g/energy_saving_5g 指标组。query_report 返回双网全量报告，仅当用户未区分 4G/5G 或要求"总体情况"时才调用。
 
 ## 示例
 - "株洲的节电空间" → <tool>{{"name": "analyze_batch_cells_energy", "arguments": {{"dist_name": "株洲市", "analysis_target": "all"}}}}</tool>
-- "长沙中兴的汇总报表" → <tool>{{"name": "query_report", "arguments": {{"dist_name": "长沙市", "prod_name": "中兴"}}}}</tool>
+- "湖南全网报表查询" → <tool>{{"name": "query_report", "arguments": {{"province": "湖南省"}}}}</tool>
+- "长沙中兴的汇总报表" → <tool>{{"name": "query_report", "arguments": {{"province": "湖南省", "dist_name": "长沙市", "prod_name": "中兴"}}}}</tool>
 - "查看长沙4G节电功能生效情况" → <tool>{{"name": "query_metric", "arguments": {{"metric_names": ["energy_saving_4g"], "dist_name": "长沙市"}}}}</tool>
 - "查看长沙5G节电功能生效情况" → <tool>{{"name": "query_metric", "arguments": {{"metric_names": ["energy_saving_5g"], "dist_name": "长沙市"}}}}</tool>
 - "460-00-2497077-72 节能扩展" → <tool>{{"name": "analyze_single_cell_energy", "arguments": {{"cgi": "460-00-2497077-72", "analysis_target": "expansion"}}}}</tool>
