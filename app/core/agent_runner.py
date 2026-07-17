@@ -168,8 +168,8 @@ def _is_valid_tool_call(tool_call: dict[str, Any], tools: list[dict[str, Any]]) 
             logger.warning("工具 %s 的参数不是合法 JSON: %s", tool_name, raw_args[:200])
             return False, None, f"工具 {tool_name} 的参数不是合法 JSON"
 
-    if not isinstance(tool_args, dict) or not tool_args:
-        return False, None, f"工具 {tool_name} 的参数为空"
+    if not isinstance(tool_args, dict):
+        return False, None, f"工具 {tool_name} 的参数必须为 JSON 对象"
 
     tool_schema = next((item for item in tools if item.get("function", {}).get("name") == tool_name), None)
     if tool_schema:
@@ -184,14 +184,22 @@ def _is_valid_tool_call(tool_call: dict[str, Any], tools: list[dict[str, Any]]) 
 def _try_repair_json(raw: str) -> dict[str, Any] | None:
     """尝试修复常见 JSON 格式错误，返回解析结果或 None。
 
-    当前策略：单引号→双引号（LLM 最常见的 JSON 格式错误）。
+    策略1：单引号→双引号（LLM 最常见的 JSON 格式错误）。
+    策略2：补全未闭合的大括号（LLM 流式输出截断的常见产物）。
     """
     if not raw or not raw.strip():
         return None
+
+    repaired = raw.replace("'", '"')
+
+    # 补全未闭合的大括号
+    missing = repaired.count("{") - repaired.count("}")
+    if missing > 0:
+        repaired += "}" * missing
+
     try:
-        repaired = raw.replace("'", '"')
         result = json.loads(repaired)
-        if isinstance(result, dict) and result:
+        if isinstance(result, dict):
             return result
     except json.JSONDecodeError:
         pass
