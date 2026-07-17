@@ -622,8 +622,8 @@ def _generate_report_markdown(
     parameters={
         "type": "object",
         "properties": {
-            "province": {"type": "string", "description": "省份名称（如湖南省、广东省），未传默认全网"},
-            "dist_name": {"type": "string", "description": "地市名称"},
+            "province": {"type": "string", "description": "省份名称，未传默认湖南省"},
+            "dist_name": {"type": "string", "description": "地市名称，未传默认全网"},
             "prod_name": {"type": "string", "description": "设备厂家"},
             "freq_band": {
                 "type": "string",
@@ -676,7 +676,7 @@ async def query_report(
     Returns:
         包含报告和数据的字典。
     """
-    province = province or "全网"
+    province = province or "湖南省"
     dist_name = dist_name or "全网"
     prod_name = prod_name or "全网"
     freq_band = freq_band or "全网"
