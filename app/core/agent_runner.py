@@ -158,7 +158,15 @@ def _is_valid_tool_call(tool_call: dict[str, Any], tools: list[dict[str, Any]]) 
     try:
         tool_args = json.loads(function_info.get("arguments", "{}"))
     except json.JSONDecodeError:
-        return False, None, f"工具 {tool_name} 的参数不是合法 JSON"
+        # 尝试修复常见格式错误（如单引号），避免直接丢弃可修复的参数
+        raw_args = function_info.get("arguments", "{}")
+        repaired = _try_repair_json(raw_args)
+        if repaired is not None:
+            logger.warning("工具 %s 的参数已自动修复: %s...", tool_name, raw_args[:100])
+            tool_args = repaired
+        else:
+            logger.warning("工具 %s 的参数不是合法 JSON: %s", tool_name, raw_args[:200])
+            return False, None, f"工具 {tool_name} 的参数不是合法 JSON"
 
     if not isinstance(tool_args, dict) or not tool_args:
         return False, None, f"工具 {tool_name} 的参数为空"
@@ -171,6 +179,23 @@ def _is_valid_tool_call(tool_call: dict[str, Any], tools: list[dict[str, Any]]) 
             return False, None, f"工具 {tool_name} 缺少必填参数: {', '.join(missing_fields)}"
 
     return True, tool_args, None
+
+
+def _try_repair_json(raw: str) -> dict[str, Any] | None:
+    """尝试修复常见 JSON 格式错误，返回解析结果或 None。
+
+    当前策略：单引号→双引号（LLM 最常见的 JSON 格式错误）。
+    """
+    if not raw or not raw.strip():
+        return None
+    try:
+        repaired = raw.replace("'", '"')
+        result = json.loads(repaired)
+        if isinstance(result, dict) and result:
+            return result
+    except json.JSONDecodeError:
+        pass
+    return None
 
 
 def _truncate_tool_result(result: Any, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
@@ -586,6 +611,22 @@ async def run_agent_stream(messages: list[dict[str, Any]]) -> AsyncGenerator[Str
                     yield StreamEvent(event_type="tool_call", data=call_info)
 
                 if _has_invalid:
+                    # 清洗 assistant_message 中仍然非法的 tool_calls arguments，
+                    # 防止非法 JSON 字符串导致后续 LLM API 调用失败（400 BadRequest）
+                    if assistant_message.get("tool_calls"):
+                        fixed_calls = []
+                        for tc in assistant_message["tool_calls"]:
+                            fn = tc.get("function", {})
+                            try:
+                                json.loads(fn.get("arguments", "{}"))
+                                fixed_calls.append(tc)
+                            except json.JSONDecodeError:
+                                fixed_calls.append({
+                                    **tc,
+                                    "function": {**fn, "arguments": "{}"},
+                                })
+                        assistant_message["tool_calls"] = fixed_calls
+                        messages[-1] = assistant_message
                     continue  # 有工具调用校验失败，已反馈错误给 LLM，让它重试
 
                 # 并发执行工具：每个工具独立 session，避免 SQLAlchemy async session 并发限制
