@@ -429,24 +429,22 @@ async def _query_constriction_data(
             "suggestion": suggestion,
         })
 
-    # 生成表格
-    table_rows = []
-    for item in constriction_data:
-        # 关联小区显示格式：小区名称(CGI)
-        related_display = f"{item['related_cell_name']}({item['related_cgi']})" if item['related_cgi'] != "—" else "—"
-        table_rows.append(
-            f"| {item['constriction_hour'] or '—'} | {item['reason']} | "
-            f"{related_display} | "
-            f"{item['evidence']} | {item['suggestion']} |"
+    if not constriction_data:
+        table_md = ""
+    else:
+        table_rows = []
+        for item in constriction_data:
+            # 关联小区显示格式：小区名称(CGI)
+            related_display = f"{item['related_cell_name']}({item['related_cgi']})" if item['related_cgi'] != "—" else "—"
+            table_rows.append(
+                f"| {item['constriction_hour'] or '—'} | {item['reason']} | "
+                f"{related_display} | "
+                f"{item['evidence']} | {item['suggestion']} |"
+            )
+        table_md = _build_md_table(
+            headers=["原节能生效时间点", "触发收缩原因", "关联小区名称", "证据字段", "收缩建议"],
+            rows=table_rows,
         )
-
-    if not table_rows:
-        table_rows.append("| — | 该小区无需收缩 | — | — | — |")
-
-    table_md = _build_md_table(
-        headers=["原节能生效时间点", "触发收缩原因", "关联小区名称", "证据字段", "收缩建议"],
-        rows=table_rows,
-    )
 
     return {
         "data": constriction_data,
