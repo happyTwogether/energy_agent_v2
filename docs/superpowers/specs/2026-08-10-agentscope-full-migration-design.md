@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-10
 
-**状态：** 待书面评审
+**状态：** 已获用户批准并完成离线实现；供应商中立配置纠偏已批准，待在线 smoke
 
 **目标版本：** AgentScope 2.0.5
 
@@ -24,7 +24,7 @@
 - 用 AgentScope `AgentEvent` 驱动 Dify SSE 与 blocking 响应，移除内部 `StreamEvent`。
 - 保留“执行 Prompt → 按工具类型总结 Prompt”的双阶段行为，但改用原生 function calling，不再要求模型输出 `<tool>...</tool>`。
 - 保留每个并发工具调用独立 SQLAlchemy `AsyncSession` 的隔离约束。
-- 默认模型改为 `qwen3.6_27b`，通过环境变量连接九天 OpenAI-compatible 端点。
+- 默认模型改为 `qwen3.6_27b`，通过环境变量连接生产内网独立部署的 OpenAI-compatible 端点；代码不绑定公网模型供应商。
 
 ### 对外兼容性
 
@@ -41,7 +41,8 @@
 - 运行时代码不再 import LiteLLM、`app.services.llm_client`、`app.core.agent_runner` 或 `app.tools.registry`。
 - `requirements.txt` 精确锁定 `agentscope==2.0.5`，并移除 LiteLLM。
 - 所有现有测试与新增特征/单元/集成测试通过。
-- 九天真实模型烟测覆盖非流式文本、流式文本、单工具调用和工具参数 Schema。
+- 可替换的 OpenAI-compatible 端点烟测覆盖非流式文本、流式文本、单工具调用和工具参数 Schema。
+- 上线前在生产同构内网端点验证 `qwen3.6_27b` 的模型名、工具调用与流式响应。
 - 日志、文档、Git diff 和测试产物中不出现 API Key。
 - Docker/Python 3.11 环境可启动，健康检查通过，Dify 流式事件顺序与基线一致。
 
@@ -66,7 +67,7 @@ flowchart LR
     C["PC / App / Dify Client"] --> API["FastAPI Routes\n原协议保持"]
     API --> H["Conversation History Adapter"]
     H --> RT["AgentScope Runtime Factory\n每请求独立 AgentState"]
-    RT --> M["OpenAIChatModel\nqwen3.6_27b @ 九天"]
+    RT --> M["OpenAIChatModel\nqwen3.6_27b @ 内网独立部署"]
     RT --> TK["AgentScope Toolkit"]
     TK --> T["9 个能效工具适配器"]
     T --> DB["PostgreSQL\n每工具独立 AsyncSession"]
@@ -110,6 +111,8 @@ flowchart LR
 
 `OpenAICredential.api_key` 使用 AgentScope/Pydantic `SecretStr`。API Key 只能通过运行时环境变量或生产密钥管理注入；`.env.example` 只保留占位符。禁止在源码、设计文档、测试 fixture、日志或命令行中保存真实密钥。
 
+`LLM_BASE_URL` 不提供公网供应商默认值，未配置时由 model factory 返回明确的配置错误。生产环境注入内网推理服务地址；公网供应商仅可作为开发阶段的临时协议烟测端点。
+
 `OpenAIChatModel` 使用：
 
 - `stream=True`：主路径保持流式。
@@ -118,9 +121,11 @@ flowchart LR
 - `Parameters(max_tokens=..., temperature=..., parallel_tool_calls=True)`。
 - SDK 层重试只保留一层，避免 Agent `ModelConfig` 与 Model 内部重试成倍放大流量。
 
-### 九天协议验证
+AgentScope 2.0.5 的 MCP 间接依赖未声明可用下限；项目显式锁定 `mcp==1.24.0`、`pydantic==2.11.10` 与 `uvicorn==0.31.1`，避免解析到缺少 `streamable_http_client` 的旧 MCP 版本。
 
-真实端点测试是 opt-in 烟测，不在 CI 默认执行。测试顺序：
+### OpenAI-compatible 协议验证
+
+真实端点测试是供应商中立的 opt-in 烟测，不在 CI 默认执行。九天或 DeepSeek 等公网服务可以验证 AgentScope 与 Chat Completions 协议链路，但不能替代生产内网 `qwen3.6_27b` 的模型行为验收。测试顺序：
 
 1. 最小非流式对话，确认模型名和 Chat Completions 路径。
 2. 最小流式对话，确认 delta、finish reason 与 usage 字段。
@@ -128,7 +133,7 @@ flowchart LR
 4. 包含 `required`、`enum`、array 和 nullable 参数的工具调用。
 5. 并发工具调用能力；若端点不支持，则仅对模型参数关闭 `parallel_tool_calls`，工具执行层仍保留 AgentScope 的并发能力。
 
-任一测试失败都先记录实际响应形状，再在 model factory 边界做最小兼容配置，不把供应商特例散落到 Route 和业务工具中。
+任一测试失败都先记录实际响应形状，再在 model factory 边界做最小兼容配置，不把供应商特例散落到 Route 和业务工具中。发布门禁最终以生产同构内网端点的同一组 smoke tests 为准。
 
 ## 7. Toolkit 与业务工具
 
@@ -207,12 +212,12 @@ streaming 与 blocking 必须消费同一个事件适配器；blocking 只是聚
 
 - 使用可编程 fake `ChatModelBase` 驱动完整 Agent → Toolkit → AgentEvent → Dify 链路，不依赖外网。
 - 用 FastAPI 测试客户端验证两个入口与会话端点。
-- 用运行时环境变量执行九天 opt-in smoke tests；测试命令不内联密钥，测试输出仅显示响应类型、事件种类和断言结果。
+- 用运行时环境变量执行供应商中立的 opt-in smoke tests；测试命令不内联密钥，测试输出仅显示响应类型、事件种类和断言结果。
 
 ## 12. 实施阶段
 
 1. **基线阶段**：在不改生产代码的前提下补齐特征测试和快照。
-2. **依赖与模型阶段**：引入 `agentscope==2.0.5`，实现 model factory 与离线测试，完成九天协议烟测。
+2. **依赖与模型阶段**：引入 `agentscope==2.0.5`，实现供应商中立的 model factory、离线测试与 OpenAI-compatible 协议烟测。
 3. **Toolkit 阶段**：将 9 个业务工具迁入 `ToolBase`/`Toolkit`，去除装饰器注册副作用。
 4. **Agent 阶段**：实现 message adapter、Prompt middleware、request-scoped Agent factory 和 AgentEvent adapter。
 5. **API 切换阶段**：让 streaming/blocking 入口同时切到 AgentScope 事件流，运行协议回归测试。
@@ -224,7 +229,7 @@ streaming 与 blocking 必须消费同一个事件适配器；blocking 只是聚
 ## 13. 部署与回滚
 
 - 在开发分支上完成全量切换，最终代码不保留 legacy runtime 开关。
-- 部署前在预发执行 Dify 协议回归、真实数据工具查询与九天模型烟测。
+- 部署前在预发执行 Dify 协议回归、真实数据工具查询与生产同构内网 `qwen3.6_27b` 模型烟测。
 - 生产先小流量/单实例更新，观察模型错误率、工具成功率、首 token 时延、总耗时、对话持久化成功率和 token 用量。
 - 回滚使用上一个已验证容器镜像/Git 版本，不依赖生产双轨代码。本次不改数据库 Schema，因此回滚无数据迁移阻断。
 
@@ -243,4 +248,15 @@ streaming 与 blocking 必须消费同一个事件适配器；blocking 只是聚
 2. 最终删除旧 runner/client/registry，不在生产长期保留双运行时。
 3. 保留 `report_content` 直出与真实 `download_url` 原样返回约束。
 4. 会话状态仍以现有数据库为真值源，Agent 对象按请求创建。
-5. 生产默认模型为 `qwen3.6_27b`，密钥仅用于 opt-in 真实烟测与部署环境。
+5. 生产默认模型为 `qwen3.6_27b`，生产端点是运行时注入的内网独立部署服务；九天、DeepSeek 等公网供应商仅用于可选协议烟测。
+
+## 16. 实施验证记录
+
+- 已删除 `app/core/agent_runner.py`、`app/services/llm_client.py` 和 `app/tools/registry.py`，运行时不再依赖 LiteLLM。
+- 9 个工具的迁移前 JSON Schema 已固化并通过 AgentScope Toolkit 等值测试。
+- streaming 与 blocking 已统一消费 `DifyEventAdapter`，覆盖文本、工具 thought、usage、成功持久化和错误不持久化。
+- request-scoped AgentState、双阶段 Prompt、原生 function calling 与 `report_content` 直出均有离线测试；真实 fake model 工具链已贯通 `Agent → Toolkit → middleware → Dify adapter`。
+- 对外错误已统一脱敏；blocking 模式在 Agent 运行前释放历史查询 session，流式 `message_end` 仅在持久化成功后发送，报表工具不再并发共享同一 `AsyncSession`。
+- Python 3.11 全量发现 49 个测试：45 个离线测试通过，4 个 live 测试安全跳过；compileall、FastAPI import、依赖兼容、密钥扫描和 `git diff --check` 通过。
+- Docker 镜像 `energy-agent:agentscope-smoke` 构建成功，生产命令启动成功，容器内 `/api/v1/health` 返回 `{"status":"ok"}`。最后一轮日志脱敏/空回答加固后 Docker Desktop 无响应，因此最新镜像重建待 Docker 恢复；该轮改动已通过 Python 门禁。
+- 供应商中立在线测试位于 `tests/live/test_openai_compatible_smoke.py`，覆盖非流、流式、array/nullable Schema 和并行工具调用；父进程未设置 `LLM_API_KEY` 时禁止将密钥内联到命令。公网 smoke 只证明协议兼容，生产验收仍需在内网 `qwen3.6_27b` 端点重跑。
