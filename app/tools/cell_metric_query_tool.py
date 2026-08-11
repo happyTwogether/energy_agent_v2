@@ -2,7 +2,7 @@
 
 与 query_metric 的区别：
 - 查 detail 表而非 collect 表
-- cgi 必填
+- cgi / cell_name 二选一
 - 不支持聚合（小区级数据本身就是明细）
 """
 
@@ -14,10 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.core.metrics_registry import ALL_METRICS, CELL_METRICS
-from app.tools.registry import tool_registry
+from app.core.metrics_registry import CELL_METRICS
+from app.services.cell_resolver import resolve_cell_identifier
+from app.utils.cell_lookup import (
+    infer_network_from_cgi,
+    resolution_error_response,
+)
 from app.utils.export_util import truncate_and_export
-from app.utils.sql_helpers import error_response, get_latest_date_standalone, success_response
+from app.utils.sql_helpers import error_response, get_latest_date_standalone
 
 logger = get_logger("cell_metric_query_tool")
 
@@ -29,19 +33,25 @@ _CELL_GROUP_NAMES = sorted(CELL_METRICS.keys())
 
 
 def _detect_network(cgi: str) -> str:
-    return "5G" if cgi and cgi.startswith("460-00") else "4G"
+    return infer_network_from_cgi(cgi)
 
 
-
-
-@tool_registry.tool(
-    description="查询单个小区（CGI）的节能指标明细数据。需要提供 cgi，返回该小区的指标值。",
-    parameters={
+TOOL_DESCRIPTION = "通过 CGI 或小区中文名查询单个小区的节能指标明细数据。"
+TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {
             "cgi": {
                 "type": "string",
-                "description": "小区 CGI，格式 460-00-基站号-小区号",
+                "description": "小区 CGI，格式 460-00-基站号-小区号；与 cell_name 同时传入时优先",
+            },
+            "cell_name": {
+                "type": "string",
+                "description": "小区中文名或其连续片段，未提供 CGI 时使用包含匹配",
+            },
+            "network": {
+                "type": "string",
+                "enum": ["4G", "5G"],
+                "description": "网络制式，用中文名查询时可用于过滤候选",
             },
             "metric_names": {
                 "type": "array",
@@ -52,18 +62,28 @@ def _detect_network(cgi: str) -> str:
             "date_end": {"type": "string", "description": "结束日期 (YYYY-MM-DD)"},
             "export_excel": {"type": "boolean", "description": "是否导出 Excel", "default": False},
         },
-        "required": ["cgi", "metric_names"],
-    },
-)
+        "required": ["metric_names"],
+}
+
+
 async def query_cell_metric(
     db: AsyncSession,
-    cgi: str,
     metric_names: list[str],
+    cgi: str | None = None,
+    cell_name: str | None = None,
+    network: str | None = None,
     date_start: str | None = None,
     date_end: str | None = None,
     export_excel: bool = False,
 ) -> dict[str, Any]:
     """查询小区级指标明细。"""
+    cgi = (cgi or "").strip()
+    cell_name = (cell_name or "").strip()
+    if not cgi and not cell_name:
+        return error_response("请提供 CGI 或小区中文名。")
+    if network not in (None, "4G", "5G"):
+        return error_response("网络制式仅支持 4G 或 5G。")
+
     # 校验指标
     unknown = [n for n in metric_names if n not in CELL_METRICS]
     if unknown:
@@ -81,9 +101,26 @@ async def query_cell_metric(
             date_end = datetime.now().strftime("%Y-%m-%d")
             date_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
 
-    # 选表
-    network = _detect_network(cgi)
-    table = NR_CELL_TABLE if network == "5G" else LTE_CELL_TABLE
+    name_resolution = None
+    if not cgi:
+        try:
+            name_resolution = await resolve_cell_identifier(
+                db=db,
+                cell_name=cell_name,
+                network=network,
+            )
+        except Exception as exc:
+            logger.error("单小区指标名称解析异常: %s", exc, exc_info=True)
+            return error_response("小区名称解析失败，请稍后重试。")
+        if name_resolution.status != "resolved":
+            return resolution_error_response(name_resolution)
+        cgi = name_resolution.cgi or ""
+        resolved_network = name_resolution.network or _detect_network(cgi)
+    else:
+        resolved_network = _detect_network(cgi)
+
+    # 选表：CGI 与中文名同时传入时，保持 CGI 优先。
+    table = NR_CELL_TABLE if resolved_network == "5G" else LTE_CELL_TABLE
 
     # 构建列
     cols = ["data_date", "dist_name", "prod_name", "freq_band", "cgi", "cell_name", "gnb_name"]
@@ -91,7 +128,7 @@ async def query_cell_metric(
         metric = CELL_METRICS.get(name)
         if not metric:
             continue
-        col_list = metric["columns_nr"] if network == "5G" else metric["columns_lte"]
+        col_list = metric["columns_nr"] if resolved_network == "5G" else metric["columns_lte"]
         if col_list:
             for c in col_list:
                 if c not in cols:
@@ -147,13 +184,19 @@ async def query_cell_metric(
         return {
             "success": True,
             **({"download_url": download_url} if download_url else {}),
-            "network": network,
+            "network": resolved_network,
             "metrics": values,
             "rows": detail_rows,
             "is_truncated": meta.pop("is_truncated"),
             **meta,
             **({"date_note": date_note} if date_note else {}),
+            **({
+                "cell_name_match": {
+                    "query": name_resolution.query,
+                    "match_type": name_resolution.match_type,
+                }
+            } if name_resolution else {}),
         }
     except Exception as exc:
         logger.error("小区指标查询异常: %s", exc, exc_info=True)
-        return error_response(f"查询失败: {exc}")
+        return error_response("小区指标查询失败，请稍后重试")

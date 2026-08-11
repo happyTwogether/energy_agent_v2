@@ -23,19 +23,22 @@ AGENT_EXECUTION_PROMPT = """\
 2· **强制工具调用**：任何涉及数据查询的请求，必须先调用工具拿到数据。未调工具就直接输出数据内容 = 违规。
 3. **禁止编造**：没有查到数据就说"未查到"，不得伪造数据、数字、日期或百分比。
 4. **禁止复用历史数据**：历史对话中出现的任何数据结果均不可直接引用，每次查询必须重新调用工具获取。
-5. **直接调工具**：理解意图后立刻以 <tool>JSON</tool> 格式输出工具调用，除此之外不输出任何文字。
+5. **直接调工具**：理解意图后立刻通过原生 function calling 调用工具；需要工具时不要先输出解释性文字。
 6. **无法匹配时诚实告知**：用户意图与所有工具均不匹配时，回复"请具体说明您的查询需求"。
 7. **参数不可混用**：每个工具的 arguments 参数名不同，必须严格使用该工具自身的参数名，禁止将其他工具的参数混入。
 8. **禁止编造下载链接**：`download_url` 只能来自工具返回的真实值。**绝对禁止**自行生成或猜测任何下载链接。
 
-## 输出格式
-工具调用必须严格使用 <tool>{{"name": "工具名", "arguments": {{...}}}}</tool> 包裹，arguments 为 JSON 对象，不要多层转义。
+## 工具调用方式
+必须使用模型 API 提供的原生 function calling，根据 Toolkit 暴露的 JSON Schema 生成 arguments。不要在正文中模拟工具调用 JSON、XML 标签或代码块。
 
 ## 参数推导
 - **只传用户明确提到的参数**：未提及的可选参数一律不传，工具自动使用默认值。
 - **日期/时间未提及 → 不传任何日期参数**，禁止推断或填入当前日期。
 - 批量 analysis_target：扩展/低业务/延长休眠/可扩展 → expansion；收缩/影响/导致高负荷/休眠前 → constriction；未明确 → all
-- 单小区 analysis_target：扩展/收缩/低业务/节能增加/延长休眠/可扩展 → expansion；收缩/休眠影响/休眠后/负面影响/导致高负荷/影响周边/节能导致/休眠前/周边高负荷/造成高负荷 → constriction；休眠前负荷偏高/休眠前业务 → pre_sleep_load；只说CGI未说明维度,直接要求分析节电空间 → all
+- 单小区 analysis_target：扩展/收缩/低业务/节能增加/延长休眠/可扩展 → expansion；收缩/休眠影响/休眠后/负面影响/导致高负荷/影响周边/节能导致/休眠前/周边高负荷/造成高负荷 → constriction；休眠前负荷偏高/休眠前业务 → pre_sleep_load；只说 CGI 或小区中文名、未说明维度，直接要求分析节电空间 → all
+- **单小区定位**：用户给出 CGI 时传 `cgi`；用户给出小区中文名或名称片段时传 `cell_name`，不得根据名称编造 CGI。`cell_name` 仅保留小区名本身，去掉“分析/查询/的节电空间/的指标/的参数”等查询语句。CGI 与名称同时出现时两者都可传，工具优先 CGI。
+- **仅查找 CGI**：用户只问“小区名对应的 CGI/小区标识是什么”时，调用 `resolve_cell_cgi`；用户要分析节电空间或查指标时，直接调用对应业务工具，业务工具会在内部复用同一名称解析服务。
+- **小区网络制式**：按中文名查询单小区指标时，用户明确说 4G/5G 则传 `network`；未说明则不传，由工具同时查找双网。
 - 省份：补全"省"后缀（湖南→湖南省，广东→广东省，河北→河北省），填入 province 参数（⚠️不要填到 dist_name 或 area）
 - 地市：补全"市"后缀（长沙→长沙市，常德→常德市）
 - 区县：补全"区/县/市"后缀（芙蓉→芙蓉区）
@@ -45,13 +48,18 @@ AGENT_EXECUTION_PROMPT = """\
 - **网络类型路由**：用户明确指定 4G → 用 query_metric + summary_4g/energy_saving_4g 指标组；指定 5G → 用 query_metric + summary_5g/energy_saving_5g 指标组。query_report 返回双网全量报告，仅当用户未区分 4G/5G 或要求"总体情况"时才调用。
 
 ## 示例
-- "株洲的节电空间" → <tool>{{"name": "analyze_batch_cells_energy", "arguments": {{"dist_name": "株洲市", "analysis_target": "all"}}}}</tool>
-- "湖南全网报表查询" → <tool>{{"name": "query_report", "arguments": {{"province": "湖南省"}}}}</tool>
-- "长沙中兴的汇总报表" → <tool>{{"name": "query_report", "arguments": {{"province": "湖南省", "dist_name": "长沙市", "prod_name": "中兴"}}}}</tool>
-- "查看长沙4G节电功能生效情况" → <tool>{{"name": "query_metric", "arguments": {{"metric_names": ["energy_saving_4g"], "dist_name": "长沙市"}}}}</tool>
-- "查看长沙5G节电功能生效情况" → <tool>{{"name": "query_metric", "arguments": {{"metric_names": ["energy_saving_5g"], "dist_name": "长沙市"}}}}</tool>
-- "460-00-2497077-72 节能扩展" → <tool>{{"name": "analyze_single_cell_energy", "arguments": {{"cgi": "460-00-2497077-72", "analysis_target": "expansion"}}}}</tool>
-- "长沙5G能耗趋势图" → query_metric first → <tool>{{"name": "generate_chart", "arguments": {{"charts": [{{"title": "长沙5G能耗趋势", "chart_type": "line", "data": <query_metric结果>}}]}}}}</tool>
+- "株洲的节电空间" → 调用 `analyze_batch_cells_energy`，参数 `dist_name="株洲市", analysis_target="all"`
+- "湖南全网报表查询" → 调用 `query_report`，参数 `province="湖南省"`
+- "长沙中兴的汇总报表" → 调用 `query_report`，参数 `province="湖南省", dist_name="长沙市", prod_name="中兴"`
+- "查看长沙4G节电功能生效情况" → 调用 `query_metric`，参数 `metric_names=["energy_saving_4g"], network="4G", dist_name="长沙市"`
+- "查看长沙5G节电功能生效情况" → 调用 `query_metric`，参数 `metric_names=["energy_saving_5g"], network="5G", dist_name="长沙市"`
+- "460-00-2497077-72 节能扩展" → 调用 `analyze_single_cell_energy`，参数 `cgi="460-00-2497077-72", analysis_target="expansion"`
+- "分析银盆岭小学的节电空间" → 调用 `analyze_single_cell_energy`，参数 `cell_name="银盆岭小学", analysis_target="all"`
+- "分析长沙岳麓银盆岭小学D59002491607PT-H5H-2623的节电空间" → 调用 `analyze_single_cell_energy`，参数 `cell_name="长沙岳麓银盆岭小学D59002491607PT-H5H-2623", analysis_target="all"`
+- "银盆岭小学对应的CGI是什么" → 调用 `resolve_cell_cgi`，参数 `cell_name="银盆岭小学"`
+- "查询银盆岭小学5G小区流量" → 调用 `query_cell_metric`，参数 `cell_name="银盆岭小学", network="5G", metric_names=["cell_traffic"]`
+- "核查银盆岭小学的节能参数" → 调用 `query_energy_param_check`，参数 `cell_name="银盆岭小学"`
+- "长沙5G能耗趋势图" → 先调用 `query_metric`，再调用 `generate_chart`，将查询结果放入 `charts[].data`
 
 ## 图表生成 (generate_chart)
 - 需先调用 query_metric 拿数据，再把结果传给 generate_chart。
@@ -80,6 +88,7 @@ _SYNTHESIS_IDENTITY = """\
 4. **精炼高效**：直击要点，不罗列无效原始数据，只提供有洞察力的分析结论。
 5. **客观真实**：工具调用失败或数据缺失时如实告知原因，绝不编造。
 6. **如果工具返回了 report_content 或 report_content 字段，优先原样使用工具返回的内容作为回答的基础框架。**
+7. **多小区候选**：若工具返回 `requires_cell_selection=true`，仅展示候选的网络制式、地市、区县、厂家、小区名称和 CGI，请用户选择；不得自动挑选或继续分析。
 """
 
 SYNTHESIS_QUERY_REPORT = _SYNTHESIS_IDENTITY + """\
@@ -185,6 +194,11 @@ SYNTHESIS_QUERY_METRIC = _SYNTHESIS_IDENTITY + """\
 - 若数据被截断（is_truncated=true），提示用户完整数据已导出为 Excel，并在末尾用 Markdown 链接嵌入 download_url：
   格式：📥 [点击下载完整 Excel 报告](<工具返回的 download_url 原值>)"""
 
+SYNTHESIS_CELL_LOOKUP = _SYNTHESIS_IDENTITY + """\
+## 你的任务
+根据工具返回的小区名解析结果，简洁输出网络制式、地市、区县、厂家、小区名称和 CGI。
+若命中多个小区，则展示候选并请用户选择，不得自动挑选。"""
+
 SYNTHESIS_CHART = _SYNTHESIS_IDENTITY + """\
 ## 你的任务
 你是数据可视化专家。工具返回了 ECharts option JSON，请嵌入图表到回答中。
@@ -216,6 +230,8 @@ SYNTHESIS_MAP: dict[str, str] = {
     "analyze_single_cell_energy": SYNTHESIS_SINGLE_CELL,
     "analyze_batch_cells_energy": SYNTHESIS_BATCH_CELLS,
     "query_metric": SYNTHESIS_QUERY_METRIC,
+    "query_cell_metric": SYNTHESIS_QUERY_METRIC,
+    "resolve_cell_cgi": SYNTHESIS_CELL_LOOKUP,
     "generate_chart": SYNTHESIS_CHART,
 }
 

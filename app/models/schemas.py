@@ -33,44 +33,6 @@ class ConversationDetailResponse(BaseModel):
     messages: list[dict[str, Any]]
 
 
-class StreamEvent(BaseModel):
-    """SSE 流式事件模型。
-
-    SSE 输出格式约定：
-
-    # token 事件示例：
-    # event: token
-    # data: {"event_type": "token", "data": "你好"}
-
-    # tool_call 事件示例：
-    # event: tool_call
-    # data: {"event_type": "tool_call", "data": {"tool": "get_weather", "args": {"city": "北京"}}}
-
-    # tool_result 事件示例：
-    # event: tool_result
-    # data: {"event_type": "tool_result", "data": {"tool": "get_weather", "result": {...}}}
-
-    # final_answer 事件示例：
-    # event: final_answer
-    # data: {"event_type": "final_answer", "data": "北京今天晴，25°C"}
-
-    # error 事件示例：
-    # event: error
-    # data: {"event_type": "error", "data": "工具调用超时"}
-    """
-
-    event_type: Literal[
-        "token",
-        "tool_call",
-        "tool_result",
-        "agent_step",
-        "final_answer",
-        "token_usage",
-        "error",
-    ] = Field(..., description="事件类型")
-    data: dict | str = Field(..., description="事件数据")
-
-
 class DifyChatRequest(BaseModel):
     """Dify 对话应用请求模型。
 
@@ -91,5 +53,4 @@ class DifyChatRequest(BaseModel):
     response_mode: Literal["blocking", "streaming"] = Field(default="blocking", description="响应模式")
     conversation_id: str | None = Field(default=None, description="会话ID，空则创建新会话")
     user: str = Field(..., description="用户唯一标识")
-
 

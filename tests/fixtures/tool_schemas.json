@@ -1,0 +1,214 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "analyze_batch_cells_energy",
+      "description": "批量诊断5G小区节电情况。支持全省、地市、区县、厂家级别查询，可全量分析或仅分析扩展或收缩维度。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dist_name": {"type": "string", "description": "地市名称"},
+          "county_name": {"type": "string", "description": "区县名称"},
+          "prod_name": {"type": "string", "description": "厂家名称"},
+          "stat_time": {"type": "string", "description": "统计日期 (YYYY-MM-DD)"},
+          "analysis_target": {
+            "type": "string",
+            "enum": ["all", "expansion", "constriction"],
+            "description": "分析目标：all=全量(扩展+收缩)，expansion=仅扩展，constriction=仅收缩"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "analyze_single_cell_energy",
+      "description": "通过 CGI 或小区中文名分析单个5G小区的节电详情，包含休眠扩展、休眠收缩、负荷状态和休眠生效前负荷偏高。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cgi": {"type": "string", "description": "小区全球标识，格式 460-00-基站号-小区号；与 cell_name 同时传入时优先"},
+          "cell_name": {"type": "string", "description": "小区中文名或其连续片段，未提供 CGI 时使用包含匹配"},
+          "analysis_target": {
+            "type": "string",
+            "enum": ["all", "expansion", "constriction", "pre_sleep_load"],
+            "description": "分析目标"
+          },
+          "stat_time": {"type": "string", "description": "统计日期 (YYYY-MM-DD)"}
+        },
+        "required": ["analysis_target"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "generate_chart",
+      "description": "根据查询数据生成 ECharts 图表 option JSON。传查询结果和图表类型，返回完整 ECharts option，前端渲染。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "charts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {"type": "string", "description": "图表标题"},
+                "chart_type": {"type": "string", "enum": ["line", "area", "bar", "stacked_bar", "pie", "scatter", "radar"]},
+                "data": {"type": "object", "description": "query_metric 等工具的完整返回结果"}
+              },
+              "required": ["title", "data"]
+            }
+          }
+        },
+        "required": ["charts"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "query_anomaly",
+      "description": "诊断核心指标劣化情况。对比目标日期与过去7天基线，找出劣化超过10%的指标。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dist_name": {"type": "string", "description": "地市名称"},
+          "prod_name": {"type": "string", "description": "设备厂家"},
+          "target_date": {"type": "string", "description": "目标诊断日期 (YYYY-MM-DD)"},
+          "export_excel": {"type": "boolean", "description": "是否导出 Excel", "default": false}
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "query_cell_metric",
+      "description": "通过 CGI 或小区中文名查询单个小区的节能指标明细数据。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cgi": {"type": "string", "description": "小区 CGI，格式 460-00-基站号-小区号；与 cell_name 同时传入时优先"},
+          "cell_name": {"type": "string", "description": "小区中文名或其连续片段，未提供 CGI 时使用包含匹配"},
+          "network": {"type": "string", "enum": ["4G", "5G"], "description": "网络制式，用中文名查询时可用于过滤候选"},
+          "metric_names": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["cell_carrier_shutdown_hour", "cell_channel_shutdown_hour", "cell_deepsleep_hour", "cell_supersleep_hour", "cell_symbol_shutdown_hour", "cell_traffic"]},
+            "description": "小区级指标名列表。常用: cell_traffic,cell_carrier_shutdown_hour,cell_channel_shutdown_hour,cell_symbol_shutdown_hour,cell_deepsleep_hour,cell_supersleep_hour"
+          },
+          "date_start": {"type": "string", "description": "开始日期 (YYYY-MM-DD)"},
+          "date_end": {"type": "string", "description": "结束日期 (YYYY-MM-DD)"},
+          "export_excel": {"type": "boolean", "description": "是否导出 Excel", "default": false}
+        },
+        "required": ["metric_names"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "query_energy_param_check",
+      "description": "通过 CGI 或小区中文名查询节能参数核查结果，分析不合规配置。\n",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "check_date": {"type": "string", "description": "核查日期 (YYYY-MM-DD)，不传则自动查最新"},
+          "cgi": {"type": "string", "description": "CGI，与 cell_name 同时传入时优先"},
+          "cell_name": {"type": "string", "description": "小区中文名或其连续片段，未提供 CGI 时使用包含匹配"},
+          "dist_name": {"type": "string", "description": "地市名称"},
+          "prod_name": {"type": "string", "description": "设备厂家"},
+          "export_excel": {"type": "boolean", "description": "是否导出 Excel", "default": false}
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "query_metric",
+      "description": "查询汇总级能耗指标。支持聚合（group_by）、排序（order_by）、Top N（limit）。传 metric_names 指定指标名或指标组。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "metric_names": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["avg_energy_efficiency", "bbu_energy", "carrier_shutdown_hour", "cell_total", "channel_shutdown_hour", "channel_shutdown_on_rate", "deepsleep_hour", "deepsleep_on_rate", "energy_saving_rate", "low_energy_cell_count", "month_energy_saving", "rru_energy", "single_station_power", "station_energy", "station_online", "station_online_ratio", "station_total", "supersleep_hour", "symbol_shutdown_hour", "symbol_shutdown_on_rate", "traffic", "summary_4g", "summary_5g", "energy_saving_4g", "energy_saving_5g"]},
+            "description": "指标名或指标组。指标组: summary_4g,summary_5g,energy_saving_4g,energy_saving_5g"
+          },
+          "network": {"type": "string", "enum": ["4G", "5G"], "description": "网络类型。用户未指定时根据上下文推断，4G 选 4G，5G 选 5G，两者都需要时分两次调用"},
+          "dist_name": {"type": "string", "description": "地市名称"},
+          "prod_name": {"type": "string", "description": "设备厂家"},
+          "freq_band": {"type": "string", "description": "频段"},
+          "site_type": {"type": "string", "description": "站型"},
+          "area": {"type": "string", "description": "区域"},
+          "date_start": {"type": "string", "description": "开始日期 (YYYY-MM-DD)"},
+          "date_end": {"type": "string", "description": "结束日期 (YYYY-MM-DD)"},
+          "group_by": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["dist_name", "prod_name", "freq_band", "site_type", "area", "data_date"]},
+            "description": "聚合维度列表。传一个或多个: dist_name/prod_name/freq_band/site_type/area/data_date。不传则返回明细"
+          },
+          "order_by": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {"type": "string", "description": "排序字段：指标名或维度名"},
+                "direction": {"type": "string", "enum": ["asc", "desc"]}
+              }
+            },
+            "description": "排序规则。field 传指标名或 group_by 中的维度名"
+          },
+          "limit": {"type": "integer", "description": "返回 TOP N 条。用户说 TOP N 时设置"},
+          "export_excel": {"type": "boolean", "description": "是否导出 Excel", "default": false}
+        },
+        "required": ["metric_names", "network"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "query_report",
+      "description": "生成 4G/5G 网络节耗电分析报告。查询指定时间段汇总数据，前推7天获取基线，对比生成 Markdown 报告。\n未指定日期时自动查询数据库最新数据日期。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "province": {"type": "string", "description": "省份名称，未传默认湖南省"},
+          "dist_name": {"type": "string", "description": "地市名称，未传默认全网"},
+          "prod_name": {"type": "string", "description": "设备厂家"},
+          "freq_band": {"type": "string", "description": "频段"},
+          "site_type": {"type": "string", "description": "站型"},
+          "area": {"type": "string", "description": "区域类型（一般城区/主城区/乡镇/农村/县城/全网）"},
+          "date_start": {"type": "string", "description": "开始日期 (YYYY-MM-DD)"},
+          "date_end": {"type": "string", "description": "结束日期 (YYYY-MM-DD)"}
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "resolve_cell_cgi",
+      "description": "通过小区中文名或连续名称片段查找 4G/5G 小区 CGI。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cell_name": {"type": "string", "description": "小区中文名或其连续片段"},
+          "network": {"type": "string", "enum": ["4G", "5G"], "description": "网络制式，不传则同时查询 4G/5G"},
+          "province": {"type": "string", "description": "省份"},
+          "dist_name": {"type": "string", "description": "地市名称"},
+          "county_name": {"type": "string", "description": "区县名称"},
+          "prod_name": {"type": "string", "description": "设备厂家"}
+        },
+        "required": ["cell_name"]
+      }
+    }
+  }
+]

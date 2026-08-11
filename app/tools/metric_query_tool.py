@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.metrics_registry import ALL_METRICS, REPORT_METRICS
-from app.tools.registry import tool_registry
 from app.utils.export_util import truncate_and_export
 from app.utils.sql_helpers import error_response, get_latest_date_standalone, success_response
 
@@ -175,7 +174,7 @@ async def _execute_query(db: AsyncSession, sql: str, params: dict) -> dict[str, 
         return success_response({"row_count": len(rows), "data": [dict(row) for row in rows]})
     except Exception as exc:
         logger.error("SQL 执行异常: %s", exc, exc_info=True)
-        return error_response(f"SQL 执行失败: {exc}")
+        return error_response("指标查询失败，请稍后重试")
 
 
 def _apply_calc(row: dict, metric_name: str) -> float | None:
@@ -188,9 +187,8 @@ def _apply_calc(row: dict, metric_name: str) -> float | None:
         return None
 
 
-@tool_registry.tool(
-    description="查询汇总级能耗指标。支持聚合（group_by）、排序（order_by）、Top N（limit）。传 metric_names 指定指标名或指标组。",
-    parameters={
+TOOL_DESCRIPTION = "查询汇总级能耗指标。支持聚合（group_by）、排序（order_by）、Top N（limit）。传 metric_names 指定指标名或指标组。"
+TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {
             "metric_names": {
@@ -237,8 +235,9 @@ def _apply_calc(row: dict, metric_name: str) -> float | None:
             },
         },
         "required": ["metric_names", "network"],
-    },
-)
+}
+
+
 async def query_metric(
     db: AsyncSession,
     metric_names: list[str],

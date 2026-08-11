@@ -7,8 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import DATA_REFRESH_HOUR, get_settings, MAX_RETURN_ITEMS
 from app.core.logging import get_logger
-from app.tools.registry import tool_registry
+from app.services.cell_resolver import resolve_cell_identifier
+from app.utils.cell_lookup import resolution_error_response
 from app.utils.export_util import truncate_and_export
+from app.utils.sql_helpers import error_response
 
 logger = get_logger("param_check_tool")
 
@@ -257,10 +259,8 @@ def _generate_report(
     return "\n".join(lines)
 
 
-@tool_registry.tool(
-    description="""查询小区节能参数核查结果，分析不合规配置。
-""",
-    parameters={
+TOOL_DESCRIPTION = "通过 CGI 或小区中文名查询节能参数核查结果，分析不合规配置。\n"
+TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {
             "check_date": {
@@ -269,11 +269,11 @@ def _generate_report(
             },
             "cgi": {
                 "type": "string",
-                "description": "CGI，优先级最高",
+                "description": "CGI，与 cell_name 同时传入时优先",
             },
             "cell_name": {
                 "type": "string",
-                "description": "小区名称",
+                "description": "小区中文名或其连续片段，未提供 CGI 时使用包含匹配",
             },
             "dist_name": {"type": "string", "description": "地市名称"},
             "prod_name": {"type": "string", "description": "设备厂家"},
@@ -284,8 +284,9 @@ def _generate_report(
             },
         },
         "required": [],
-    },
-)
+}
+
+
 async def query_energy_param_check(
     db: AsyncSession,
     check_date: str | None = None,
@@ -296,11 +297,31 @@ async def query_energy_param_check(
     export_excel: bool = False,
 ) -> dict[str, Any]:
     """查询小区节能参数核查结果。"""
+    cgi = (cgi or "").strip()
+    cell_name = (cell_name or "").strip()
     date_str, date_note = await _get_check_date(db, check_date)
+
+    name_resolution = None
+    if not cgi and cell_name:
+        try:
+            name_resolution = await resolve_cell_identifier(
+                db=db,
+                cell_name=cell_name,
+                dist_name=dist_name,
+                prod_name=prod_name,
+            )
+        except Exception as exc:
+            logger.error("参数核查小区名称解析异常: %s", exc, exc_info=True)
+            return error_response("小区名称解析失败，请稍后重试。")
+        if name_resolution.status != "resolved":
+            return resolution_error_response(name_resolution)
+        cgi = name_resolution.cgi or ""
 
     # 构建查询标签（用于日志和批量报告标题）
     query_parts = []
-    if cgi:
+    if name_resolution:
+        query_parts.append(f"cell_name={name_resolution.query}, cgi={cgi}")
+    elif cgi:
         query_parts.append(f"cgi={cgi}")
     elif cell_name:
         query_parts.append(f"cell_name={cell_name}")
@@ -314,7 +335,7 @@ async def query_energy_param_check(
     logger.info("节能参数核查: date=%s, query=%s, table=%s.eng_check_result", date_str, query_label, DB_SCHEMA_RULE)
 
     try:
-        data = await _fetch_param_check(db, date_str, cgi, cell_name, dist_name, prod_name)
+        data = await _fetch_param_check(db, date_str, cgi, None, dist_name, prod_name)
 
         if not data:
             return {
@@ -373,6 +394,12 @@ async def query_energy_param_check(
             **({"date_note": date_note} if date_note else {}),
             "download_url": meta.pop("download_url", None),
             **meta,
+            **({
+                "cell_name_match": {
+                    "query": name_resolution.query,
+                    "match_type": name_resolution.match_type,
+                }
+            } if name_resolution else {}),
         }
         if result["download_url"] is None:
             del result["download_url"]
@@ -383,5 +410,5 @@ async def query_energy_param_check(
         logger.error("节能参数核查异常: %s", exc, exc_info=True)
         return {
             "success": False,
-            "error": f"核查失败: {exc}",
+            "error": "参数核查失败，请稍后重试",
         }

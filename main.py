@@ -20,23 +20,10 @@ from app.services.database import init_db
 logger = get_logger("main")
 
 
-def _register_tools() -> None:
-    """显式注册所有工具模块，确保工具在服务启动时完成注册。"""
-    import app.tools.metric_query_tool  # noqa: F401
-    import app.tools.cell_metric_query_tool  # noqa: F401
-    import app.tools.report_query_tool  # noqa: F401
-    import app.tools.energy_saving_tool  # noqa: F401
-    import app.tools.anomaly_query_tool  # noqa: F401
-    import app.tools.energy_param_check_tool  # noqa: F401
-    import app.tools.batch_energy_tool  # noqa: F401
-    import app.tools.chart_tool  # noqa: F401
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期管理。"""
     logger.info("AI Agent 微服务启动中...")
-    _register_tools()
     await init_db()
     logger.info("服务已就绪，等待请求")
     yield
@@ -48,7 +35,7 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title="AI Agent Microservice",
         version="1.0.0",
-        description="生产级单智能体微服务框架，基于 ReAct Loop 模式",
+        description="生产级单智能体微服务，基于 AgentScope 2.x 架构",
         lifespan=lifespan,
     )
 

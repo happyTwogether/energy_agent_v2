@@ -7,9 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.services.cell_resolver import resolve_cell_identifier
 from app.services.database import get_session_factory
-from app.tools.registry import tool_registry
-from app.utils.sql_helpers import ensure_datetime, error_response, fetch_rows, parse_list_field, success_response
+from app.utils.cell_lookup import resolution_error_response
+from app.utils.sql_helpers import ensure_datetime, error_response, fetch_rows, parse_list_field
 
 DB_SCHEMA_AGENT = get_settings().db_schema_agent
 
@@ -50,14 +51,18 @@ PRB_HIGH_LOAD_THRESHOLD: float = 50.0
 # 不合规项最大返回条数
 MAX_UNQUALIFIED_ITEMS: int = 10
 
-@tool_registry.tool(
-    description="分析单个5G小区的节电详情，包含休眠扩展、休眠收缩、负荷状态和休眠生效前负荷偏高。",
-    parameters={
+
+TOOL_DESCRIPTION = "通过 CGI 或小区中文名分析单个5G小区的节电详情，包含休眠扩展、休眠收缩、负荷状态和休眠生效前负荷偏高。"
+TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {
             "cgi": {
                 "type": "string",
-                "description": "小区全球标识，格式 460-00-基站号-小区号",
+                "description": "小区全球标识，格式 460-00-基站号-小区号；与 cell_name 同时传入时优先",
+            },
+            "cell_name": {
+                "type": "string",
+                "description": "小区中文名或其连续片段，未提供 CGI 时使用包含匹配",
             },
             "analysis_target": {
                 "type": "string",
@@ -69,20 +74,33 @@ MAX_UNQUALIFIED_ITEMS: int = 10
                 "description": "统计日期 (YYYY-MM-DD)",
             },
         },
-        "required": ["cgi", "analysis_target"],
-    },
-)
+        "required": ["analysis_target"],
+}
+
+
 async def analyze_single_cell_energy(
-    cgi: str,
     analysis_target: str,
     db: AsyncSession,
+    cgi: str | None = None,
+    cell_name: str | None = None,
     stat_time: str | None = None,
 ) -> dict[str, Any]:
     """分析单个5G小区的节电详情。
 
     返回结构化数据 + 基础表格，由 LLM 组装最终报告。
     """
-    logger.info("单小区节电分析: cgi=%s, target=%s, stat_time=%s", cgi, analysis_target, stat_time)
+    cgi = (cgi or "").strip()
+    cell_name = (cell_name or "").strip()
+    if not cgi and not cell_name:
+        return error_response("请提供 CGI 或小区中文名。")
+
+    logger.info(
+        "单小区节电分析: cgi=%s, cell_name=%s, target=%s, stat_time=%s",
+        cgi,
+        cell_name,
+        analysis_target,
+        stat_time,
+    )
 
     need_expansion = analysis_target in ("all", "expansion")
     need_constriction = analysis_target in ("all", "constriction")
@@ -123,12 +141,33 @@ async def analyze_single_cell_energy(
 
     display_date = query_date.strftime("%Y-%m-%d")
 
+    name_resolution = None
+    if not cgi:
+        try:
+            name_resolution = await resolve_cell_identifier(
+                db=db,
+                cell_name=cell_name,
+                network="5G",
+            )
+        except Exception as exc:
+            logger.error("单小区名称解析异常: %s", exc, exc_info=True)
+            return error_response("小区名称解析失败，请稍后重试。")
+        if name_resolution.status != "resolved":
+            return resolution_error_response(name_resolution)
+        cgi = name_resolution.cgi or ""
+
     # 构建返回结果（基础信息从扩展/收缩结果中获取）
     result: dict[str, Any] = {
         "success": True,
         "cgi": cgi,
+        "analysis_target": analysis_target,
         "stat_time": display_date,
     }
+    if name_resolution:
+        result["cell_name_match"] = {
+            "query": name_resolution.query,
+            "match_type": name_resolution.match_type,
+        }
     if date_note:
         result["date_note"] = date_note
 
@@ -500,7 +539,7 @@ async def _query_param_check(db: AsyncSession, cgi: str, stat_time: str | None =
         return {
             "success": False,
             "is_compliant": None,
-            "error": f"参数核查暂时不可用: {exc}",
+            "error": "参数核查暂时不可用，请稍后重试",
         }
 
 

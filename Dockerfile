@@ -21,5 +21,5 @@ COPY . .
 # 暴露端口（容器内部默认 8000）
 EXPOSE 8000
 
-# 启动命令
-CMD ["python", "main.py"]
+# 启动命令：生产容器禁用开发模式的 reload
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

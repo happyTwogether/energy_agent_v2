@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-10
 
-**状态：** 已获用户批准并完成离线实现；供应商中立配置纠偏已批准，待在线 smoke
+**状态：** 已获用户批准并完成离线实现；供应商中立配置与公网协议 smoke 已完成，待生产同构内网验收
 
 **目标版本：** AgentScope 2.0.5
 
@@ -125,7 +125,7 @@ AgentScope 2.0.5 的 MCP 间接依赖未声明可用下限；项目显式锁定 
 
 ### OpenAI-compatible 协议验证
 
-真实端点测试是供应商中立的 opt-in 烟测，不在 CI 默认执行。九天或 DeepSeek 等公网服务可以验证 AgentScope 与 Chat Completions 协议链路，但不能替代生产内网 `qwen3.6_27b` 的模型行为验收。测试顺序：
+真实端点测试是供应商中立的 opt-in 烟测，不在 CI 默认执行。九天或 DeepSeek 等公网服务可以验证 AgentScope 与 Chat Completions 协议链路，但不能替代生产内网 `qwen3.6_27b` 的模型行为验收。测试可通过 `LLM_SMOKE_EXTRA_BODY_JSON` 透传临时供应商请求字段，特例不进入生产 model factory。测试顺序：
 
 1. 最小非流式对话，确认模型名和 Chat Completions 路径。
 2. 最小流式对话，确认 delta、finish reason 与 usage 字段。
@@ -257,6 +257,6 @@ streaming 与 blocking 必须消费同一个事件适配器；blocking 只是聚
 - streaming 与 blocking 已统一消费 `DifyEventAdapter`，覆盖文本、工具 thought、usage、成功持久化和错误不持久化。
 - request-scoped AgentState、双阶段 Prompt、原生 function calling 与 `report_content` 直出均有离线测试；真实 fake model 工具链已贯通 `Agent → Toolkit → middleware → Dify adapter`。
 - 对外错误已统一脱敏；blocking 模式在 Agent 运行前释放历史查询 session，流式 `message_end` 仅在持久化成功后发送，报表工具不再并发共享同一 `AsyncSession`。
-- Python 3.11 全量发现 49 个测试：45 个离线测试通过，4 个 live 测试安全跳过；compileall、FastAPI import、依赖兼容、密钥扫描和 `git diff --check` 通过。
+- Python 3.11 全量发现 50 个测试：46 个离线测试通过，4 个 live 测试安全跳过；compileall、FastAPI import、98 个已安装包的依赖兼容、密钥扫描、供应商耦合扫描和 `git diff --check` 通过。
 - Docker 镜像 `energy-agent:agentscope-smoke` 构建成功，生产命令启动成功，容器内 `/api/v1/health` 返回 `{"status":"ok"}`。最后一轮日志脱敏/空回答加固后 Docker Desktop 无响应，因此最新镜像重建待 Docker 恢复；该轮改动已通过 Python 门禁。
-- 供应商中立在线测试位于 `tests/live/test_openai_compatible_smoke.py`，覆盖非流、流式、array/nullable Schema 和并行工具调用；父进程未设置 `LLM_API_KEY` 时禁止将密钥内联到命令。公网 smoke 只证明协议兼容，生产验收仍需在内网 `qwen3.6_27b` 端点重跑。
+- 供应商中立在线测试位于 `tests/live/test_openai_compatible_smoke.py`，覆盖非流、流式、array/nullable Schema 和并行工具调用。DeepSeek `deepseek-v4-pro` 在显式关闭默认 thinking 后 4 项全部通过；最终重跑将 `ResourceWarning` 提升为错误，未出现未关闭连接。该结果只证明 AgentScope/OpenAI-compatible 协议兼容，生产验收仍需在内网 `qwen3.6_27b` 端点重跑。

@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.tools.registry import tool_registry
 from app.utils.export_util import export_to_excel
 from app.utils.sql_helpers import ensure_datetime, error_response, fetch_rows, parse_list_field, success_response
 
@@ -48,9 +47,8 @@ _MAP_HIGHLOAD: dict[str, str] = {
 }
 
 
-@tool_registry.tool(
-    description="批量诊断5G小区节电情况。支持全省、地市、区县、厂家级别查询，可全量分析或仅分析扩展或收缩维度。",
-    parameters={
+TOOL_DESCRIPTION = "批量诊断5G小区节电情况。支持全省、地市、区县、厂家级别查询，可全量分析或仅分析扩展或收缩维度。"
+TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {
             "dist_name": {"type": "string", "description": "地市名称"},
@@ -64,8 +62,9 @@ _MAP_HIGHLOAD: dict[str, str] = {
             },
         },
         "required": [],
-    },
-)
+}
+
+
 async def analyze_batch_cells_energy(
     db: AsyncSession,
     dist_name: str | None = None,
@@ -89,7 +88,7 @@ async def analyze_batch_cells_energy(
         )
     except Exception as exc:
         logger.exception("批量节电诊断失败")
-        return error_response(f"批量分析异常：{exc}")
+        return error_response("批量分析失败，请稍后重试")
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -19,7 +19,6 @@ _ANOMALY_LOWER_RATIO = 0.9      # 越高越好指标：目标值 < 基线 × 0.9
 _ANOMALY_UPPER_RATIO = 1.1      # 越低越好指标：目标值 > 基线 × 1.1 视为异常
 _ANOMALY_SEVERITY_PCT = 20      # 劣化率超过此百分比为 high 严重级别
 from app.core.logging import get_logger
-from app.tools.registry import tool_registry
 from app.utils.export_util import truncate_and_export
 
 logger = get_logger("anomaly_query_tool")
@@ -230,9 +229,8 @@ async def _fetch_network_data(
     return target_data, baseline_data
 
 
-@tool_registry.tool(
-    description="""诊断核心指标劣化情况。对比目标日期与过去7天基线，找出劣化超过10%的指标。""",
-    parameters={
+TOOL_DESCRIPTION = "诊断核心指标劣化情况。对比目标日期与过去7天基线，找出劣化超过10%的指标。"
+TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {
             "dist_name": {"type": "string", "description": "地市名称"},
@@ -248,8 +246,9 @@ async def _fetch_network_data(
             },
         },
         "required": [],
-    },
-)
+}
+
+
 async def query_anomaly(
     db: AsyncSession,
     dist_name: str | None = None,
@@ -358,5 +357,5 @@ async def query_anomaly(
         logger.error("异常诊断失败: %s", exc, exc_info=True)
         return {
             "success": False,
-            "error": f"异常诊断失败: {exc}",
+            "error": "异常诊断失败，请稍后重试",
         }

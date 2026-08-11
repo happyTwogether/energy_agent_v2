@@ -6,6 +6,7 @@
 """
 
 import logging
+import re
 import sys
 
 # Windows 控制台编码修复
@@ -15,6 +16,50 @@ if sys.platform == "win32":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
 _initialized: bool = False
+
+_SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s/]+)@",
+            re.IGNORECASE,
+        ),
+        r"\1***:***@",
+    ),
+    (
+        re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
+        "Bearer ***",
+    ),
+    (
+        re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
+        "sk-***",
+    ),
+    (
+        re.compile(
+            r"\b(api[_-]?key|password|token|authorization)\b"
+            r"(\s*[:=]\s*)([^\s,;]+)",
+            re.IGNORECASE,
+        ),
+        r"\1\2***",
+    ),
+)
+
+
+def redact_sensitive_data(value: str) -> str:
+    """脱敏常见凭证、Authorization 和 URL 用户信息。"""
+    redacted = value
+    for pattern, replacement in _SENSITIVE_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
+
+
+class SensitiveDataFormatter(logging.Formatter):
+    """在最终日志文本上脱敏，包括异常 traceback。"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        formatted = super().format(record)
+        if record.exc_text:
+            record.exc_text = redact_sensitive_data(record.exc_text)
+        return redact_sensitive_data(formatted)
 
 
 def _init_root_logger() -> None:
@@ -32,7 +77,7 @@ def _init_root_logger() -> None:
 
     if not root_logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
-        formatter = logging.Formatter(
+        formatter = SensitiveDataFormatter(
             fmt="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )

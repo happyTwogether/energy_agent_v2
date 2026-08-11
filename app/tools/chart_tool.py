@@ -3,7 +3,6 @@
 import json
 from typing import Any
 
-from app.tools.registry import tool_registry
 from app.core.logging import get_logger
 
 logger = get_logger("chart_tool")
@@ -197,9 +196,8 @@ _CHART_BUILDERS = {
 }
 
 
-@tool_registry.tool(
-    description="根据查询数据生成 ECharts 图表 option JSON。传查询结果和图表类型，返回完整 ECharts option，前端渲染。",
-    parameters={
+TOOL_DESCRIPTION = "根据查询数据生成 ECharts 图表 option JSON。传查询结果和图表类型，返回完整 ECharts option，前端渲染。"
+TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {
             "charts": {
@@ -219,8 +217,9 @@ _CHART_BUILDERS = {
             },
         },
         "required": ["charts"],
-    },
-)
+}
+
+
 async def generate_chart(
     db,
     charts: list[dict],
@@ -250,6 +249,11 @@ async def generate_chart(
             })
         except Exception as exc:
             logger.error("图表生成失败 [%d] %s: %s", i, title, exc, exc_info=True)
-            results.append({"option_json": "", "title": title, "success": False, "error": str(exc)})
+            results.append({
+                "option_json": "",
+                "title": title,
+                "success": False,
+                "error": "图表生成失败，请检查数据格式",
+            })
 
     return {"success": True, "charts": results}

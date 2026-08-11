@@ -8,7 +8,7 @@
 from functools import lru_cache
 from urllib.parse import quote_plus
 
-from pydantic import computed_field
+from pydantic import SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,16 +43,16 @@ class Settings(BaseSettings):
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
 
-    llm_api_key: str = ""
+    llm_api_key: SecretStr = SecretStr("")
     llm_base_url: str = ""
-    default_model: str = ""
+    default_model: str = "qwen3.6_27b"
     log_level: str = "INFO"
     llm_max_tokens: int = 4096  # LLM 最大输出 token 数
     llm_temperature: float = 0.3  # 生成温度，越低输出越确定
-    llm_tool_call_fallback_enabled: bool = True
-    llm_tool_call_strict_mode: bool = True
-    llm_tool_call_retry_on_suspected_draft: bool = True
-    llm_tool_call_debug_log: bool = False
+    llm_timeout_seconds: float = 60.0
+    llm_context_size: int = 32768
+    llm_max_retries: int = 2
+    llm_parallel_tool_calls: bool = True
     agent_system_prompt: str = ""
     cors_origins: list[str] = ["*"]
     base_url: str = "http://10.159.55.28:9500/"  # 服务基础URL
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     message_store_url: str = "http://10.159.55.28:6039/sendMsg"
     message_store_enabled: bool = True
     message_store_timeout: int = 5
-    agent_max_steps: int = 5  # Agent ReAct Loop 最大推理步数
+    agent_max_steps: int = 5  # AgentScope 最大推理-行动轮数
     agent_bot_id: int = 2064169133542531073  # 能效智能体 Dify Bot ID
     model_config = SettingsConfigDict(
         env_file=".env",

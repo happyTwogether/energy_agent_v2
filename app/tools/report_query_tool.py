@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -8,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.metrics_registry import safe_div, to_tb, to_wan_du
-from app.tools.registry import tool_registry
 from app.utils.sql_helpers import error_response, get_latest_date, success_response
 
 logger = get_logger("report_query_tool")
@@ -616,10 +614,8 @@ def _generate_report_markdown(
 
     return "\n".join(lines)
 
-@tool_registry.tool(
-    description="""生成 4G/5G 网络节耗电分析报告。查询指定时间段汇总数据，前推7天获取基线，对比生成 Markdown 报告。
-未指定日期时自动查询数据库最新数据日期。""",
-    parameters={
+TOOL_DESCRIPTION = "生成 4G/5G 网络节耗电分析报告。查询指定时间段汇总数据，前推7天获取基线，对比生成 Markdown 报告。\n未指定日期时自动查询数据库最新数据日期。"
+TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {
             "province": {"type": "string", "description": "省份名称，未传默认湖南省"},
@@ -647,8 +643,9 @@ def _generate_report_markdown(
             },
         },
         "required": [],
-    },
-)
+}
+
+
 async def query_report(
     db: AsyncSession,
     province: str | None = None,
@@ -718,15 +715,19 @@ async def query_report(
 
         logger.info("前推%d天获取基线: %s ~ %s", BASELINE_LOOKBACK_DAYS, query_start, date_end)
 
-        # 2. 并行拉取 4G/5G 原始数据（目标日 + 基线）
+        # 2. 串行拉取 4G/5G 原始数据。AsyncSession 不允许并发共享。
         fetch_kwargs = dict(
             db=db, province=province, dist_name=dist_name, prod_name=prod_name,
             freq_band=freq_band, site_type=site_type, area=area,
             query_start=query_start, date_end=date_end,
         )
-        (lte_target_raw, lte_baseline_raw), (nr_target_raw, nr_baseline_raw) = await asyncio.gather(
-            _fetch_data_with_baseline(table="lte_report_day_collect", **fetch_kwargs),
-            _fetch_data_with_baseline(table="nr_report_day_collect", **fetch_kwargs),
+        lte_target_raw, lte_baseline_raw = await _fetch_data_with_baseline(
+            table="lte_report_day_collect",
+            **fetch_kwargs,
+        )
+        nr_target_raw, nr_baseline_raw = await _fetch_data_with_baseline(
+            table="nr_report_day_collect",
+            **fetch_kwargs,
         )
 
         if not lte_target_raw and not nr_target_raw:
