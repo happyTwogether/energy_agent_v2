@@ -1,60 +1,7 @@
-[2026-08-11 05:04:28] [INFO] [agent.routes] PC端聊天请求: query=全省能耗报表, cid=, user=15084863620
-INFO:     192.168.32.4:49326 - "POST /api/v1/chat/stream HTTP/1.1" 200 OK
-2026-08-11 05:04:29,891 | WARNING | _agent:_call_model:2825 - Model openai/qwen3.6_27b_32k exhausted all 1 attempt(s) for agent energy_agent.
-[2026-08-11 05:04:29] [ERROR] [agent.dify_events] AgentScope 事件适配异常
-Traceback (most recent call last):
-  File "/app/app/agent/dify_events.py", line 76, in stream
-    async for event in events:
-  File "/app/app/agent/runtime.py", line 61, in stream_agent_events
-    async for event in agent.reply_stream(parsed.current_user):
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 282, in reply_stream
-    async for chunk in self._reply(
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 686, in _reply
-    async for item in execute_chain():
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 679, in execute_chain
-    async for item in mw.on_reply(
-  File "/app/app/agent/middleware.py", line 51, in on_reply
-    async for event in downstream:
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 673, in next_handler
-    async for item in execute_chain(
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 658, in execute_chain
-    async for item in self._reply_impl(
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 883, in _reply_impl
-    async for evt in self._reasoning(
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 1275, in _reasoning
-    async for item in self._reasoning_impl(tool_choice=tool_choice):
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 1342, in _reasoning_impl
-    res = await self._call_model(
-          ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 2834, in _call_model
-    raise last_exception from None
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 2808, in _call_model
-    return await execute_chain()
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 2802, in execute_chain
-    return await mw.on_model_call(
-           ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/app/app/agent/middleware.py", line 75, in on_model_call
-    return await next_handler(**input_kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 2797, in next_handler
-    return await execute_chain(
-           ^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.11/site-packages/agentscope/agent/_agent.py", line 2776, in execute_chain
-    return await current_model(
-           ^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.11/site-packages/agentscope/model/_base.py", line 186, in __call__
-    res = await self._call_api(
-          ^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.11/site-packages/agentscope/model/_openai_chat/_model.py", line 272, in _call_api
-    response = await client.chat.completions.create(**kwargs)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.11/site-packages/openai/resources/chat/completions/completions.py", line 2907, in create
-    return await self._post(
-           ^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.11/site-packages/openai/_base_client.py", line 1992, in post
-    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.11/site-packages/openai/_base_client.py", line 1777, in request
-    raise self._make_status_error_from_response(err.response) from None
-openai.PermissionDeniedError: Error code: 403 - {'error': {'code': '', 'message': '该令牌无权访问模型 openai/qwen3.6_27b_32k (request id: 202608110504298861136828268d9d6Mt60pXXJ)', 'type': 'new_api_error'}}
+[2026-08-13 06:22:37] [INFO] [agent.routes] App端 Dify 请求: query=常德中兴参数合规性，生成报表, cid=, mode=blocking, user=15084863620
+[2026-08-13 06:22:45] [INFO] [agent.report_query_tool] 报表查询: province=湖南省, dist_name=常德市, prod_name=中兴, freq_band=全网, site_type=全网, area=全网, date_range=2026-08-04~2026-08-04
+[2026-08-13 06:22:45] [INFO] [agent.report_query_tool] 前推7天获取基线: 2026-07-28 ~ 2026-08-04
+[2026-08-13 06:22:47] [INFO] [agent.param_check_tool] 节能参数核查: date=20260812, query=dist=常德市, prod=中兴, table=jd_agent.eng_check_result
+[2026-08-13 06:22:53] [INFO] [agent.export_util] Excel 导出成功: /app/static/exports/energy-param-check-20260813062253-6135ea.xlsx, 数据量: 46 条
+[2026-08-13 06:22:53] [INFO] [agent.param_check_tool] 节能参数核查完成: date=20260812, query=dist=常德市, prod=中兴, total=290283, unqualified=46, excluded=83232
+[2026-08-13 06:25:41] [INFO] [agent.message_store] 消息存储成功: conversation_id=fae1b885-1b5d-4946-8f42-d03c4f9b778b, user=15084863620, source=0, tokens=41300
