@@ -7,9 +7,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.services.cell_resolver import resolve_cell_identifier
+from app.services.cell_resolver import (
+    LTE_PARAMETER_TABLE,
+    NR_PARAMETER_TABLE,
+    resolve_cell_identifier,
+)
 from app.services.database import get_session_factory
-from app.services.energy_analysis import build_expansion_record
+from app.services.energy_analysis import (
+    NetworkType,
+    build_expansion_record,
+    enrich_constriction_records,
+    normalize_network_type,
+)
 from app.utils.cell_lookup import resolution_error_response
 from app.utils.export_util import truncate_and_export
 from app.utils.sql_helpers import ensure_datetime, error_response, fetch_rows
@@ -38,8 +47,6 @@ def _build_md_table(headers: list[str], rows: list[str], empty_msg: str = "暂�
     return header_line + "\n" + sep_line + "\n" + "\n".join(rows)
 
 
-# 周边小区距离阈值（单位：米）
-AROUND_DISTANCE_THRESHOLD: float = 200.0
 # pre_sleep_load 统计天数
 PRE_SLEEP_LOAD_DAYS: int = 7
 # PRB 利用率高负荷阈值（%）
@@ -224,8 +231,14 @@ async def analyze_single_cell_energy(
     # 处理收缩分析结果
     if "constriction" in results_map:
         constriction_result = results_map["constriction"]
-        # 【优化】不再返回原始 constriction_data，只返回表格
         result["constriction_table"] = constriction_result["table"]
+        constriction_data, constriction_meta = truncate_and_export(
+            constriction_result["data"],
+            prefix="single_cell_constriction",
+        )
+        result["constriction_data"] = constriction_data
+        for key, value in constriction_meta.items():
+            result[f"constriction_{key}"] = value
         # 基础信息（如果扩展分析没查，从收缩结果获取）
         if "cell_name" not in result:
             _fill_base_info(result, constriction_result, cgi)
@@ -325,107 +338,192 @@ async def _query_constriction_data(
     cgi: str,
     stat_time: datetime,
 ) -> dict[str, Any]:
-    """查询收缩分析数据。
-
-    从 jd_cell_constriction_day 获取收缩信息，
-    关联 jd_cell_around 获取周边高负荷证据。
-    """
-    # 并行查询：收缩数据 + 周边小区距离
+    """查询收缩结果，并批量补齐距离与双方站型。"""
     constriction_sql = text(f"""
-        SELECT hours, reason, around_cgi, around_cgi_cell_name,
+        SELECT cgi, stat_time, hours, reason, around_cgi,
+               around_cgi_cell_name, around_cgi_network_type, site_type,
+               self_prb_rate_ul_before, self_prb_rate_dl_before,
+               self_sleep_duration, prb_rate_ul, prb_rate_dl,
+               prb_rate_ul_before, prb_rate_dl_before, prb_increase,
+               before_sleep_hour, before_sleep_date,
                is_whitelist, cell_name, dist_name, county_name, prod_name
         FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day
         WHERE cgi = :cgi AND stat_time = :stat_time
     """)
-    around_sql = text(f"""
-        SELECT around_cgi, distance
-        FROM {DB_SCHEMA_AGENT}.jd_cell_around
-        WHERE cgi = :cgi AND distance <= :distance_threshold
-    """)
-
-    constriction_rows, around_rows = await asyncio.gather(
-        fetch_rows(constriction_sql, {"cgi": cgi, "stat_time": stat_time}),
-        fetch_rows(around_sql, {"cgi": cgi, "distance_threshold": AROUND_DISTANCE_THRESHOLD}),
+    constriction_rows = await fetch_rows(
+        constriction_sql,
+        {"cgi": cgi, "stat_time": stat_time},
+    )
+    around_cgis = {
+        str(row["around_cgi"])
+        for row in constriction_rows
+        if row.get("around_cgi")
+    }
+    relation_by_pair = await _query_neighbor_relations(cgi, around_cgis)
+    nr_cgis, lte_cgis = _group_site_type_queries(
+        cgi,
+        constriction_rows,
+        relation_by_pair,
+    )
+    site_type_by_cell = await _query_site_types(nr_cgis, lte_cgis)
+    constriction_data = enrich_constriction_records(
+        constriction_rows,
+        relation_by_pair,
+        site_type_by_cell,
     )
 
-    # 构建周边小区距离映射
-    around_distance_map: dict[str, float] = {
-        row["around_cgi"]: row["distance"]
-        for row in around_rows
-    }
-
-    constriction_data: list[dict[str, Any]] = []
-    is_whitelist = False
-    whitelist_reason = "无"
-    cell_name = None
-    dist_name = None
-    county_name = None
-    prod_name = None
-
-    if constriction_rows:
-        is_whitelist = bool(constriction_rows[0].get("is_whitelist"))
-        # 基础信息从第一条记录获取
-        cell_name = constriction_rows[0].get("cell_name")
-        dist_name = constriction_rows[0].get("dist_name")
-        county_name = constriction_rows[0].get("county_name")
-        prod_name = constriction_rows[0].get("prod_name")
-        # 白名单原因：取第一条有 reason 值的记录
-        for row in constriction_rows:
-            if row.get("reason"):
-                whitelist_reason = row["reason"]
-                break
-
-    for row in constriction_rows:
-        hour = row["hours"]
-        # 触发收缩原因：固定文案（hours 是收缩节点，说明该时间点周边小区存在负荷偏高状态）
-        trigger_reason = "该时间点存在周边小区负荷偏高"
-        related_cgi = row["around_cgi"] or "—"
-        related_name = row["around_cgi_cell_name"] or "—"
-
-        # 获取距离信息用于证据字段
-        distance = around_distance_map.get(related_cgi, 0)
-        evidence = f"该时段负荷偏高=是，距离{distance:.0f}米"
-
-        # 收缩建议：既然 hours 是收缩节点，周边肯定高负荷，建议收缩节电
-        suggestion = "收缩节电"
-
-        constriction_data.append({
-            "constriction_hour": hour,
-            "reason": trigger_reason,
-            "related_cgi": related_cgi,
-            "related_cell_name": related_name,
-            "evidence": evidence,
-            "suggestion": suggestion,
-        })
-
-    if not constriction_data:
-        table_md = ""
-    else:
-        table_rows = []
-        for item in constriction_data:
-            # 关联小区显示格式：小区名称(CGI)
-            related_display = f"{item['related_cell_name']}({item['related_cgi']})" if item['related_cgi'] != "—" else "—"
-            table_rows.append(
-                f"| {item['constriction_hour'] or '—'} | {item['reason']} | "
-                f"{related_display} | "
-                f"{item['evidence']} | {item['suggestion']} |"
-            )
+    table_rows = [_build_constriction_table_row(row) for row in constriction_data]
+    table_md = ""
+    if table_rows:
         table_md = _build_md_table(
-            headers=["原节能生效时间点", "触发收缩原因", "关联小区名称", "证据字段", "收缩建议"],
+            headers=[
+                "休眠前时间",
+                "关联小区",
+                "主小区休眠前PRB",
+                "主小区休眠时长(秒)",
+                "邻区休眠前/期间PRB",
+                "抬升量",
+                "距离及站型",
+                "关系状态",
+            ],
             rows=table_rows,
         )
+
+    first_row = constriction_rows[0] if constriction_rows else {}
+    whitelist_reason = next(
+        (row["reason"] for row in constriction_rows if row.get("reason")),
+        "无",
+    )
 
     return {
         "data": constriction_data,
         "table": table_md,
-        "is_whitelist": is_whitelist,
+        "is_whitelist": bool(first_row.get("is_whitelist")),
         "whitelist_reason": whitelist_reason,
         # 基础信息
-        "cell_name": cell_name,
-        "dist_name": dist_name,
-        "county_name": county_name,
-        "prod_name": prod_name,
+        "cell_name": first_row.get("cell_name"),
+        "dist_name": first_row.get("dist_name"),
+        "county_name": first_row.get("county_name"),
+        "prod_name": first_row.get("prod_name"),
     }
+
+
+async def _query_neighbor_relations(
+    cgi: str,
+    around_cgis: set[str],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    if not around_cgis:
+        return {}
+    sql = text(f"""
+        SELECT cgi, around_cgi, around_cgi_network_type, distance
+        FROM {DB_SCHEMA_AGENT}.jd_cell_around
+        WHERE cgi = :cgi AND around_cgi = ANY(:around_cgis)
+    """)
+    rows = await fetch_rows(sql, {"cgi": cgi, "around_cgis": list(around_cgis)})
+    return {(str(row["cgi"]), str(row["around_cgi"])): row for row in rows}
+
+
+def _group_site_type_queries(
+    main_cgi: str,
+    rows: list[dict[str, Any]],
+    relation_by_pair: dict[tuple[str, str], dict[str, Any]],
+) -> tuple[set[str], set[str]]:
+    nr_cgis = (
+        {main_cgi}
+        if any(not row.get("site_type") for row in rows)
+        else set()
+    )
+    lte_cgis: set[str] = set()
+    for row in rows:
+        around_cgi = str(row.get("around_cgi") or "")
+        relation = relation_by_pair.get((main_cgi, around_cgi), {})
+        network = normalize_network_type(
+            row.get("around_cgi_network_type")
+            or relation.get("around_cgi_network_type"),
+        )
+        if network == "5G" and around_cgi:
+            nr_cgis.add(around_cgi)
+        elif network == "4G" and around_cgi:
+            lte_cgis.add(around_cgi)
+    return nr_cgis, lte_cgis
+
+
+async def _query_site_types(
+    nr_cgis: set[str],
+    lte_cgis: set[str],
+) -> dict[tuple[NetworkType, str], str]:
+    tasks = []
+    networks: list[NetworkType] = []
+    for network, table, cgis in (
+        ("5G", NR_PARAMETER_TABLE, nr_cgis),
+        ("4G", LTE_PARAMETER_TABLE, lte_cgis),
+    ):
+        if not cgis:
+            continue
+        sql = text(f"""
+            SELECT cgi, site_type
+            FROM {table}
+            WHERE cgi = ANY(:cgis)
+              AND data_date = (SELECT MAX(data_date) FROM {table})
+        """)
+        tasks.append(fetch_rows(sql, {"cgis": list(cgis)}))
+        networks.append(network)
+
+    grouped_rows = await asyncio.gather(*tasks) if tasks else []
+    result: dict[tuple[NetworkType, str], str] = {}
+    for network, rows in zip(networks, grouped_rows):
+        for row in rows:
+            if row.get("cgi") and row.get("site_type"):
+                result[(network, str(row["cgi"]))] = str(row["site_type"])
+    return result
+
+
+def _format_prb(ul: Any, dl: Any) -> str:
+    ul_display = "—" if ul is None else f"{ul}%"
+    dl_display = "—" if dl is None else f"{dl}%"
+    return f"上行{ul_display}/下行{dl_display}"
+
+
+def _build_constriction_table_row(row: dict[str, Any]) -> str:
+    before_date = row.get("before_sleep_date") or "—"
+    before_hour = row.get("before_sleep_hour")
+    before_time = (
+        f"{before_date} {before_hour}:00"
+        if before_hour is not None
+        else str(before_date)
+    )
+    related_cgi = row.get("around_cgi") or "—"
+    related_name = row.get("around_cgi_cell_name") or "—"
+    distance = row.get("distance")
+    relation = (
+        "关系信息缺失"
+        if row.get("relation_status") == "missing"
+        else row.get("relation_status")
+    )
+    distance_display = "—" if distance is None else f"{distance}米"
+    main_prb = _format_prb(
+        row.get("self_prb_rate_ul_before"),
+        row.get("self_prb_rate_dl_before"),
+    )
+    around_prb_before = _format_prb(
+        row.get("prb_rate_ul_before"),
+        row.get("prb_rate_dl_before"),
+    )
+    around_prb = _format_prb(row.get("prb_rate_ul"), row.get("prb_rate_dl"))
+    sleep_duration = row.get("self_sleep_duration")
+    sleep_display = "—" if sleep_duration is None else sleep_duration
+    prb_increase = row.get("prb_increase")
+    increase_display = "—" if prb_increase is None else prb_increase
+    site_types = (
+        f"{row.get('main_site_type') or '—'}→"
+        f"{row.get('around_site_type') or '—'}"
+    )
+    return (
+        f"| {before_time} | {related_name}({related_cgi}) | "
+        f"{main_prb} | {sleep_display} | "
+        f"{around_prb_before} / {around_prb} | {increase_display} | "
+        f"{distance_display}，{site_types} | {relation} |"
+    )
 
 
 async def _check_high_load_with_base_info(db: AsyncSession, cgi: str, stat_time: datetime) -> dict[str, Any]:
