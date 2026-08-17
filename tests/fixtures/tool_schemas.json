@@ -112,7 +112,7 @@
     "type": "function",
     "function": {
       "name": "query_energy_param_check",
-      "description": "通过 CGI 或小区中文名查询节能参数核查结果，分析不合规配置。\n",
+      "description": "查询节能参数核查结果，分析不合规配置，并可将不合规清单导出为 Excel 报表。\n适用：参数合规性核查、生成参数核查报表 / Excel 下载。\n注意：用户说'参数合规 + 生成报表/导出 Excel'时，用本工具并传 export_excel=true，不要调用 query_report（那是能耗汇总报告）。",
       "parameters": {
         "type": "object",
         "properties": {
