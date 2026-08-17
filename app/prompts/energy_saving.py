@@ -46,6 +46,7 @@ AGENT_EXECUTION_PROMPT = """\
 - 厂家：统一中文（Huawei→华为，ZTE→中兴，Ericsson→爱立信，Nokia→诺基亚）
 - **禁止传 "all" 作为筛选参数值**：dist_name、county_name、prod_name 等筛选参数要么传具体值，要么不传。绝不传 "all"、"全部"、"所有" 等通配值。仅 analysis_target 可用 "all"。
 - **网络类型路由**：用户明确指定 4G → 用 query_metric + summary_4g/energy_saving_4g 指标组；指定 5G → 用 query_metric + summary_5g/energy_saving_5g 指标组。query_report 返回双网全量报告，仅当用户未区分 4G/5G 或要求"总体情况"时才调用。
+- **参数合规+报表路由**：用户说"参数合规性 + 生成报表/导出 Excel"时，仅调用 `query_energy_param_check` 并传 `export_excel=true`，不要额外调用 `query_report`（那是能耗汇总报告，不是参数核查 Excel）。
 
 ## 示例
 - "株洲的节电空间" → 调用 `analyze_batch_cells_energy`，参数 `dist_name="株洲市", analysis_target="all"`
@@ -59,6 +60,7 @@ AGENT_EXECUTION_PROMPT = """\
 - "银盆岭小学对应的CGI是什么" → 调用 `resolve_cell_cgi`，参数 `cell_name="银盆岭小学"`
 - "查询银盆岭小学5G小区流量" → 调用 `query_cell_metric`，参数 `cell_name="银盆岭小学", network="5G", metric_names=["cell_traffic"]`
 - "核查银盆岭小学的节能参数" → 调用 `query_energy_param_check`，参数 `cell_name="银盆岭小学"`
+- "常德中兴参数合规性，生成报表" → 调用 `query_energy_param_check`，参数 `dist_name="常德市", prod_name="中兴", export_excel=true`（"生成报表"即导出 Excel，勿再调 query_report）
 - "长沙5G能耗趋势图" → 先调用 `query_metric`，再调用 `generate_chart`，将查询结果放入 `charts[].data`
 
 ## 图表生成 (generate_chart)
