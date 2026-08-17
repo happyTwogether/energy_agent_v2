@@ -31,7 +31,7 @@
 - Consumes: `build_toolkit().get_tool_schemas()` 当前实际 Schema。
 - Produces: 与最新参数核查工具描述和 `export_excel` 参数一致的 fixture。
 
-- [ ] **Step 1: 复现既有基线失败并保存证据**
+- [x] **Step 1: 复现既有基线失败并保存证据**
 
 Run:
 
@@ -41,7 +41,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_agent_toolkit.py::AgentToolkitTest:
 
 Expected: FAIL，差异只位于 `query_energy_param_check` 的 description 和新增 `export_excel` 参数。
 
-- [ ] **Step 2: 只同步参数核查 Schema fixture**
+- [x] **Step 2: 只同步参数核查 Schema fixture**
 
 将 fixture 中 `query_energy_param_check` 更新为：
 
@@ -64,7 +64,7 @@ Expected: FAIL，差异只位于 `query_energy_param_check` 的 description 和�
 }
 ```
 
-- [ ] **Step 3: 验证基线恢复**
+- [x] **Step 3: 验证基线恢复**
 
 Run:
 
@@ -74,7 +74,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_agent_toolkit.py -q
 
 Expected: PASS。
 
-- [ ] **Step 4: 提交独立基线修复**
+- [x] **Step 4: 提交独立基线修复**
 
 ```bash
 git add tests/fixtures/tool_schemas.json
@@ -91,7 +91,7 @@ git commit -m "test(agent): sync parameter tool schema fixture"
 - Consumes: 数据库行字典、关系距离、主/邻区站型和网络标识。
 - Produces: `normalize_network_type`、`neighbor_policy`、`evaluate_neighbor_relation`、`build_expansion_record`、`enrich_constriction_records`。
 
-- [ ] **Step 1: 阅读测试规则并写失败测试**
+- [x] **Step 1: 阅读测试规则并写失败测试**
 
 Read: `/Users/schunm/.codex/skills/test-driven-development/writing-good-tests.md`
 
@@ -143,7 +143,7 @@ def test_prb_increase_equal_ten_is_preserved():
     assert result[0]["prb_increase"] == 10.0
 ```
 
-- [ ] **Step 2: 运行并观察模块缺失失败**
+- [x] **Step 2: 运行并观察模块缺失失败**
 
 Run:
 
@@ -153,7 +153,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_energy_analysis.py -v
 
 Expected: FAIL with `ModuleNotFoundError: app.services.energy_analysis`。
 
-- [ ] **Step 3: 实现最小纯业务模块**
+- [x] **Step 3: 实现最小纯业务模块**
 
 模块公开接口：
 
@@ -189,7 +189,7 @@ def enrich_constriction_records(
 
 `enrich_constriction_records` 只丢弃明确的 `out_of_range` 和 `site_type_mismatch`；关系或站型缺失时保留记录并写入 `relation_status="missing"`。不得检查或过滤 `prb_increase`。
 
-- [ ] **Step 4: 验证规则测试通过**
+- [x] **Step 4: 验证规则测试通过**
 
 Run:
 
@@ -199,7 +199,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_energy_analysis.py -v
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交纯业务规则**
+- [x] **Step 5: 提交纯业务规则**
 
 ```bash
 git add app/services/energy_analysis.py tests/test_energy_analysis.py
@@ -216,7 +216,7 @@ git commit -m "feat(energy): add v1.4 analysis rules"
 - Consumes: Task 2 的 `build_expansion_record`。
 - Produces: `_query_expansion_data` 返回 `data`、`table` 和全部 V1.4 扩展字段；顶层工具返回 `expansion_data` 及截断元数据。
 
-- [ ] **Step 1: 写扩展查询失败测试**
+- [x] **Step 1: 写扩展查询失败测试**
 
 测试替换 `energy_saving_tool.fetch_rows`，只允许一次 `jd_cell_expansion_day` 查询，并返回包含全部新增字段的行：
 
@@ -245,7 +245,7 @@ async def test_query_expansion_uses_precomputed_v14_fields(monkeypatch):
     assert result["data"][0]["deploy_hours_continuous"] == "22:00-00:59"
 ```
 
-- [ ] **Step 2: 验证测试因旧查询和旧字段失败**
+- [x] **Step 2: 验证测试因旧查询和旧字段失败**
 
 Run:
 
@@ -255,7 +255,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_energy_saving_tool.py::test_query_e
 
 Expected: FAIL，因为旧实现继续查询 `jd_cell_detail_hour_nr` 且不返回连续部署字段。
 
-- [ ] **Step 3: 最小修改扩展查询和返回结构**
+- [x] **Step 3: 最小修改扩展查询和返回结构**
 
 `jd_cell_expansion_day` SELECT 必须包含：
 
@@ -268,7 +268,7 @@ deploy_hours_early, deploy_hours_continuous_early
 
 删除 `_query_expansion_data` 中对 `jd_cell_detail_hour_nr` 的休眠均值查询和旧阈值判断。摘要表直接展示两组可扩展时段、数量和连续部署时段。顶层 `analyze_single_cell_energy` 恢复 `expansion_data`，并用 `truncate_and_export(..., prefix="single_cell_expansion")` 返回 `expansion_total_count`、`expansion_returned_count`、`expansion_is_truncated` 和 `expansion_download_url`。
 
-- [ ] **Step 4: 验证扩展测试与工具回归**
+- [x] **Step 4: 验证扩展测试与工具回归**
 
 Run:
 
@@ -278,7 +278,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_energy_saving_tool.py tests/test_ag
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交扩展接入**
+- [x] **Step 5: 提交扩展接入**
 
 ```bash
 git add app/tools/energy_saving_tool.py tests/test_energy_saving_tool.py
@@ -295,7 +295,7 @@ git commit -m "feat(energy): consume v1.4 expansion results"
 - Consumes: Task 2 的 `normalize_network_type` 和 `enrich_constriction_records`。
 - Produces: `_query_constriction_data` 返回完整证据、关系状态和双方站型，不执行 N+1 查询。
 
-- [ ] **Step 1: 写收缩证据和批量查询失败测试**
+- [x] **Step 1: 写收缩证据和批量查询失败测试**
 
 测试提供一条 `prb_increase=10.0` 收缩记录、一个 `jd_cell_around` 关系和两张工参表结果，并记录每张表查询次数：
 
@@ -334,7 +334,7 @@ async def test_query_constriction_enriches_relation_without_dropping_ten(monkeyp
     assert sum("lte_fix_prm" in query for query in calls) == 1
 ```
 
-- [ ] **Step 2: 运行并观察证据字段缺失失败**
+- [x] **Step 2: 运行并观察证据字段缺失失败**
 
 Run:
 
@@ -344,7 +344,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_energy_saving_tool.py::test_query_c
 
 Expected: FAIL，因为旧实现只查询 `hours/reason/around_cgi`，不查询工参站型。
 
-- [ ] **Step 3: 实现集合查询和证据组装**
+- [x] **Step 3: 实现集合查询和证据组装**
 
 增加私有异步帮助函数：
 
@@ -363,7 +363,7 @@ async def _query_site_types(
 
 工参查询使用安全常量表名和 `cgi = ANY(:cgis)`，每个网络最多一次查询，并限定 `data_date = (SELECT MAX(data_date) FROM table)`。收缩 SELECT 加入全部 V1.4 证据字段。调用 `enrich_constriction_records` 后生成包含休眠前后 PRB、抬升量、距离、主/邻区站型和关系状态的 Markdown 表。
 
-- [ ] **Step 4: 验证收缩规则、证据和无 N+1**
+- [x] **Step 4: 验证收缩规则、证据和无 N+1**
 
 Run:
 
@@ -373,7 +373,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_energy_analysis.py tests/test_energ
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交收缩接入**
+- [x] **Step 5: 提交收缩接入**
 
 ```bash
 git add app/tools/energy_saving_tool.py tests/test_energy_saving_tool.py
@@ -390,7 +390,7 @@ git commit -m "feat(energy): enrich v1.4 constriction evidence"
 - Consumes: 现有 `_check_is_pre_sleep_hour` 和 `_query_pre_sleep_load_data`。
 - Produces: `all`、`constriction`、`pre_sleep_load` 一致的休眠前负荷结果；七日高负荷仅统计真正的休眠前一小时。
 
-- [ ] **Step 1: 写路由和七日计数失败测试**
+- [x] **Step 1: 写路由和七日计数失败测试**
 
 ```python
 def test_pre_sleep_load_is_required_for_all_and_constriction():
@@ -408,7 +408,7 @@ def test_high_prb_days_only_counts_actual_pre_sleep_hours():
     assert energy_saving_tool._count_high_pre_sleep_days(rows) == 1
 ```
 
-- [ ] **Step 2: 运行并观察帮助函数缺失失败**
+- [x] **Step 2: 运行并观察帮助函数缺失失败**
 
 Run:
 
@@ -418,7 +418,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_energy_saving_tool.py -k "pre_sleep
 
 Expected: FAIL because `_needs_pre_sleep_load` / `_count_high_pre_sleep_days` 不存在。
 
-- [ ] **Step 3: 实现路由和单小区七日明细计数**
+- [x] **Step 3: 实现路由和单小区七日明细计数**
 
 `_query_pre_sleep_load_data` 的七日查询改为拉取高 PRB 候选行：
 
@@ -432,7 +432,7 @@ WHERE cgi = :cgi
 
 随后使用 `_check_is_pre_sleep_hour` 按日期去重计数。`analyze_single_cell_energy` 对 `all` 和 `constriction` 与其他独立查询并行获取休眠前负荷，避免串行增加响应时间。
 
-- [ ] **Step 4: 验证完整分析和休眠前负荷测试**
+- [x] **Step 4: 验证完整分析和休眠前负荷测试**
 
 Run:
 
@@ -442,7 +442,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_energy_saving_tool.py -q
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交休眠前负荷闭环**
+- [x] **Step 5: 提交休眠前负荷闭环**
 
 ```bash
 git add app/tools/energy_saving_tool.py tests/test_energy_saving_tool.py
@@ -461,7 +461,7 @@ git commit -m "fix(energy): include pre-sleep load in full analysis"
 - Consumes: 扩展/收缩预计算行和 Task 5 的休眠前高 PRB 候选口径。
 - Produces: 正确的批量统计、完整汇总表和多工作表 Excel 下载地址。
 
-- [ ] **Step 1: 写批量总数和 Excel 失败测试**
+- [x] **Step 1: 写批量总数和 Excel 失败测试**
 
 ```python
 def test_batch_total_is_counted_before_issue_filtering():
@@ -493,7 +493,7 @@ def test_export_sheets_creates_named_worksheets(tmp_path, monkeypatch):
     assert url is not None
 ```
 
-- [ ] **Step 2: 运行并观察当前过滤后计数和导出接口缺失**
+- [x] **Step 2: 运行并观察当前过滤后计数和导出接口缺失**
 
 Run:
 
@@ -503,7 +503,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_batch_energy_tool.py tests/test_exp
 
 Expected: FAIL because `_compute_batch_stats`、`_count_noncompliant_cells`、`export_sheets_to_excel` 不存在。
 
-- [ ] **Step 3: 实现批量统计和多表导出**
+- [x] **Step 3: 实现批量统计和多表导出**
 
 `export_sheets_to_excel` 签名：
 
@@ -524,7 +524,7 @@ def export_sheets_to_excel(
 - `stats["param_noncompliant"]` 只统计非“合格/北向数据缺失/空值”的 CGI。
 - Excel 至少包含“小区汇总”“扩展明细”“收缩明细”“休眠前高负荷”工作表；无数据的明细表不创建。
 
-- [ ] **Step 4: 验证批量和导出测试**
+- [x] **Step 4: 验证批量和导出测试**
 
 Run:
 
@@ -534,7 +534,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_batch_energy_tool.py tests/test_exp
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交批量修正**
+- [x] **Step 5: 提交批量修正**
 
 ```bash
 git add app/tools/batch_energy_tool.py app/utils/export_util.py tests/test_batch_energy_tool.py tests/test_export_util.py
@@ -554,7 +554,7 @@ git commit -m "fix(energy): correct batch analysis statistics"
 - Consumes: Tasks 3-6 的返回字段。
 - Produces: V1.4 报告说明、稳定中文 Excel 列名和通过的工具 Schema contract。
 
-- [ ] **Step 1: 写提示词失败测试**
+- [x] **Step 1: 写提示词失败测试**
 
 ```python
 def test_single_cell_prompt_uses_precomputed_v14_evidence():
@@ -566,7 +566,7 @@ def test_single_cell_prompt_uses_precomputed_v14_evidence():
     assert "休眠时长低于60秒" not in prompt
 ```
 
-- [ ] **Step 2: 运行并观察旧口径失败**
+- [x] **Step 2: 运行并观察旧口径失败**
 
 Run:
 
@@ -576,7 +576,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_energy_prompt.py -v
 
 Expected: FAIL，因为提示词仍写旧阈值且未引用新增字段。
 
-- [ ] **Step 3: 更新提示词和列名映射**
+- [x] **Step 3: 更新提示词和列名映射**
 
 `DEFAULT_COLUMN_MAPPING` 增加：
 
@@ -606,7 +606,7 @@ Expected: FAIL，因为提示词仍写旧阈值且未引用新增字段。
 
 提示词说明结果来自数据库预计算字段，并要求完整分析输出连续部署和收缩证据。
 
-- [ ] **Step 4: 验证提示词、导出和 Schema contract**
+- [x] **Step 4: 验证提示词、导出和 Schema contract**
 
 Run:
 
@@ -616,7 +616,7 @@ env PYTHONPATH=. .venv/bin/pytest tests/test_energy_prompt.py tests/test_export_
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交展示契约**
+- [x] **Step 5: 提交展示契约**
 
 ```bash
 git add app/prompts/energy_saving.py app/utils/export_util.py tests/test_energy_prompt.py tests/test_export_util.py tests/test_agent_toolkit.py tests/fixtures/tool_schemas.json
@@ -633,7 +633,7 @@ git commit -m "feat(energy): expose v1.4 evidence in reports"
 - Consumes: Tasks 1-7 的全部提交。
 - Produces: 可审查、可推送、可集成到 `main` 的分支。
 
-- [ ] **Step 1: 运行目标测试**
+- [x] **Step 1: 运行目标测试**
 
 ```bash
 env PYTHONPATH=. .venv/bin/pytest \
@@ -647,7 +647,7 @@ env PYTHONPATH=. .venv/bin/pytest \
 
 Expected: PASS with zero failures。
 
-- [ ] **Step 2: 运行全套测试**
+- [x] **Step 2: 运行全套测试**
 
 ```bash
 env PYTHONPATH=. .venv/bin/pytest -q
@@ -655,7 +655,7 @@ env PYTHONPATH=. .venv/bin/pytest -q
 
 Expected: 所有非 live 测试通过；live 测试按现有环境条件 skip，不得新增 warning 或 failure。
 
-- [ ] **Step 3: 运行静态和差异检查**
+- [x] **Step 3: 运行静态和差异检查**
 
 ```bash
 .venv/bin/python -m compileall -q app tests
@@ -665,15 +665,15 @@ git status --short --branch
 
 Expected: compileall 和 diff check 退出码 0；工作区只包含预期的计划勾选更新。
 
-- [ ] **Step 4: 使用 requesting-code-review 做独立评审**
+- [x] **Step 4: 使用 requesting-code-review 做独立评审**
 
 重点检查 SQL 参数绑定、集合查询次数、缺失关系保留策略、Excel 完整性、提示词字段名和向后兼容返回键。
 
-- [ ] **Step 5: 修复评审问题并重新运行 Steps 1-3**
+- [x] **Step 5: 修复评审问题并重新运行 Steps 1-3**
 
 任何生产修改都必须先新增能复现问题的失败测试，再实施修复。
 
-- [ ] **Step 6: 提交计划收口**
+- [x] **Step 6: 提交计划收口**
 
 ```bash
 git add docs/superpowers/plans/2026-08-17-v14-energy-table-integration.md
