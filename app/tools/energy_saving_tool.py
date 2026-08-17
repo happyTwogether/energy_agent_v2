@@ -47,6 +47,10 @@ def _build_md_table(headers: list[str], rows: list[str], empty_msg: str = "暂�
     return header_line + "\n" + sep_line + "\n" + "\n".join(rows)
 
 
+def _needs_pre_sleep_load(analysis_target: str) -> bool:
+    return analysis_target in {"all", "constriction", "pre_sleep_load"}
+
+
 # pre_sleep_load 统计天数
 PRE_SLEEP_LOAD_DAYS: int = 7
 # PRB 利用率高负荷阈值（%）
@@ -108,10 +112,10 @@ async def analyze_single_cell_energy(
     need_expansion = analysis_target in ("all", "expansion")
     need_constriction = analysis_target in ("all", "constriction")
     need_load = analysis_target in ("all", "load")
-    need_pre_sleep_load = analysis_target == "pre_sleep_load"
+    need_pre_sleep_load = _needs_pre_sleep_load(analysis_target)
 
     # ── Step 1: 确定查询日期（始终先查 DB 最新日期，用户日期超出时自动兜底）──
-    if need_pre_sleep_load:
+    if analysis_target == "pre_sleep_load":
         latest_sql = text(f"""
             SELECT MAX(stat_time) as max_date
             FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
@@ -186,6 +190,10 @@ async def analyze_single_cell_energy(
         tasks.append(_query_constriction_data(cgi, query_date))
         task_names.append("constriction")
 
+    if need_pre_sleep_load:
+        tasks.append(_query_pre_sleep_load_data(cgi, query_date))
+        task_names.append("pre_sleep_load")
+
     # 参数核查也加入并行（扩展分析需要）
     if need_expansion:
         async def _query_param_check_with_session():
@@ -255,10 +263,17 @@ async def analyze_single_cell_energy(
             _fill_base_info(result, load_info, cgi)
 
     # ── Step 5: 休眠生效前负荷偏高分析 ──
-    if need_pre_sleep_load:
-        pre_sleep_result = await _query_pre_sleep_load_data(cgi, query_date)
+    if "pre_sleep_load" in results_map:
+        pre_sleep_result = results_map["pre_sleep_load"]
         result["pre_sleep_load_table"] = pre_sleep_result["table"]
         result["high_prb_days_7d"] = pre_sleep_result.get("high_prb_days_7d", 0)
+        pre_sleep_data, pre_sleep_meta = truncate_and_export(
+            pre_sleep_result["data"],
+            prefix="single_cell_pre_sleep_load",
+        )
+        result["pre_sleep_load_data"] = pre_sleep_data
+        for key, value in pre_sleep_meta.items():
+            result[f"pre_sleep_load_{key}"] = value
         # 基础信息
         if "cell_name" not in result:
             _fill_base_info(result, pre_sleep_result, cgi)
@@ -631,6 +646,24 @@ def _check_is_pre_sleep_hour(prb_hour: int | None, sleep_hour: str | None) -> bo
         return False
 
 
+def _count_high_pre_sleep_days(rows: list[dict[str, Any]]) -> int:
+    """按日期去重统计真正休眠前一小时的高 PRB 候选行。"""
+    high_dates = set()
+    for row in rows:
+        prb_rate = max(
+            row.get("prb_rate_ul") or 0,
+            row.get("prb_rate_dl") or 0,
+        )
+        if prb_rate <= PRB_HIGH_LOAD_THRESHOLD:
+            continue
+        if not _check_is_pre_sleep_hour(row.get("prb_hour"), row.get("sleep_hour")):
+            continue
+        stat_time = ensure_datetime(row.get("stat_time"))
+        if stat_time:
+            high_dates.add(stat_time.date())
+    return len(high_dates)
+
+
 async def _query_pre_sleep_load_data(
     cgi: str,
     stat_time: datetime,
@@ -672,7 +705,7 @@ async def _query_pre_sleep_load_data(
     """)
 
     stat_sql = text(f"""
-        SELECT COUNT(DISTINCT DATE(stat_time)) AS high_prb_days
+        SELECT stat_time, prb_hour, sleep_hour, prb_rate_ul, prb_rate_dl
         FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
         WHERE cgi = :cgi
           AND stat_time >= :start_date
@@ -689,7 +722,7 @@ async def _query_pre_sleep_load_data(
             "prb_threshold": PRB_HIGH_LOAD_THRESHOLD,
         }),
     )
-    high_prb_days = stat_rows[0]["high_prb_days"] if stat_rows else 0
+    high_prb_days = _count_high_pre_sleep_days(stat_rows)
 
     # 构建表格数据
     data: list[dict[str, Any]] = []

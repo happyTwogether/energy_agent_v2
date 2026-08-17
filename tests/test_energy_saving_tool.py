@@ -110,6 +110,137 @@ async def test_single_cell_response_exposes_expansion_raw_data(monkeypatch):
     assert result["expansion_is_truncated"] is False
 
 
+def test_pre_sleep_load_is_required_for_all_and_constriction():
+    """完整分析和收缩分析都必须形成休眠前负荷闭环。"""
+    assert energy_saving_tool._needs_pre_sleep_load("all") is True
+    assert energy_saving_tool._needs_pre_sleep_load("constriction") is True
+    assert energy_saving_tool._needs_pre_sleep_load("pre_sleep_load") is True
+    assert energy_saving_tool._needs_pre_sleep_load("expansion") is False
+
+
+def test_high_prb_days_only_counts_actual_pre_sleep_hours():
+    """同日重复命中只算一天，非休眠前小时即使高负荷也不计数。"""
+    rows = [
+        {
+            "stat_time": date(2026, 8, 9),
+            "prb_hour": 23,
+            "sleep_hour": "0",
+            "prb_rate_ul": 51.0,
+            "prb_rate_dl": 1.0,
+        },
+        {
+            "stat_time": date(2026, 8, 9),
+            "prb_hour": 22,
+            "sleep_hour": "0",
+            "prb_rate_ul": 90.0,
+            "prb_rate_dl": 1.0,
+        },
+        {
+            "stat_time": datetime(2026, 8, 9, 12),
+            "prb_hour": 23,
+            "sleep_hour": "0",
+            "prb_rate_ul": 60.0,
+            "prb_rate_dl": 1.0,
+        },
+    ]
+
+    assert energy_saving_tool._count_high_pre_sleep_days(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_pre_sleep_query_counts_candidate_rows_in_python(monkeypatch):
+    """七日 SQL 有闭区间和阈值，实际休眠前关系在 Python 中判定。"""
+    queries: list[str] = []
+
+    async def fake_fetch_rows(sql, params):
+        query = str(sql)
+        queries.append(query)
+        if "ORDER BY stat_time, prb_hour" in query:
+            return []
+        assert "COUNT(" not in query
+        assert "stat_time >= :start_date" in query
+        assert "stat_time <= :end_date" in query
+        assert "prb_rate_ul > :prb_threshold" in query
+        return [
+            {
+                "stat_time": date(2026, 8, 9),
+                "prb_hour": 23,
+                "sleep_hour": "0",
+                "prb_rate_ul": 51.0,
+                "prb_rate_dl": 1.0,
+            },
+            {
+                "stat_time": date(2026, 8, 8),
+                "prb_hour": 22,
+                "sleep_hour": "0",
+                "prb_rate_ul": 90.0,
+                "prb_rate_dl": 1.0,
+            },
+        ]
+
+    monkeypatch.setattr(energy_saving_tool, "fetch_rows", fake_fetch_rows)
+
+    result = await energy_saving_tool._query_pre_sleep_load_data(
+        "main",
+        datetime(2026, 8, 10),
+    )
+
+    assert len(queries) == 2
+    assert result["high_prb_days_7d"] == 1
+
+
+@pytest.mark.asyncio
+async def test_all_response_includes_pre_sleep_load(monkeypatch):
+    """完整分析必须同时返回休眠前负荷原始结果。"""
+    async def fake_query_expansion(cgi, stat_time):
+        return {"data": [], "table": "扩展表", "cell_name": "测试小区"}
+
+    async def fake_query_constriction(cgi, stat_time):
+        return {"data": [], "table": "收缩表"}
+
+    async def fake_query_pre_sleep(cgi, stat_time):
+        return {
+            "data": [{"cgi": cgi, "is_pre_sleep_hour": "是"}],
+            "table": "休眠前负荷表",
+            "high_prb_days_7d": 1,
+        }
+
+    async def fake_param_check(db, cgi, stat_time):
+        return {"is_compliant": True, "unqualified_count": 0}
+
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_query_expansion_data",
+        fake_query_expansion,
+    )
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_query_constriction_data",
+        fake_query_constriction,
+    )
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_query_pre_sleep_load_data",
+        fake_query_pre_sleep,
+    )
+    monkeypatch.setattr(energy_saving_tool, "_query_param_check", fake_param_check)
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "get_session_factory",
+        lambda: _SessionContext,
+    )
+
+    result = await energy_saving_tool.analyze_single_cell_energy(
+        analysis_target="all",
+        db=_LatestDateSession(),
+        cgi="main",
+    )
+
+    assert result["pre_sleep_load_table"] == "休眠前负荷表"
+    assert result["pre_sleep_load_data"][0]["is_pre_sleep_hour"] == "是"
+    assert result["high_prb_days_7d"] == 1
+
+
 @pytest.mark.asyncio
 async def test_query_constriction_enriches_relation_without_dropping_ten(
     monkeypatch,
