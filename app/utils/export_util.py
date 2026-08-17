@@ -82,6 +82,8 @@ DEFAULT_COLUMN_MAPPING = {
     "around_cgi": "邻区CGI",
     "around_cgi_cell_name": "邻区名称",
     "around_cgi_network_type": "邻区网络制式",
+    "around_network_type": "邻区网络制式(归一化)",
+    "site_type": "主小区原始站型",
     "self_prb_rate_ul_before": "主小区休眠前上行PRB利用率",
     "self_prb_rate_dl_before": "主小区休眠前下行PRB利用率",
     "self_sleep_duration": "主小区深度+超级休眠时长(秒)",

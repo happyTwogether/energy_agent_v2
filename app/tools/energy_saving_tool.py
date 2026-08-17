@@ -7,19 +7,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.services.cell_resolver import (
-    LTE_PARAMETER_TABLE,
-    NR_PARAMETER_TABLE,
-    resolve_cell_identifier,
-)
+from app.services.cell_resolver import resolve_cell_identifier
 from app.services.database import get_session_factory
 from app.services.energy_analysis import (
-    NetworkType,
     build_expansion_record,
+    collect_site_type_cgis,
     enrich_constriction_records,
     is_pre_sleep_hour,
-    normalize_network_type,
 )
+from app.services.energy_evidence import query_neighbor_relations, query_site_types
 from app.utils.cell_lookup import resolution_error_response
 from app.utils.export_util import truncate_and_export
 from app.utils.sql_helpers import ensure_datetime, error_response, fetch_rows
@@ -370,18 +366,17 @@ async def _query_constriction_data(
         constriction_sql,
         {"cgi": cgi, "stat_time": stat_time},
     )
-    around_cgis = {
-        str(row["around_cgi"])
+    relation_pairs = {
+        (str(row.get("cgi") or ""), str(row.get("around_cgi") or ""))
         for row in constriction_rows
-        if row.get("around_cgi")
+        if row.get("cgi") and row.get("around_cgi")
     }
-    relation_by_pair = await _query_neighbor_relations(cgi, around_cgis)
-    nr_cgis, lte_cgis = _group_site_type_queries(
-        cgi,
+    relation_by_pair = await query_neighbor_relations(relation_pairs, fetch_rows)
+    nr_cgis, lte_cgis = collect_site_type_cgis(
         constriction_rows,
         relation_by_pair,
     )
-    site_type_by_cell = await _query_site_types(nr_cgis, lte_cgis)
+    site_type_by_cell = await query_site_types(nr_cgis, lte_cgis, fetch_rows)
     constriction_data = enrich_constriction_records(
         constriction_rows,
         relation_by_pair,
@@ -422,76 +417,6 @@ async def _query_constriction_data(
         "county_name": first_row.get("county_name"),
         "prod_name": first_row.get("prod_name"),
     }
-
-
-async def _query_neighbor_relations(
-    cgi: str,
-    around_cgis: set[str],
-) -> dict[tuple[str, str], dict[str, Any]]:
-    if not around_cgis:
-        return {}
-    sql = text(f"""
-        SELECT cgi, around_cgi, around_cgi_network_type, distance
-        FROM {DB_SCHEMA_AGENT}.jd_cell_around
-        WHERE cgi = :cgi AND around_cgi = ANY(:around_cgis)
-    """)
-    rows = await fetch_rows(sql, {"cgi": cgi, "around_cgis": list(around_cgis)})
-    return {(str(row["cgi"]), str(row["around_cgi"])): row for row in rows}
-
-
-def _group_site_type_queries(
-    main_cgi: str,
-    rows: list[dict[str, Any]],
-    relation_by_pair: dict[tuple[str, str], dict[str, Any]],
-) -> tuple[set[str], set[str]]:
-    nr_cgis = (
-        {main_cgi}
-        if any(not row.get("site_type") for row in rows)
-        else set()
-    )
-    lte_cgis: set[str] = set()
-    for row in rows:
-        around_cgi = str(row.get("around_cgi") or "")
-        relation = relation_by_pair.get((main_cgi, around_cgi), {})
-        network = normalize_network_type(
-            row.get("around_cgi_network_type")
-            or relation.get("around_cgi_network_type"),
-        )
-        if network == "5G" and around_cgi:
-            nr_cgis.add(around_cgi)
-        elif network == "4G" and around_cgi:
-            lte_cgis.add(around_cgi)
-    return nr_cgis, lte_cgis
-
-
-async def _query_site_types(
-    nr_cgis: set[str],
-    lte_cgis: set[str],
-) -> dict[tuple[NetworkType, str], str]:
-    tasks = []
-    networks: list[NetworkType] = []
-    for network, table, cgis in (
-        ("5G", NR_PARAMETER_TABLE, nr_cgis),
-        ("4G", LTE_PARAMETER_TABLE, lte_cgis),
-    ):
-        if not cgis:
-            continue
-        sql = text(f"""
-            SELECT cgi, site_type
-            FROM {table}
-            WHERE cgi = ANY(:cgis)
-              AND data_date = (SELECT MAX(data_date) FROM {table})
-        """)
-        tasks.append(fetch_rows(sql, {"cgis": list(cgis)}))
-        networks.append(network)
-
-    grouped_rows = await asyncio.gather(*tasks) if tasks else []
-    result: dict[tuple[NetworkType, str], str] = {}
-    for network, rows in zip(networks, grouped_rows):
-        for row in rows:
-            if row.get("cgi") and row.get("site_type"):
-                result[(network, str(row["cgi"]))] = str(row["site_type"])
-    return result
 
 
 def _format_prb(ul: Any, dl: Any) -> str:

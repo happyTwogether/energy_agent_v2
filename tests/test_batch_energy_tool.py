@@ -97,7 +97,29 @@ async def test_batch_analysis_exports_complete_v14_sheets(monkeypatch):
         if "jd_cell_constriction_day" in query:
             assert "self_sleep_duration" in query
             assert "prb_increase" in query
-            return [{"cgi": "b", "hours": 0, "prb_increase": 10.0}]
+            return [
+                {
+                    "cgi": "b",
+                    "around_cgi": "neighbor",
+                    "around_cgi_network_type": "lte",
+                    "site_type": None,
+                    "hours": 0,
+                    "prb_increase": 10.0,
+                }
+            ]
+        if "jd_cell_around" in query:
+            return [
+                {
+                    "cgi": "b",
+                    "around_cgi": "neighbor",
+                    "around_cgi_network_type": "lte",
+                    "distance": 80.0,
+                }
+            ]
+        if "nr_fix_prm" in query:
+            return [{"cgi": "b", "site_type": "室分"}]
+        if "lte_fix_prm" in query:
+            return [{"cgi": "neighbor", "site_type": "宏站"}]
         if "jd_cell_pre_hour_busy" in query:
             assert "cgi = ANY(:cgis)" in query
             assert "stat_time <= :end_date" in query
@@ -147,4 +169,7 @@ async def test_batch_analysis_exports_complete_v14_sheets(monkeypatch):
     assert result["stats"]["param_noncompliant"] == 1
     assert len(captured_sheets["小区汇总"]) == 2
     assert captured_sheets["收缩明细"][0]["prb_increase"] == 10.0
+    assert captured_sheets["收缩明细"][0]["distance"] == 80.0
+    assert captured_sheets["收缩明细"][0]["main_site_type"] == "室分"
+    assert captured_sheets["收缩明细"][0]["around_site_type"] == "宏站"
     assert len(captured_sheets["休眠前高负荷"]) == 1

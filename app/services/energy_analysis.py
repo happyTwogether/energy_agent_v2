@@ -87,6 +87,30 @@ def is_pre_sleep_hour(prb_hour: int | None, sleep_hour: str | None) -> bool:
     return prb_hour in {(hour - 1) % 24 for hour in sleep_hours}
 
 
+def collect_site_type_cgis(
+    rows: list[dict[str, Any]],
+    relation_by_pair: dict[tuple[str, str], dict[str, Any]],
+) -> tuple[set[str], set[str]]:
+    """按网络收集需要补齐站型的主小区和邻区 CGI。"""
+    nr_cgis: set[str] = set()
+    lte_cgis: set[str] = set()
+    for row in rows:
+        main_cgi = str(row.get("cgi") or "")
+        around_cgi = str(row.get("around_cgi") or "")
+        if main_cgi and not row.get("site_type"):
+            nr_cgis.add(main_cgi)
+        relation = relation_by_pair.get((main_cgi, around_cgi), {})
+        network = normalize_network_type(
+            row.get("around_cgi_network_type")
+            or relation.get("around_cgi_network_type"),
+        )
+        if network == "5G" and around_cgi:
+            nr_cgis.add(around_cgi)
+        elif network == "4G" and around_cgi:
+            lte_cgis.add(around_cgi)
+    return nr_cgis, lte_cgis
+
+
 def _site_type(
     network: NetworkType | None,
     cgi: str,

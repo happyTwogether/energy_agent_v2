@@ -7,7 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.services.energy_analysis import is_pre_sleep_hour
+from app.services.energy_analysis import (
+    collect_site_type_cgis,
+    enrich_constriction_records,
+    is_pre_sleep_hour,
+)
+from app.services.energy_evidence import query_neighbor_relations, query_site_types
 from app.utils.export_util import export_sheets_to_excel
 from app.utils.sql_helpers import (
     ensure_datetime,
@@ -145,7 +150,7 @@ async def _do_analyze(
         bind_params["prod_name"] = prod_name
     where_sql = " AND ".join(where_clauses)
 
-    # ── 3. 并行查询三张表 ──
+    # ── 3. 并行查询扩展、收缩预计算表 ──
     expansion_sql = text(f"""
         SELECT cgi, cell_name, gnb_name, dist_name, county_name, prod_name,
                is_highload, saving_switch_state, is_whitelist, reason,
@@ -189,7 +194,7 @@ async def _do_analyze(
     constriction_rows: list[dict[str, Any]] = []
     pre_sleep_rows: list[dict[str, Any]] = []
     if need_constriction:
-        constriction_rows = gathered[1]
+        constriction_rows = await _enrich_batch_constriction_rows(gathered[1])
         for row in constriction_rows:
             cgi = row["cgi"]
             all_cgis.add(cgi)
@@ -305,6 +310,24 @@ async def _query_pre_sleep_rows(
         for row in rows
         if is_pre_sleep_hour(row.get("prb_hour"), row.get("sleep_hour"))
     ]
+
+
+async def _enrich_batch_constriction_rows(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    relation_pairs = {
+        (str(row.get("cgi") or ""), str(row.get("around_cgi") or ""))
+        for row in rows
+        if row.get("cgi") and row.get("around_cgi")
+    }
+    relation_by_pair = await query_neighbor_relations(relation_pairs, fetch_rows)
+    nr_cgis, lte_cgis = collect_site_type_cgis(rows, relation_by_pair)
+    site_type_by_cell = await query_site_types(nr_cgis, lte_cgis, fetch_rows)
+    return enrich_constriction_records(
+        rows,
+        relation_by_pair,
+        site_type_by_cell,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════

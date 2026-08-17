@@ -2,6 +2,7 @@
 
 from app.services.energy_analysis import (
     build_expansion_record,
+    collect_site_type_cgis,
     enrich_constriction_records,
     evaluate_neighbor_relation,
     neighbor_policy,
@@ -39,6 +40,31 @@ def test_network_type_normalization_covers_database_values():
     assert normalize_network_type("4G") == "4G"
     assert normalize_network_type("5g") == "5G"
     assert normalize_network_type(None) is None
+
+
+def test_site_type_cgis_are_grouped_for_batch_queries():
+    rows = [
+        {
+            "cgi": "main-a",
+            "around_cgi": "nr-neighbor",
+            "site_type": None,
+            "around_cgi_network_type": "nr",
+        },
+        {
+            "cgi": "main-b",
+            "around_cgi": "lte-neighbor",
+            "site_type": "宏站",
+            "around_cgi_network_type": None,
+        },
+    ]
+    relation_by_pair = {
+        ("main-b", "lte-neighbor"): {"around_cgi_network_type": "lte"},
+    }
+
+    nr_cgis, lte_cgis = collect_site_type_cgis(rows, relation_by_pair)
+
+    assert nr_cgis == {"main-a", "nr-neighbor"}
+    assert lte_cgis == {"lte-neighbor"}
 
 
 def test_neighbor_policies_match_confirmed_site_rules():

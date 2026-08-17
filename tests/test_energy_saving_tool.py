@@ -276,7 +276,7 @@ async def test_query_constriction_enriches_relation_without_dropping_ten(
                 {**base_row, "around_cgi": "neighbor-2", "prb_increase": 11.0},
             ]
         if "jd_cell_around" in query:
-            assert "ANY(:around_cgis)" in query
+            assert "unnest(" in query
             return [
                 {
                     "cgi": "main",
