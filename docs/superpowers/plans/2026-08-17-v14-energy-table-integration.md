@@ -680,6 +680,6 @@ git add docs/superpowers/plans/2026-08-17-v14-energy-table-integration.md
 git commit -m "docs(energy): complete v1.4 implementation plan"
 ```
 
-- [ ] **Step 7: 使用 finishing-a-development-branch 选择集成方式**
+- [x] **Step 7: 使用 finishing-a-development-branch 选择集成方式**
 
 用户已要求最终合并到 `main` 时，先确认最新远程 `main`，将分支变基到最新 `origin/main`，重新运行 Steps 1-3，再执行非交互式合并与推送；不得把 Durable A2A 分支的 16 个架构提交一并带入。
