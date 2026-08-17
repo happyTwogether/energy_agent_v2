@@ -134,9 +134,10 @@ SYNTHESIS_SINGLE_CELL = _SYNTHESIS_IDENTITY + """\
 
 **输出模块**（根据 analysis_target 决定，章节编号动态调整）：
 - expansion → 「概览结论」+「一、节能扩展」+「二、特殊情况备注」
-- constriction → 「概览结论」+「一、节能收缩」+「二、特殊情况备注」
+- constriction → 「概览结论」+「一、节能收缩」+「二、休眠前负荷」+「三、特殊情况备注」
+- pre_sleep_load → 「概览结论」+「一、休眠前负荷」
 - load → 仅「概览结论（仅高负荷）」
-- all → 「概览结论」+「一、节能扩展」+「二、节能收缩」+「三、特殊情况备注」
+- all → 「概览结论」+「一、节能扩展」+「二、节能收缩」+「三、休眠前负荷」+「四、特殊情况备注」
 
 ### 扩展分析章节输出规则：
 **容量与风险说明**：根据 high_load_type 字段说明高负荷状态。
@@ -144,19 +145,21 @@ SYNTHESIS_SINGLE_CELL = _SYNTHESIS_IDENTITY + """\
 - `下高`：该小区存在下行高负荷，建议优先进行下行负荷压降处理后再考虑扩展节能时段
 - `双高`：该小区存在双向高负荷（上行和下行均高），建议优先进行负荷压降处理后再考虑扩展节能时段
 - `否`：该小区当前非高负荷状态，可正常进行节能扩展分析）
-**低业务时段与0休眠匹配表**：使用工具返回的 expansion_table，若expansion_table表没有数据，则返回该小区不存在低业务与0休眠匹配时段。
-**说明**：
-- 低业务占比 > 90% 时判定为低业务时段
-- 休眠时长 < 60秒 视为接近0休眠
-- 同时满足低业务和0休眠条件时，建议扩展节能时间
+**V1.4 预计算扩展结果**：使用工具返回的 `expansion_table` 和 `expansion_data`。数据库预计算字段是结论源，不得重新计算或覆盖。
+- 展示含扩展时段结果：`hour_filter`、`hour_int`、`deploy_hours`、`deploy_hours_continuous`。
+- 展示仅夜间常规时段结果：`hour_filter_early`、`hour_int_early`、`deploy_hours_early`、`deploy_hours_continuous_early`。
+- `hour_detail` 只作为小时级证据；若无结果，说明该小区暂无数据库预计算扩展建议。
 **参数核查结论**：
 - 若合规：✅ 各项节能参数均符合规范，要点说明如下：……，
 - 若不合规：输出不合规项表格。
 
 ### 收缩分析章节输出规则：
-**周边200米关联小区负荷偏高影响判断**：简述分析方法：室分小区取100米范围，宏站小区取200米范围内4/5G关联小区；若在休眠生效时段内关联小区PRB上行或下行利用率>=50%，则判定为需收缩时段。 
-- 需收缩的节能时间点表**：使用工具返回的 constriction_table。若无数据，返回该小区暂无需收缩的节能时间点
-- 调整后的建议节能时间节点**：给出最终建议生效时间段。
+**V1.4 预计算收缩证据**：使用 `constriction_table` 和 `constriction_data`，不得在报告阶段按抬升量再次过滤；`prb_increase=10.0` 也必须保留。
+- 展示 `self_prb_rate_ul_before`、`self_prb_rate_dl_before`、`self_sleep_duration`。
+- 展示邻区 `prb_rate_ul_before`、`prb_rate_dl_before`、`prb_rate_ul`、`prb_rate_dl` 和 `prb_increase`。
+- 展示 `distance`、`main_site_type`、`around_site_type`、`relation_status`；关系信息缺失时明确说明，不得伪造。
+- 站型范围：宏站主小区为200米内宏站邻区，室分主小区为100米内宏站或室分邻区，微站主小区按200米且不额外限制邻区站型。
+- 若无 `constriction_data`，说明该小区暂无数据库预计算收缩建议。
 **休眠生效前负荷偏高分析**：输出 PRB 利用率表和 7 天内高负荷天数，若无数据，返回该小区休眠生效前负荷均正常。
 - 分析建议**：若 7 天内休眠前 1 小时 PRB>50% 的天数 >=3 天，建议收缩。
 
@@ -164,11 +167,13 @@ SYNTHESIS_SINGLE_CELL = _SYNTHESIS_IDENTITY + """\
 **节电白名单匹配情况**：输出白名单原因、生效时间段、风险提示。
 
 ### 分项查询格式（用户仅查询单一分项时使用）：
-- 休眠扩展：输出低业务/休眠时长表
-- 休眠收缩：输出触发收缩原因表
+- 休眠扩展：输出数据库预计算的两组扩展时段和连续部署时段
+- 休眠收缩：输出主小区、邻区 PRB、抬升量、距离和双方站型证据
 - 休眠前高负荷：输出 PRB 利用率表
 - 参数合规：输出合规/不合规检查结果
-- 业务负荷：输出高负荷状态"""
+- 业务负荷：输出高负荷状态
+
+若 `expansion_is_truncated`、`constriction_is_truncated` 或 `pre_sleep_load_is_truncated` 为 true，说明聊天仅展示部分数据，并原样提供对应的 `*_download_url`。"""
 
 SYNTHESIS_BATCH_CELLS = _SYNTHESIS_IDENTITY + """\
 ## 你的任务
@@ -181,10 +186,14 @@ SYNTHESIS_BATCH_CELLS = _SYNTHESIS_IDENTITY + """\
 - 总计分析小区数量 **{{x}}** 个。
 - 其中 **{{x}}** 个需要进行高负荷压降。
 - **{{x}}** 个可进行休眠时间扩展。
+- 根据 `stats.param_noncompliant` 输出节能参数不合规小区数。
 - **{{x}}** 个休眠对周边邻近小区造成高负荷压力，需收缩节能时间段。
+- 根据 `stats.high_sleep_count` 输出休眠前七日存在高负荷的小区数。
 - **{{x}}** 个存在特殊情况白名单，需注意修改风险。
 
 📥 [点击此处下载完整批量分析 Excel 报告]({{download_url 来自工具返回}})
+
+完整 Excel 包含“小区汇总、扩展明细、收缩明细、休眠前高负荷”四个工作表（无数据的明细表会省略）。总计数量使用 `stats.total`，不得改成问题清单数量。
 
 **⚠️ 此工具会生成真实 Excel 文件，download_url 必须来自工具返回，绝不能编造。**"""
 

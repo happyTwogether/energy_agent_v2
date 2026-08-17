@@ -30,3 +30,12 @@ def test_export_sheets_creates_named_worksheets(tmp_path, monkeypatch):
     assert '"low_flow_pct": 90.0' in workbook["扩展明细"]["B2"].value
     assert workbook["收缩明细"]["B2"].value == 10.0
     assert url is not None
+
+
+def test_v14_fields_have_stable_chinese_column_names():
+    mapping = export_util.DEFAULT_COLUMN_MAPPING
+
+    assert mapping["deploy_hours_continuous"] == "含已休眠连续部署时段(含扩展时段)"
+    assert mapping["prb_increase"] == "邻区PRB抬升量"
+    assert mapping["main_site_type"] == "主小区站型"
+    assert mapping["around_site_type"] == "邻区站型"
