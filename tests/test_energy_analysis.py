@@ -1,0 +1,133 @@
+"""V1.4 节电分析纯业务规则测试。"""
+
+from app.services.energy_analysis import (
+    build_expansion_record,
+    enrich_constriction_records,
+    evaluate_neighbor_relation,
+    neighbor_policy,
+    normalize_network_type,
+)
+
+
+def test_expansion_record_preserves_database_boundary_and_continuous_fields():
+    """防止应用重新过滤 90% 边界或丢失连续部署字段。"""
+    row = {
+        "cgi": "460-00-1-1",
+        "hour_detail": [{"hour": 22, "low_flow_pct": 90.0}],
+        "hour_filter": "22",
+        "hour_int": 1,
+        "hour_filter_early": None,
+        "hour_int_early": 0,
+        "deploy_hours": "22,23,0",
+        "deploy_hours_continuous": "22:00-00:59",
+        "deploy_hours_early": None,
+        "deploy_hours_continuous_early": None,
+    }
+
+    result = build_expansion_record(row)
+
+    assert result["hour_detail"][0]["low_flow_pct"] == 90.0
+    assert result["hour_filter"] == "22"
+    assert result["hour_int"] == 1
+    assert result["deploy_hours_continuous"] == "22:00-00:59"
+
+
+def test_network_type_normalization_covers_database_values():
+    """防止 lte/nr 数据库枚举无法路由到对应工参表。"""
+    assert normalize_network_type("lte") == "4G"
+    assert normalize_network_type("NR") == "5G"
+    assert normalize_network_type("4G") == "4G"
+    assert normalize_network_type("5g") == "5G"
+    assert normalize_network_type(None) is None
+
+
+def test_neighbor_policies_match_confirmed_site_rules():
+    """防止三类主小区采用错误距离或错误邻区站型范围。"""
+    assert neighbor_policy("宏站") == (200.0, frozenset({"宏站"}))
+    assert neighbor_policy("室分") == (100.0, frozenset({"宏站", "室分"}))
+    assert neighbor_policy("微站") == (200.0, None)
+
+
+def test_relation_evaluation_distinguishes_known_invalid_and_missing_evidence():
+    """防止把明确违规关系或缺失关系当成同一种情况。"""
+    assert evaluate_neighbor_relation("宏站", "宏站", 200.0) == "allowed"
+    assert evaluate_neighbor_relation("宏站", "室分", 80.0) == "site_type_mismatch"
+    assert evaluate_neighbor_relation("室分", "宏站", 100.1) == "out_of_range"
+    assert evaluate_neighbor_relation("微站", "室分", 200.0) == "allowed"
+    assert evaluate_neighbor_relation(None, "宏站", 50.0) == "missing"
+    assert evaluate_neighbor_relation("室分", None, 50.0) == "missing"
+    assert evaluate_neighbor_relation("室分", "宏站", None) == "missing"
+
+
+def test_prb_increase_equal_ten_is_preserved_and_enriched():
+    """防止应用层按严格大于 10 再次过滤数据库结果。"""
+    rows = [
+        {
+            "cgi": "main",
+            "around_cgi": "neighbor",
+            "site_type": None,
+            "around_cgi_network_type": "lte",
+            "prb_increase": 10.0,
+        },
+    ]
+    result = enrich_constriction_records(
+        rows,
+        relation_by_pair={
+            ("main", "neighbor"): {
+                "distance": 80.0,
+                "around_cgi_network_type": "lte",
+            },
+        },
+        site_type_by_cell={
+            ("5G", "main"): "室分",
+            ("4G", "neighbor"): "宏站",
+        },
+    )
+
+    assert result == [
+        {
+            **rows[0],
+            "around_network_type": "4G",
+            "distance": 80.0,
+            "main_site_type": "室分",
+            "around_site_type": "宏站",
+            "relation_status": "allowed",
+        },
+    ]
+
+
+def test_known_invalid_relations_are_removed_but_missing_evidence_is_retained():
+    """防止越界邻区进入结果，同时避免因关系数据缺失静默丢结果。"""
+    rows = [
+        {
+            "cgi": "indoor",
+            "around_cgi": "too-far",
+            "site_type": "室分",
+            "around_cgi_network_type": "nr",
+            "prb_increase": 12.0,
+        },
+        {
+            "cgi": "unknown",
+            "around_cgi": "missing",
+            "site_type": None,
+            "around_cgi_network_type": "lte",
+            "prb_increase": 15.0,
+        },
+    ]
+    result = enrich_constriction_records(
+        rows,
+        relation_by_pair={
+            ("indoor", "too-far"): {
+                "distance": 150.0,
+                "around_cgi_network_type": "nr",
+            },
+        },
+        site_type_by_cell={
+            ("5G", "indoor"): "室分",
+            ("5G", "too-far"): "宏站",
+        },
+    )
+
+    assert len(result) == 1
+    assert result[0]["cgi"] == "unknown"
+    assert result[0]["relation_status"] == "missing"
