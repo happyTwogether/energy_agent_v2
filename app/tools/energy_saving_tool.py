@@ -9,8 +9,10 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.cell_resolver import resolve_cell_identifier
 from app.services.database import get_session_factory
+from app.services.energy_analysis import build_expansion_record
 from app.utils.cell_lookup import resolution_error_response
-from app.utils.sql_helpers import ensure_datetime, error_response, fetch_rows, parse_list_field
+from app.utils.export_util import truncate_and_export
+from app.utils.sql_helpers import ensure_datetime, error_response, fetch_rows
 
 DB_SCHEMA_AGENT = get_settings().db_schema_agent
 
@@ -38,12 +40,6 @@ def _build_md_table(headers: list[str], rows: list[str], empty_msg: str = "暂�
 
 # 周边小区距离阈值（单位：米）
 AROUND_DISTANCE_THRESHOLD: float = 200.0
-# 低业务占比阈值（%）
-LOW_FLOW_PCT_THRESHOLD: float = 90.0
-# 零休眠判断阈值（秒）
-ZERO_SLEEP_THRESHOLD: int = 60
-# 休眠均值统计窗口（天）
-SLEEP_AVG_DAYS: int = 14
 # pre_sleep_load 统计天数
 PRE_SLEEP_LOAD_DAYS: int = 7
 # PRB 利用率高负荷阈值（%）
@@ -197,8 +193,14 @@ async def analyze_single_cell_energy(
     # 处理扩展分析结果
     if "expansion" in results_map:
         expansion_result = results_map["expansion"]
-        # 【优化】不再返回原始 expansion_data，只返回表格
         result["expansion_table"] = expansion_result["table"]
+        expansion_data, expansion_meta = truncate_and_export(
+            expansion_result["data"],
+            prefix="single_cell_expansion",
+        )
+        result["expansion_data"] = expansion_data
+        for key, value in expansion_meta.items():
+            result[f"expansion_{key}"] = value
         result["high_load_type"] = expansion_result.get("high_load_type", "否")
         # 参数核查结果（仅保留关键字段）
         param_check_raw = results_map.get("param_check", {"is_compliant": True})
@@ -263,131 +265,59 @@ async def _query_expansion_data(
     cgi: str,
     stat_time: datetime,
 ) -> dict[str, Any]:
-    """查询扩展分析数据。
-
-    数据来源：
-    - jd_cell_expansion_day: 低业务时段预计算结果
-    - jd_cell_detail_hour_nr: 休眠时长数据
-    """
-    # 并行查询：基础信息 + 休眠时长（各自独立 session）
+    """直接读取数据库预计算的 V1.4 扩展结果。"""
     expansion_sql = text(f"""
-        SELECT is_highload, jd_type, reason, starttime, endtime, is_whitelist,
-               cell_name, dist_name, county_name, prod_name, hour_detail
+        SELECT cgi, stat_time, is_highload, jd_type, reason, starttime, endtime,
+               is_whitelist, cell_name, dist_name, county_name, prod_name,
+               hour_detail, hour_filter, hour_int,
+               hour_filter_early, hour_int_early,
+               deploy_hours, deploy_hours_continuous,
+               deploy_hours_early, deploy_hours_continuous_early
         FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
         WHERE cgi = :cgi AND stat_time = :stat_time
     """)
+    rows = await fetch_rows(expansion_sql, {"cgi": cgi, "stat_time": stat_time})
+    expansion_data = [build_expansion_record(row) for row in rows]
+    base_row = expansion_data[0] if expansion_data else {}
 
-    night_hours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 22, 23]
-    start_date = stat_time - timedelta(days=SLEEP_AVG_DAYS)
-    sleep_sql = text(f"""
-        SELECT hours,
-               AVG(ee_shallowsleeptimerru + ee_deepsleeptimerru + ee_supersleeptimerru) as avg_sleep_sum
-        FROM {DB_SCHEMA_AGENT}.jd_cell_detail_hour_nr
-        WHERE cgi = :cgi
-          AND stat_time >= :start_date
-          AND stat_time <= :end_date
-          AND hours = ANY(:night_hours)
-        GROUP BY hours
-        ORDER BY hours
-    """)
-
-    base_rows, sleep_rows = await asyncio.gather(
-        fetch_rows(expansion_sql, {"cgi": cgi, "stat_time": stat_time}),
-        fetch_rows(sleep_sql, {
-            "cgi": cgi, "start_date": start_date, "end_date": stat_time, "night_hours": night_hours
-        }),
-    )
-    base_row = base_rows[0] if base_rows else None
-
-    high_load_type = "否"
-    jd_type = None
-    reason = None
-    starttime = None
-    endtime = None
-    is_whitelist = False
-    cell_name = None
-    dist_name = None
-    county_name = None
-    prod_name = None
-    hour_detail = []
-
-    if base_row:
-        is_highload_raw = base_row.get("is_highload") or "否"
-        high_load_type = is_highload_raw
-        jd_type = base_row.get("jd_type")
-        reason = base_row.get("reason")
-        starttime = base_row.get("starttime")
-        endtime = base_row.get("endtime")
-        is_whitelist = bool(base_row.get("is_whitelist"))
-        cell_name = base_row.get("cell_name")
-        dist_name = base_row.get("dist_name")
-        county_name = base_row.get("county_name")
-        prod_name = base_row.get("prod_name")
-        hour_detail = _parse_hour_detail(base_row.get("hour_detail"))
-
-    # 构建休眠时长映射
-    sleep_map: dict[int, float] = {row["hours"]: row["avg_sleep_sum"] or 0 for row in sleep_rows}
-
-    # 从 hour_detail 生成表格数据，合并休眠时长
-    expansion_data: list[dict[str, Any]] = []
-
-    for item in hour_detail:
-        hour = item.get("hour")
-        low_flow_pct = item.get("low_flow_pct", 0)
-
-        # 低业务判断
-        is_low_business = low_flow_pct > LOW_FLOW_PCT_THRESHOLD
-
-        # 休眠时长（秒）
-        avg_sleep_sum = sleep_map.get(hour, 0)
-        is_zero_sleep = avg_sleep_sum < ZERO_SLEEP_THRESHOLD
-
-        # 扩展建议
-        if is_low_business and is_zero_sleep:
-            suggestion = "可扩展"
-        elif not is_low_business:
-            suggestion = "不建议（非低业务）"
-        else:
-            suggestion = "不建议（已有休眠）"
-
-        expansion_data.append({
-            "hour": hour,
-            "low_flow_pct": low_flow_pct,
-            "is_low_business": is_low_business,
-            "avg_sleep_seconds": round(avg_sleep_sum, 0),
-            "avg_sleep_display": _format_sleep_duration(int(avg_sleep_sum)),
-            "is_zero_sleep": is_zero_sleep,
-            "suggestion": suggestion,
-        })
-
-    # 生成表格
-    table_rows = []
-    for item in expansion_data:
-        table_rows.append(
-            f"| {item['hour']:02d}:00 | {'是' if item['is_low_business'] else '否'} | "
-            f"{item['low_flow_pct']:.1f}% | {item['avg_sleep_display']} | "
-            f"{'是' if item['is_zero_sleep'] else '否'} | {item['suggestion']} |"
-        )
-
+    table_rows = [
+        "| "
+        f"{row.get('hour_filter') or '—'} | {row.get('hour_int') or 0} | "
+        f"{row.get('deploy_hours_continuous') or '—'} | "
+        f"{row.get('hour_filter_early') or '—'} | "
+        f"{row.get('hour_int_early') or 0} | "
+        f"{row.get('deploy_hours_continuous_early') or '—'} |"
+        for row in expansion_data
+    ]
     table_md = _build_md_table(
-        headers=["时间点(时)", "是否低业务", "低业务占比", f"休眠时长({SLEEP_AVG_DAYS}天均值)", "是否0休眠", "扩展建议"],
+        headers=[
+            "可扩展时段(含扩展)",
+            "数量",
+            "连续部署时段(含扩展)",
+            "可扩展时段(常规)",
+            "常规数量",
+            "连续部署时段(常规)",
+        ],
         rows=table_rows,
     )
+
+    starttime = ensure_datetime(base_row.get("starttime"))
+    endtime = ensure_datetime(base_row.get("endtime"))
 
     return {
         "data": expansion_data,
         "table": table_md,
-        "high_load_type": high_load_type,
-        "jd_type": jd_type,
-        "reason": reason,
+        "high_load_type": base_row.get("is_highload") or "否",
+        "jd_type": base_row.get("jd_type"),
+        "reason": base_row.get("reason"),
         "starttime": starttime.strftime("%Y-%m-%d") if starttime else None,
         "endtime": endtime.strftime("%Y-%m-%d") if endtime else None,
-        "is_whitelist": is_whitelist,
+        "is_whitelist": bool(base_row.get("is_whitelist")),
         # 基础信息
-        "cell_name": cell_name,
-        "dist_name": dist_name,
-        "county_name": county_name,
-        "prod_name": prod_name,
+        "cell_name": base_row.get("cell_name"),
+        "dist_name": base_row.get("dist_name"),
+        "county_name": base_row.get("county_name"),
+        "prod_name": base_row.get("prod_name"),
     }
 
 
@@ -555,11 +485,6 @@ def _parse_stat_time(stat_time: str | datetime | None) -> datetime | None:
         return datetime.strptime(stat_time, "%Y-%m-%d")
     except ValueError:
         return None
-
-
-def _parse_hour_detail(hour_detail_raw: Any) -> list[dict]:
-    """解析 hour_detail 字段。格式：[{"hour": 0, "low_flow_pct": 85.5}, ...]"""
-    return parse_list_field(hour_detail_raw)
 
 
 def _format_sleep_duration(seconds: int | None) -> str:
