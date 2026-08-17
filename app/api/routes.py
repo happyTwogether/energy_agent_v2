@@ -9,7 +9,7 @@ import uuid
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
-from sqlalchemy import delete as sa_delete
+from sqlalchemy import delete as sa_delete, text
 
 from app.agent.dify_events import DifyEventAdapter
 from app.agent.errors import (
@@ -95,6 +95,75 @@ async def _persist_answer_and_notify(
             total_tokens=token_usage.get("total_tokens"),
         ),
     )
+
+
+async def _persist_metrics(
+    conversation_id: str,
+    user_id: str,
+    source: int,
+    result: Any,
+) -> None:
+    """落库一次请求的性能指标，尽力而为，失败仅记录日志。"""
+    try:
+        usage = result.usage
+        prompt_tokens = usage.get("prompt_tokens", 0) or 0
+        completion_tokens = usage.get("completion_tokens", 0) or 0
+        total_tokens = usage.get("total_tokens", 0) or 0
+        context_size = result.context_size or 0
+        max_input_tokens = result.max_input_tokens or 0
+        context_ratio = (
+            round(max_input_tokens / context_size * 100, 2)
+            if context_size > 0
+            else 0.0
+        )
+        gen_ms = result.total_ms - (result.first_text_token_ms or 0)
+        throughput = (
+            round(completion_tokens / (gen_ms / 1000), 2)
+            if gen_ms > 0 and completion_tokens > 0
+            else 0.0
+        )
+        success = result.completed and not result.error
+
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO jd_agent.agent_metrics
+                        (conversation_id, user_id, source,
+                         prompt_tokens, completion_tokens, total_tokens,
+                         first_model_token_ms, first_text_token_ms, total_ms,
+                         throughput, max_input_tokens, context_size, context_ratio,
+                         success, error_type)
+                    VALUES
+                        (:conversation_id, :user_id, :source,
+                         :prompt_tokens, :completion_tokens, :total_tokens,
+                         :first_model_token_ms, :first_text_token_ms, :total_ms,
+                         :throughput, :max_input_tokens, :context_size, :context_ratio,
+                         :success, :error_type)
+                    """
+                ),
+                {
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "source": source,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "first_model_token_ms": result.first_model_token_ms,
+                    "first_text_token_ms": result.first_text_token_ms,
+                    "total_ms": result.total_ms,
+                    "throughput": throughput,
+                    "max_input_tokens": max_input_tokens,
+                    "context_size": context_size,
+                    "context_ratio": context_ratio,
+                    "success": success,
+                    "error_type": result.error,
+                },
+            )
+            await db.commit()
+    except Exception:
+        logger.exception("指标落库失败: cid=%s", conversation_id)
 
 
 def _build_usage_metadata(token_usage: dict[str, int]) -> dict[str, Any]:
@@ -218,6 +287,7 @@ async def _dify_stream_generator(
             yield envelope
 
     result = adapter.result
+    await _persist_metrics(conversation_id, user, source, result)
     if not result.completed or result.error:
         return
     if not result.answer:
@@ -258,6 +328,7 @@ async def _run_blocking(
         pass
 
     result = adapter.result
+    await _persist_metrics(conversation_id, user, 0, result)
     if result.error:
         raise AgentPublicError(result.error)
     if not result.completed:

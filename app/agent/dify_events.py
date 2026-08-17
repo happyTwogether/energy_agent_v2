@@ -3,6 +3,7 @@
 from collections.abc import AsyncGenerator, AsyncIterable
 from dataclasses import dataclass, field
 import json
+import time
 from typing import Any
 
 from agentscope.event import (
@@ -18,6 +19,7 @@ from agentscope.event import (
 )
 from agentscope.types import ReplyFinishedReason
 
+from app.core.config import get_settings
 from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
 from app.agent.errors import (
@@ -46,6 +48,13 @@ class DifyRunResult:
     error: str | None = None
     completed: bool = False
 
+    # ── 性能指标 ──
+    first_model_token_ms: float | None = None  # 首模型响应(含 tool_call)延迟
+    first_text_token_ms: float | None = None   # 首用户可见文本 token 延迟
+    total_ms: float = 0.0                      # 端到端耗时
+    max_input_tokens: int = 0                  # 单次调用峰值输入 token
+    context_size: int = 0                      # 上下文窗口大小快照
+
 
 class DifyEventAdapter:
     """将 AgentScope 生命周期映射为 Dify streaming/blocking 共用语义。"""
@@ -65,6 +74,13 @@ class DifyEventAdapter:
         self._tool_calls: dict[str, dict[str, Any]] = {}
         self._thought_position = 0
 
+        # ── 性能指标采集 ──
+        self._start_perf = time.perf_counter()
+        self._first_model_token_at: float | None = None
+        self._first_text_token_at: float | None = None
+        self._max_input_tokens = 0
+        self._context_size = get_settings().llm_context_size
+
     async def stream(
         self,
         events: AsyncIterable[AgentEvent],
@@ -75,11 +91,18 @@ class DifyEventAdapter:
         try:
             async for event in events:
                 if isinstance(event, TextBlockDeltaEvent):
+                    now = time.perf_counter()
+                    if self._first_text_token_at is None:
+                        self._first_text_token_at = now
+                    if self._first_model_token_at is None:
+                        self._first_model_token_at = now
                     self.result.answer += event.delta
                     yield self._message_envelope(event.delta)
 
                 elif isinstance(event, ModelCallEndEvent):
                     self._add_usage(event.input_tokens, event.output_tokens)
+                    if event.input_tokens > self._max_input_tokens:
+                        self._max_input_tokens = event.input_tokens
 
                 elif isinstance(event, ToolCallStartEvent):
                     self._thought_position += 1
@@ -91,6 +114,8 @@ class DifyEventAdapter:
                     }
 
                 elif isinstance(event, ToolCallDeltaEvent):
+                    if self._first_model_token_at is None:
+                        self._first_model_token_at = time.perf_counter()
                     call = self._ensure_tool_call(event.tool_call_id)
                     call["arguments"] += event.delta
 
@@ -129,6 +154,8 @@ class DifyEventAdapter:
             message = PUBLIC_INTERNAL_ERROR
             self.result.error = message
             yield self._error_envelope(message)
+        finally:
+            self._finalize_metrics()
 
     def error_envelope(self, message: str = PUBLIC_INTERNAL_ERROR) -> dict[str, str]:
         """构建已脱敏的 Dify error envelope。"""
@@ -143,6 +170,21 @@ class DifyEventAdapter:
             self.result.usage["prompt_tokens"]
             + self.result.usage["completion_tokens"]
         )
+
+    def _finalize_metrics(self) -> None:
+        """在事件流结束时统一结算性能指标。"""
+        end = time.perf_counter()
+        self.result.total_ms = round((end - self._start_perf) * 1000, 2)
+        if self._first_model_token_at is not None:
+            self.result.first_model_token_ms = round(
+                (self._first_model_token_at - self._start_perf) * 1000, 2,
+            )
+        if self._first_text_token_at is not None:
+            self.result.first_text_token_ms = round(
+                (self._first_text_token_at - self._start_perf) * 1000, 2,
+            )
+        self.result.max_input_tokens = self._max_input_tokens
+        self.result.context_size = self._context_size
 
     def _ensure_tool_call(self, tool_call_id: str) -> dict[str, Any]:
         if tool_call_id not in self._tool_calls:
