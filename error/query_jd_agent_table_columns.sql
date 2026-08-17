@@ -1,10 +1,69 @@
--- 查询节电扩展、节电收缩及邻区关系表的字段结构。
-SELECT table_name, column_name, data_type
-FROM information_schema.columns
-WHERE table_schema = 'jd_agent'
-  AND table_name IN (
-    'jd_cell_expansion_day',
-    'jd_cell_constriction_day',
-    'jd_cell_around'
-  )
-ORDER BY table_name, ordinal_position;
+table_name	column_name	data_type
+jd_cell_around	cgi	character varying
+jd_cell_around	around_cgi	character varying
+jd_cell_around	around_cgi_network_type	character varying
+jd_cell_around	distance	double precision
+jd_cell_around	is_high_load	integer
+jd_cell_constriction_day	stat_time	date
+jd_cell_constriction_day	dist_name	character varying
+jd_cell_constriction_day	county_name	character varying
+jd_cell_constriction_day	prod_name	character varying
+jd_cell_constriction_day	gnb_name	character varying
+jd_cell_constriction_day	cell_name	character varying
+jd_cell_constriction_day	cgi	character varying
+jd_cell_constriction_day	work_band	character varying
+jd_cell_constriction_day	site_type	text
+jd_cell_constriction_day	cover_type	character varying
+jd_cell_constriction_day	cover_scen	character varying
+jd_cell_constriction_day	hours	integer
+jd_cell_constriction_day	around_cgi	character varying
+jd_cell_constriction_day	around_cgi_cell_name	character varying
+jd_cell_constriction_day	is_whitelist	text
+jd_cell_constriction_day	jd_type	character varying
+jd_cell_constriction_day	reason	character varying
+jd_cell_constriction_day	starttime	date
+jd_cell_constriction_day	endtime	date
+jd_cell_constriction_day	is_check_inventory	text
+jd_cell_constriction_day	saving_switch_state	character varying
+jd_cell_constriction_day	check_task_id	integer
+jd_cell_constriction_day	self_prb_rate_ul_before	double precision
+jd_cell_constriction_day	self_prb_rate_dl_before	double precision
+jd_cell_constriction_day	self_sleep_duration	numeric
+jd_cell_constriction_day	prb_rate_ul	double precision
+jd_cell_constriction_day	prb_rate_dl	double precision
+jd_cell_constriction_day	before_sleep_hour	integer
+jd_cell_constriction_day	before_sleep_date	date
+jd_cell_constriction_day	prb_rate_ul_before	double precision
+jd_cell_constriction_day	prb_rate_dl_before	double precision
+jd_cell_constriction_day	around_cgi_network_type	character varying
+jd_cell_constriction_day	prb_increase	numeric
+jd_cell_expansion_day	stat_time	date
+jd_cell_expansion_day	dist_name	character varying
+jd_cell_expansion_day	county_name	character varying
+jd_cell_expansion_day	prod_name	character varying
+jd_cell_expansion_day	gnb_name	character varying
+jd_cell_expansion_day	cell_name	character varying
+jd_cell_expansion_day	cgi	character varying
+jd_cell_expansion_day	work_band	character varying
+jd_cell_expansion_day	cover_type	character varying
+jd_cell_expansion_day	cover_scen	character varying
+jd_cell_expansion_day	site_type	character varying
+jd_cell_expansion_day	hour_detail	json
+jd_cell_expansion_day	hour_filter	text
+jd_cell_expansion_day	avg_low_flow_pct	numeric
+jd_cell_expansion_day	is_highload	character varying
+jd_cell_expansion_day	is_whitelist	text
+jd_cell_expansion_day	jd_type	character varying
+jd_cell_expansion_day	reason	character varying
+jd_cell_expansion_day	starttime	date
+jd_cell_expansion_day	endtime	date
+jd_cell_expansion_day	is_check_inventory	text
+jd_cell_expansion_day	saving_switch_state	character varying
+jd_cell_expansion_day	check_task_id	integer
+jd_cell_expansion_day	deploy_hours_continuous	text
+jd_cell_expansion_day	deploy_hours	text
+jd_cell_expansion_day	hour_int	integer
+jd_cell_expansion_day	hour_filter_early	text
+jd_cell_expansion_day	hour_int_early	integer
+jd_cell_expansion_day	deploy_hours_early	text
+jd_cell_expansion_day	deploy_hours_continuous_early	text
