@@ -71,6 +71,22 @@ def build_expansion_record(row: dict[str, Any]) -> dict[str, Any]:
         result["hour_detail"] = []
     return result
 
+
+def is_pre_sleep_hour(prb_hour: int | None, sleep_hour: str | None) -> bool:
+    """判断 PRB 小时是否为任一休眠时间点的前一小时。"""
+    if prb_hour is None or not sleep_hour:
+        return False
+    try:
+        sleep_hours = [
+            int(hour.strip())
+            for hour in sleep_hour.split(",")
+            if hour.strip()
+        ]
+    except (ValueError, AttributeError):
+        return False
+    return prb_hour in {(hour - 1) % 24 for hour in sleep_hours}
+
+
 def _site_type(
     network: NetworkType | None,
     cgi: str,

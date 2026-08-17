@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -7,8 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.utils.export_util import export_to_excel
-from app.utils.sql_helpers import ensure_datetime, error_response, fetch_rows, parse_list_field, success_response
+from app.services.energy_analysis import is_pre_sleep_hour
+from app.utils.export_util import export_sheets_to_excel
+from app.utils.sql_helpers import (
+    ensure_datetime,
+    error_response,
+    fetch_rows,
+    parse_list_field,
+)
 
 logger = get_logger("batch_energy_tool")
 
@@ -45,6 +51,7 @@ _MAP_HIGHLOAD: dict[str, str] = {
     "下高": "下行高负荷",
     "双高": "双向高负荷",
 }
+PRB_HIGH_LOAD_THRESHOLD = 50.0
 
 
 TOOL_DESCRIPTION = "批量诊断5G小区节电情况。支持全省、地市、区县、厂家级别查询，可全量分析或仅分析扩展或收缩维度。"
@@ -141,8 +148,11 @@ async def _do_analyze(
     # ── 3. 并行查询三张表 ──
     expansion_sql = text(f"""
         SELECT cgi, cell_name, gnb_name, dist_name, county_name, prod_name,
-               is_highload, hour_filter, saving_switch_state,
-               is_whitelist, reason, jd_type, starttime, endtime
+               is_highload, saving_switch_state, is_whitelist, reason,
+               jd_type, starttime, endtime, hour_detail,
+               hour_filter, hour_int, hour_filter_early, hour_int_early,
+               deploy_hours, deploy_hours_continuous,
+               deploy_hours_early, deploy_hours_continuous_early
         FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
         WHERE {where_sql}
     """)
@@ -151,20 +161,17 @@ async def _do_analyze(
 
     if need_constriction:
         constriction_sql = text(f"""
-            SELECT cgi, hours
+            SELECT cgi, stat_time, hours, reason, around_cgi,
+                   around_cgi_cell_name, around_cgi_network_type, site_type,
+                   self_prb_rate_ul_before, self_prb_rate_dl_before,
+                   self_sleep_duration, prb_rate_ul, prb_rate_dl,
+                   prb_rate_ul_before, prb_rate_dl_before, prb_increase,
+                   before_sleep_hour, before_sleep_date,
+                   is_whitelist, cell_name, dist_name, county_name, prod_name
             FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day
             WHERE {where_sql}
         """)
-        end_date_for_sleep = query_date.date() if isinstance(query_date, datetime) else query_date
-        start_date_7d = end_date_for_sleep - timedelta(days=7)
-        sleep_count_sql = text(f"""
-            SELECT cgi, COUNT(*) AS sleep_count
-            FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
-            WHERE stat_time >= :start_date
-            GROUP BY cgi
-        """)
         query_tasks.append(fetch_rows(constriction_sql, bind_params))
-        query_tasks.append(fetch_rows(sleep_count_sql, {"start_date": start_date_7d}))
 
     gathered = await asyncio.gather(*query_tasks)
     expansion_rows = gathered[0]
@@ -179,15 +186,19 @@ async def _do_analyze(
 
     constriction_map: dict[str, list[int]] = {}
     sleep_count_map: dict[str, int] = {}
+    constriction_rows: list[dict[str, Any]] = []
+    pre_sleep_rows: list[dict[str, Any]] = []
     if need_constriction:
-        for row in gathered[1]:
+        constriction_rows = gathered[1]
+        for row in constriction_rows:
             cgi = row["cgi"]
             all_cgis.add(cgi)
             if cgi not in constriction_map:
                 constriction_map[cgi] = []
             if row["hours"] is not None:
                 constriction_map[cgi].append(row["hours"])
-        sleep_count_map = {r["cgi"]: r["sleep_count"] for r in gathered[2]}
+        pre_sleep_rows = await _query_pre_sleep_rows(all_cgis, query_date)
+        sleep_count_map = _count_pre_sleep_days_by_cgi(pre_sleep_rows)
 
     # ── 5. 合并生成表格行 ──
     query_desc = _build_query_desc(dist_name, county_name, prod_name)
@@ -205,13 +216,19 @@ async def _do_analyze(
         analysis_target=analysis_target,
     )
 
-    # ── 6. 过滤空小区 → 导出 Excel ──
+    # ── 6. 统计问题清单，但完整结果不因问题过滤而丢失 ──
+    stats.update(_compute_batch_stats(table_data))
+    stats["param_noncompliant"] = _count_noncompliant_cells(expansion_rows)
     filtered_data = _filter_empty_cells(table_data, analysis_target)
-    stats["total"] = len(filtered_data)
-    download_url = (
-        export_to_excel(filtered_data, prefix="batch_analysis")
-        if filtered_data
-        else None
+    stats["problem_total"] = len(filtered_data)
+    download_url = export_sheets_to_excel(
+        {
+            "小区汇总": table_data,
+            "扩展明细": expansion_rows,
+            "收缩明细": constriction_rows,
+            "休眠前高负荷": pre_sleep_rows,
+        },
+        prefix="batch_analysis",
     )
 
     # ── 7. 生成 report_content ──
@@ -227,6 +244,8 @@ async def _do_analyze(
     return {
         "success": True,
         "report_content": report_content,
+        "stats": stats,
+        "download_url": download_url,
         **({"date_note": date_note} if date_note else {}),
     }
 
@@ -256,6 +275,38 @@ async def _resolve_latest_date(need_constriction: bool) -> datetime | None:
     return min(exp_max, const_max) if const_max else exp_max
 
 
+async def _query_pre_sleep_rows(
+    cgis: set[str],
+    query_date: datetime,
+) -> list[dict[str, Any]]:
+    """集合查询目标小区近七日高 PRB 行，并保留真实休眠前小时。"""
+    if not cgis:
+        return []
+    end_date = query_date.date()
+    start_date = end_date - timedelta(days=6)
+    sql = text(f"""
+        SELECT cgi, stat_time, prb_hour, sleep_hour,
+               prb_rate_ul, prb_rate_dl
+        FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
+        WHERE cgi = ANY(:cgis)
+          AND stat_time >= :start_date
+          AND stat_time <= :end_date
+          AND (prb_rate_ul > :prb_threshold
+               OR prb_rate_dl > :prb_threshold)
+    """)
+    rows = await fetch_rows(sql, {
+        "cgis": list(cgis),
+        "start_date": start_date,
+        "end_date": end_date,
+        "prb_threshold": PRB_HIGH_LOAD_THRESHOLD,
+    })
+    return [
+        row
+        for row in rows
+        if is_pre_sleep_hour(row.get("prb_hour"), row.get("sleep_hour"))
+    ]
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 数据构建
 # ═══════════════════════════════════════════════════════════════════
@@ -273,6 +324,48 @@ def _build_query_desc(
     if prod_name:
         parts.append(f"厂家={prod_name}")
     return " | ".join(parts) if parts else "全省"
+
+
+def _compute_batch_stats(table_data: list[dict[str, Any]]) -> dict[str, int]:
+    """按完整汇总表计算批量总数，不受问题筛选影响。"""
+    cgis = {
+        str(row[_COL_BASE[5]])
+        for row in table_data
+        if row.get(_COL_BASE[5])
+    }
+    return {"total": len(cgis)}
+
+
+def _count_noncompliant_cells(rows: list[dict[str, Any]]) -> int:
+    """按 CGI 去重统计真实参数不合规，排除合格和数据缺失状态。"""
+    ignored_states = {"", "合格", "北向数据缺失"}
+    cgis = {
+        str(row["cgi"])
+        for row in rows
+        if row.get("cgi")
+        and str(row.get("saving_switch_state") or "").strip()
+        not in ignored_states
+    }
+    return len(cgis)
+
+
+def _is_database_true(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "是"}
+
+
+def _count_pre_sleep_days_by_cgi(
+    rows: list[dict[str, Any]],
+) -> dict[str, int]:
+    dates_by_cgi: dict[str, set[date]] = {}
+    for row in rows:
+        cgi = str(row.get("cgi") or "")
+        stat_time = ensure_datetime(row.get("stat_time"))
+        if not cgi or not stat_time:
+            continue
+        dates_by_cgi.setdefault(cgi, set()).add(stat_time.date())
+    return {cgi: len(dates) for cgi, dates in dates_by_cgi.items()}
 
 
 def _build_table_data(
@@ -296,6 +389,7 @@ def _build_table_data(
         "neighbor_pressure": 0,
         "whitelist": 0,
         "high_sleep_count": 0,
+        "param_noncompliant": 0,
     }
 
     show_expansion = analysis_target in (TARGET_ALL, TARGET_EXPANSION)
@@ -353,7 +447,7 @@ def _build_table_data(
 
         # ── 白名单（所有模式保留）──
         is_whitelist_raw = exp_info.get("is_whitelist")
-        if is_whitelist_raw == "是":
+        if _is_database_true(is_whitelist_raw):
             stats["whitelist"] += 1
             reason = exp_info.get("reason") or "无"
             jd_type = exp_info.get("jd_type") or "无"
@@ -435,6 +529,9 @@ def _generate_batch_report_markdown(
     if analysis_target in (TARGET_ALL, TARGET_EXPANSION):
         lines.append(f"- 其中 **{stats.get('high_load', 0)}** 个需要进行高负荷压降。")
         lines.append(f"- **{stats.get('can_expand', 0)}** 个可进行休眠时间扩展。")
+        lines.append(
+            f"- **{stats.get('param_noncompliant', 0)}** 个存在节能参数不合规。"
+        )
 
     if analysis_target in (TARGET_ALL, TARGET_CONSTRICTION):
         lines.append(f"- **{stats.get('need_constriction', 0)}** 个需要进行节能收缩。")

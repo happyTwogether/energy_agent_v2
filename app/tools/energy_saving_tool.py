@@ -17,6 +17,7 @@ from app.services.energy_analysis import (
     NetworkType,
     build_expansion_record,
     enrich_constriction_records,
+    is_pre_sleep_hour,
     normalize_network_type,
 )
 from app.utils.cell_lookup import resolution_error_response
@@ -620,30 +621,8 @@ def _format_sleep_duration(seconds: int | None) -> str:
 
 
 def _check_is_pre_sleep_hour(prb_hour: int | None, sleep_hour: str | None) -> bool:
-    """判断是否为休眠前一小时。
-
-    Args:
-        prb_hour: 上一小时时间点（整数，如 22 表示 22:00-23:00）
-        sleep_hour: 休眠时间点（字符串，可能包含多个时间点，如 "22,23,0"）
-
-    Returns:
-        如果 prb_hour 是休眠时间点的前一小时，返回 True。
-
-    判断逻辑：
-        如果 (prb_hour + 1) 在 sleep_hour 列表中，则为休眠前一小时。
-        例如：prb_hour=21，sleep_hour="22,23,0"，则 21+1=22 在列表中，返回 True。
-    """
-    if prb_hour is None or not sleep_hour:
-        return False
-
-    try:
-        # 解析 sleep_hour（可能是逗号分隔的多个时间点）
-        sleep_hours = [int(h.strip()) for h in sleep_hour.split(",") if h.strip()]
-        # 休眠前一小时 = 休眠时间点 - 1（处理跨天情况）
-        pre_sleep_hours = [(h - 1) % 24 for h in sleep_hours]
-        return prb_hour in pre_sleep_hours
-    except (ValueError, AttributeError):
-        return False
+    """兼容原工具内私有接口，规则实现位于纯业务模块。"""
+    return is_pre_sleep_hour(prb_hour, sleep_hour)
 
 
 def _count_high_pre_sleep_days(rows: list[dict[str, Any]]) -> int:

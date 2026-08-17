@@ -5,9 +5,11 @@
 遵循 Facade 模式，封装 pandas 导出逻辑和文件路径管理。
 """
 
+import json
 import os
 import uuid
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 
@@ -101,47 +103,97 @@ def export_to_excel(
         return None
 
     try:
-        # 转换为 DataFrame
-        df = pd.DataFrame(data_list)
-
-        # 处理列名映射
-        if column_mapping is None:
-            # 使用默认映射（只映射存在的列）
-            effective_mapping = {k: v for k, v in DEFAULT_COLUMN_MAPPING.items() if k in df.columns}
-            df = df.rename(columns=effective_mapping)
-        elif column_mapping:
-            # 合并模式：传入的映射与默认映射合并，传入的优先级更高
-            merged_mapping = {**DEFAULT_COLUMN_MAPPING, **column_mapping}
-            effective_mapping = {k: v for k, v in merged_mapping.items() if k in df.columns}
-            df = df.rename(columns=effective_mapping)
-        # column_mapping == {} 时，不做任何映射，保持原字段名
-
-        # 组装防并发的唯一文件名: 前缀-年月日时分秒-uuid前6位.xlsx
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        unique_id = uuid.uuid4().hex[:6]
-        safe_prefix = prefix.replace("_", "-")
-        filename = f"{safe_prefix}-{timestamp}-{unique_id}.xlsx"
-
-        # 确保目录存在 (二次保险)
-        os.makedirs(EXPORT_DIR, exist_ok=True)
-
-        file_path = os.path.join(EXPORT_DIR, filename)
-
-        # 导出 Excel (使用 openpyxl 引擎)
-        df.to_excel(file_path, index=False, engine="openpyxl")
-
-        logger.info(f"Excel 导出成功: {file_path}, 数据量: {len(df)} 条")
-
-        # 生成完整下载链接（使用服务配置的 base_url；未配置时返回相对路径）
-        relative_url = f"/downloads/{filename}"
-        base_url = get_settings().base_url
-        if base_url:
-            return f"{base_url.rstrip('/')}{relative_url}"
-        return relative_url
-
-    except Exception as e:
-        logger.error(f"Excel 导出失败: {str(e)}", exc_info=True)
+        dataframe = pd.DataFrame(data_list)
+        dataframe = _rename_export_columns(dataframe, column_mapping)
+        filename, file_path = _new_export_file(prefix)
+        dataframe.to_excel(file_path, index=False, engine="openpyxl")
+        logger.info("Excel 导出成功: %s, 数据量: %s 条", file_path, len(dataframe))
+        return _download_url(filename)
+    except Exception as exc:
+        logger.error("Excel 导出失败: %s", exc, exc_info=True)
         return None
+
+
+def export_sheets_to_excel(
+    sheets: dict[str, list[dict]],
+    prefix: str,
+    column_mapping: dict[str, str] | None = None,
+) -> str | None:
+    """将多类明细写入一个 Excel，跳过没有数据的工作表。"""
+    non_empty_sheets = {
+        sheet_name: rows
+        for sheet_name, rows in sheets.items()
+        if rows
+    }
+    if not non_empty_sheets:
+        logger.warning("导出数据为空，跳过多工作表 Excel 生成")
+        return None
+
+    try:
+        filename, file_path = _new_export_file(prefix)
+
+        with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+            for sheet_name, rows in non_empty_sheets.items():
+                dataframe = pd.DataFrame(rows)
+                dataframe = _rename_export_columns(dataframe, column_mapping)
+                dataframe.to_excel(
+                    writer,
+                    sheet_name=sheet_name[:31],
+                    index=False,
+                )
+
+        logger.info(
+            "多工作表 Excel 导出成功: %s, 工作表数: %s",
+            file_path,
+            len(non_empty_sheets),
+        )
+        return _download_url(filename)
+    except Exception as exc:
+        logger.error("多工作表 Excel 导出失败: %s", exc, exc_info=True)
+        return None
+
+
+def _rename_export_columns(
+    dataframe: pd.DataFrame,
+    column_mapping: dict[str, str] | None,
+) -> pd.DataFrame:
+    dataframe = dataframe.copy()
+    for column in dataframe.columns:
+        dataframe[column] = dataframe[column].map(_serialize_export_value)
+    if column_mapping == {}:
+        return dataframe
+    effective_mapping = DEFAULT_COLUMN_MAPPING
+    if column_mapping:
+        effective_mapping = {**DEFAULT_COLUMN_MAPPING, **column_mapping}
+    existing_mapping = {
+        key: value
+        for key, value in effective_mapping.items()
+        if key in dataframe.columns
+    }
+    return dataframe.rename(columns=existing_mapping)
+
+
+def _serialize_export_value(value: Any) -> Any:
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    if isinstance(value, set):
+        return json.dumps(sorted(value), ensure_ascii=False, default=str)
+    return value
+
+
+def _new_export_file(prefix: str) -> tuple[str, str]:
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    unique_id = uuid.uuid4().hex[:6]
+    safe_prefix = prefix.replace("_", "-")
+    filename = f"{safe_prefix}-{timestamp}-{unique_id}.xlsx"
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+    return filename, os.path.join(EXPORT_DIR, filename)
+
+
+def _download_url(filename: str) -> str:
+    relative_url = f"/downloads/{filename}"
+    base_url = get_settings().base_url
+    return f"{base_url.rstrip('/')}{relative_url}" if base_url else relative_url
 
 
 def truncate_and_export(
