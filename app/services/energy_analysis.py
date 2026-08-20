@@ -24,6 +24,96 @@ _SITE_POLICIES: dict[str, tuple[float, frozenset[str] | None]] = {
     "室分": (100.0, frozenset({"宏站", "室分"})),
     "微站": (200.0, None),
 }
+EXPANSION_HOURS = (22, 23, 0, 1, 2, 3, 4, 5, 6, 7)
+LOW_FLOW_PCT_THRESHOLD = 90.0
+_TRUE_FLAGS = frozenset({"1", "true", "yes", "y", "是"})
+
+
+def normalize_boolean_flag(value: Any) -> bool:
+    """将数据库常见布尔值归一化，避免非空文本“否”被判为真。"""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in _TRUE_FLAGS
+
+
+def _hour_set(value: Any) -> set[int]:
+    if isinstance(value, list):
+        parts = value
+    elif value is None:
+        parts = []
+    else:
+        parts = str(value).strip("[]").split(",")
+    result: set[int] = set()
+    for part in parts:
+        try:
+            result.add(int(str(part).strip()))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _expansion_suggestion(
+    hour: int,
+    expandable_hours: set[int],
+    low_business: bool | None,
+    zero_sleep: bool | None,
+) -> str:
+    if hour in expandable_hours:
+        return "可扩展"
+    if low_business is None or zero_sleep is None:
+        return "数据缺失"
+    if not low_business:
+        return "不建议（低业务占比不足）"
+    if not zero_sleep:
+        return "不建议（已有休眠）"
+    return "以综合分析结果为准"
+
+
+def _build_expansion_hour_row(
+    hour: int,
+    detail_by_hour: dict[int, Any],
+    sleep_by_hour: dict[int, Any],
+    expandable_hours: set[int],
+) -> dict[str, Any]:
+    percent = detail_by_hour.get(hour)
+    sleep_seconds = sleep_by_hour.get(hour)
+    low_business = None if percent is None else float(percent) >= LOW_FLOW_PCT_THRESHOLD
+    zero_sleep = None if sleep_seconds is None else float(sleep_seconds) == 0
+    return {
+        "hour": hour,
+        "low_flow_pct": None if percent is None else float(percent),
+        "is_low_business": low_business,
+        "avg_sleep_seconds": None if sleep_seconds is None else float(sleep_seconds),
+        "is_zero_sleep": zero_sleep,
+        "suggestion": _expansion_suggestion(
+            hour, expandable_hours, low_business, zero_sleep,
+        ),
+    }
+
+
+def build_expansion_hour_evidence(
+    record: dict[str, Any],
+    sleep_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """构造扩展时窗的逐小时过程证据，最终结论以源结果为准。"""
+    detail_by_hour = {
+        item.get("hour"): item.get("low_flow_pct")
+        for item in record.get("hour_detail", [])
+        if item.get("hour") is not None
+    }
+    sleep_by_hour = {
+        row.get("hours"): row.get("avg_sleep_sum")
+        for row in sleep_rows
+    }
+    expandable_hours = _hour_set(record.get("hour_filter"))
+    return [
+        _build_expansion_hour_row(
+            hour, detail_by_hour, sleep_by_hour, expandable_hours,
+        )
+        for hour in EXPANSION_HOURS
+    ]
 
 
 def normalize_network_type(value: str | None) -> NetworkType | None:
@@ -121,6 +211,11 @@ def _site_type(
     return site_type_by_cell.get((network, cgi))
 
 
+def _max_available(*values: Any) -> float | None:
+    present = [float(value) for value in values if value is not None]
+    return max(present) if present else None
+
+
 def _enrich_constriction_record(
     row: dict[str, Any],
     relation: dict[str, Any] | None,
@@ -149,6 +244,18 @@ def _enrich_constriction_record(
         "main_site_type": main_site_type,
         "around_site_type": around_site_type,
         "relation_status": status,
+        "main_prb_before": _max_available(
+            row.get("self_prb_rate_ul_before"),
+            row.get("self_prb_rate_dl_before"),
+        ),
+        "around_prb_before": _max_available(
+            row.get("prb_rate_ul_before"),
+            row.get("prb_rate_dl_before"),
+        ),
+        "around_prb_during": _max_available(
+            row.get("prb_rate_ul"),
+            row.get("prb_rate_dl"),
+        ),
     }
 
 

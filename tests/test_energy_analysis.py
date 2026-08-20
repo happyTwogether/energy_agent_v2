@@ -1,11 +1,13 @@
 """V1.4 节电分析纯业务规则测试。"""
 
 from app.services.energy_analysis import (
+    build_expansion_hour_evidence,
     build_expansion_record,
     collect_site_type_cgis,
     enrich_constriction_records,
     evaluate_neighbor_relation,
     neighbor_policy,
+    normalize_boolean_flag,
     normalize_network_type,
 )
 
@@ -31,6 +33,43 @@ def test_expansion_record_preserves_database_boundary_and_continuous_fields():
     assert result["hour_filter"] == "22"
     assert result["hour_int"] == 1
     assert result["deploy_hours_continuous"] == "22:00-00:59"
+
+
+def test_boolean_flags_do_not_treat_chinese_no_as_true():
+    """防止数据库文本“否”被 Python 的 bool(str) 误判为真。"""
+    assert normalize_boolean_flag("是") is True
+    assert normalize_boolean_flag("否") is False
+    assert normalize_boolean_flag("true") is True
+    assert normalize_boolean_flag(None) is False
+
+
+def test_expansion_hour_evidence_keeps_source_result_as_decision():
+    """防止应用按过程指标重新覆盖数据库给出的扩展结论。"""
+    record = {
+        "hour_detail": [
+            {"hour": 22, "low_flow_pct": 90.0},
+            {"hour": 23, "low_flow_pct": 95.0},
+        ],
+        "hour_filter": "22",
+    }
+    sleep_rows = [
+        {"hours": 22, "avg_sleep_sum": 0},
+        {"hours": 23, "avg_sleep_sum": 0},
+    ]
+
+    evidence = build_expansion_hour_evidence(record, sleep_rows)
+
+    assert [item["hour"] for item in evidence] == [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]
+    assert evidence[0] == {
+        "hour": 22,
+        "low_flow_pct": 90.0,
+        "is_low_business": True,
+        "avg_sleep_seconds": 0.0,
+        "is_zero_sleep": True,
+        "suggestion": "可扩展",
+    }
+    assert evidence[1]["suggestion"] == "以综合分析结果为准"
+    assert evidence[2]["suggestion"] == "数据缺失"
 
 
 def test_network_type_normalization_covers_database_values():
@@ -94,6 +133,12 @@ def test_prb_increase_equal_ten_is_preserved_and_enriched():
             "site_type": None,
             "around_cgi_network_type": "lte",
             "prb_increase": 10.0,
+            "self_prb_rate_ul_before": 8.0,
+            "self_prb_rate_dl_before": 12.0,
+            "prb_rate_ul_before": 45.0,
+            "prb_rate_dl_before": 50.0,
+            "prb_rate_ul": 60.0,
+            "prb_rate_dl": 55.0,
         },
     ]
     result = enrich_constriction_records(
@@ -118,6 +163,9 @@ def test_prb_increase_equal_ten_is_preserved_and_enriched():
             "main_site_type": "室分",
             "around_site_type": "宏站",
             "relation_status": "allowed",
+            "main_prb_before": 12.0,
+            "around_prb_before": 50.0,
+            "around_prb_during": 60.0,
         },
     ]
 
