@@ -33,7 +33,7 @@
 - Consumes: expansion records containing `hour_detail` and `hour_filter`; sleep rows containing `hours` and `avg_sleep_sum`; enriched constriction rows.
 - Produces: `normalize_boolean_flag(value: Any) -> bool`, `build_expansion_hour_evidence(record: dict[str, Any], sleep_rows: list[dict[str, Any]]) -> list[dict[str, Any]]`, and PRB maximum fields on records returned by `enrich_constriction_records`.
 
-- [ ] **Step 1: Write failing expansion-evidence and whitelist normalization tests**
+- [x] **Step 1: Write failing expansion-evidence and whitelist normalization tests**
 
 Add imports and tests to `tests/test_energy_analysis.py`:
 
@@ -79,7 +79,7 @@ def test_expansion_hour_evidence_keeps_source_result_as_decision():
     assert evidence[2]["suggestion"] == "数据缺失"
 ```
 
-- [ ] **Step 2: Run the new tests and verify failure**
+- [x] **Step 2: Run the new tests and verify failure**
 
 Run:
 
@@ -91,7 +91,7 @@ PYTHONPATH=. uv run --with-requirements requirements.txt --with pytest --with py
 
 Expected: collection fails because the two helper functions do not exist.
 
-- [ ] **Step 3: Implement small parsing and expansion-evidence helpers**
+- [x] **Step 3: Implement small parsing and expansion-evidence helpers**
 
 Add to `app/services/energy_analysis.py`:
 
@@ -185,7 +185,7 @@ def build_expansion_hour_evidence(
 
 Keep each helper focused and close to 30 lines; use the explicit row-construction helper above.
 
-- [ ] **Step 4: Write and run failing PRB maximum enrichment test**
+- [x] **Step 4: Write and run failing PRB maximum enrichment test**
 
 Extend `test_prb_increase_equal_ten_is_preserved_and_enriched` input with PRB values and assert:
 
@@ -204,7 +204,7 @@ PYTHONPATH=. uv run --with-requirements requirements.txt --with pytest --with py
 
 Expected: FAIL because maximum fields are absent.
 
-- [ ] **Step 5: Add PRB maximum fields during constriction enrichment**
+- [x] **Step 5: Add PRB maximum fields during constriction enrichment**
 
 Add a null-safe helper and include its results in `_enrich_constriction_record`:
 
@@ -228,7 +228,7 @@ Return these additional keys:
 ),
 ```
 
-- [ ] **Step 6: Run service tests**
+- [x] **Step 6: Run service tests**
 
 Run:
 
@@ -239,7 +239,7 @@ PYTHONPATH=. uv run --with-requirements requirements.txt --with pytest --with py
 
 Expected: all service tests pass.
 
-- [ ] **Step 7: Commit the business evidence helpers**
+- [x] **Step 7: Commit the business evidence helpers**
 
 ```bash
 git add app/services/energy_analysis.py tests/test_energy_analysis.py
@@ -260,7 +260,7 @@ git commit -m "feat(energy): model auditable report evidence"
 - Produces from `_query_expansion_data`: `data`, `process_data`, `process_table`, `candidate_table`, `deployment_table`, legacy-compatible `table`, whitelist metadata, and base cell metadata.
 - Produces from `analyze_single_cell_energy`: `expansion_process_data`, `expansion_process_table`, `expansion_candidate_table`, and `expansion_deployment_table` in addition to existing expansion keys.
 
-- [ ] **Step 1: Replace the old expansion query test with a failing two-source test**
+- [x] **Step 1: Replace the old expansion query test with a failing two-source test**
 
 Update `tests/test_energy_saving_tool.py` so the fake returns one expansion row for `jd_cell_expansion_day` and sleep evidence for `jd_cell_detail_hour_nr`:
 
@@ -304,7 +304,7 @@ async def test_query_expansion_returns_process_and_dual_window_tables(monkeypatc
     assert result["is_whitelist"] is False
 ```
 
-- [ ] **Step 2: Run the new expansion test and verify failure**
+- [x] **Step 2: Run the new expansion test and verify failure**
 
 Run:
 
@@ -315,7 +315,7 @@ PYTHONPATH=. uv run --with-requirements requirements.txt --with pytest --with py
 
 Expected: FAIL because only the expansion result table is queried and the new tables are absent.
 
-- [ ] **Step 3: Query the 15-day sleep process data in parallel**
+- [x] **Step 3: Query the 15-day sleep process data in parallel**
 
 In `app/tools/energy_saving_tool.py`, import the new helpers and define:
 
@@ -351,7 +351,7 @@ sleep_sql = text(f"""
 
 Use `asyncio.gather` with two `fetch_rows` calls and `start_date = stat_time - timedelta(days=14)`.
 
-- [ ] **Step 4: Build three focused expansion tables**
+- [x] **Step 4: Build three focused expansion tables**
 
 Use `build_expansion_hour_evidence(base_row, sleep_rows)` and create:
 
@@ -375,7 +375,7 @@ deployment_table = _build_md_table(
 
 `_build_expansion_process_table` formats `None` as “数据缺失”, booleans as “是/否”, percentage with `%`, sleep seconds with `_format_sleep_duration`, and includes all 10 target hours. Return `table` as `candidate_table + "\n\n" + deployment_table` for backward compatibility.
 
-- [ ] **Step 5: Propagate expansion process tables and unknown parameter status**
+- [x] **Step 5: Propagate expansion process tables and unknown parameter status**
 
 In `analyze_single_cell_energy`, add:
 
@@ -404,11 +404,11 @@ if param_check_raw.get("error"):
 
 Keep existing unqualified-item truncation only when `is_compliant is False`.
 
-- [ ] **Step 6: Add response propagation and missing-data tests**
+- [x] **Step 6: Add response propagation and missing-data tests**
 
 Extend `test_single_cell_response_exposes_expansion_raw_data` to include and assert the three table keys and `expansion_process_data`. Add a test where sleep rows omit an hour and assert the process table says “数据缺失” instead of `0秒`.
 
-- [ ] **Step 7: Run tool-focused tests**
+- [x] **Step 7: Run tool-focused tests**
 
 Run:
 
@@ -419,7 +419,7 @@ PYTHONPATH=. uv run --with-requirements requirements.txt --with pytest --with py
 
 Expected: all single-cell tool tests pass.
 
-- [ ] **Step 8: Commit expansion report evidence**
+- [x] **Step 8: Commit expansion report evidence**
 
 ```bash
 git add app/tools/energy_saving_tool.py tests/test_energy_saving_tool.py
@@ -440,7 +440,7 @@ git commit -m "feat(energy): restore expansion process evidence"
 - Produces from `_query_constriction_data`: `main_table`, `relation_table`, `load_table`, `result_table`, legacy `table`, and whitelist status/reason/start/end.
 - Produces from `_query_pre_sleep_load_data`: raw `prb_rate_ul`, `prb_rate_dl`, maximum `prb_rate`, and an updated table containing all three values.
 
-- [ ] **Step 1: Write failing multi-table constriction test**
+- [x] **Step 1: Write failing multi-table constriction test**
 
 Extend `test_query_constriction_enriches_relation_without_dropping_ten` with:
 
@@ -455,7 +455,7 @@ assert "剔除" in result["result_table"]
 
 Include `starttime`, `endtime`, and `is_whitelist="否"` in the fake constriction row and assert normalized status plus formatted dates.
 
-- [ ] **Step 2: Run the constriction test and verify failure**
+- [x] **Step 2: Run the constriction test and verify failure**
 
 Run:
 
@@ -466,7 +466,7 @@ PYTHONPATH=. uv run --with-requirements requirements.txt --with pytest --with py
 
 Expected: FAIL because focused tables and whitelist dates are absent.
 
-- [ ] **Step 3: Select whitelist dates and build four focused tables**
+- [x] **Step 3: Select whitelist dates and build four focused tables**
 
 Add `starttime` and `endtime` to the constriction SELECT. Replace the single wide table builder with four small builders:
 
@@ -488,7 +488,7 @@ Deduplicate the main-cell condition table by `(hours, before_sleep_date, before_
 
 Map `allowed` to “满足分析范围” and `missing` to “关系信息待核实”. Since rows already represent source constriction results, use “受到影响” and “剔除” without applying another PRB threshold.
 
-- [ ] **Step 4: Preserve legacy and new constriction response keys**
+- [x] **Step 4: Preserve legacy and new constriction response keys**
 
 Return `table=result_table` for compatibility and add all four new table keys. In `analyze_single_cell_energy`, propagate:
 
@@ -501,7 +501,7 @@ result["constriction_result_table"] = constriction_result["result_table"]
 
 For constriction-only responses, also propagate `jd_starttime` and `jd_endtime`. Normalize both expansion and constriction whitelist flags with `normalize_boolean_flag`.
 
-- [ ] **Step 5: Add upstream/downstream PRB to pre-sleep output**
+- [x] **Step 5: Add upstream/downstream PRB to pre-sleep output**
 
 In `_query_pre_sleep_load_data`, retain:
 
@@ -513,7 +513,7 @@ In `_query_pre_sleep_load_data`, retain:
 
 Update the Markdown headers to include “上行PRB利用率(%)”, “下行PRB利用率(%)”, and “无线利用率(%)”. Update row rendering accordingly.
 
-- [ ] **Step 6: Add whitelist and pre-sleep regression tests**
+- [x] **Step 6: Add whitelist and pre-sleep regression tests**
 
 Add a response test that sets expansion `is_whitelist="是"`, reason and dates, then asserts:
 
@@ -526,7 +526,7 @@ assert result["jd_endtime"] == "2026-08-31"
 
 Extend the pre-sleep query test with one detail row and assert the raw and table output contain both UL and DL values.
 
-- [ ] **Step 7: Run focused service and tool tests**
+- [x] **Step 7: Run focused service and tool tests**
 
 Run:
 
@@ -537,7 +537,7 @@ PYTHONPATH=. uv run --with-requirements requirements.txt --with pytest --with py
 
 Expected: all tests pass.
 
-- [ ] **Step 8: Commit constriction and whitelist evidence**
+- [x] **Step 8: Commit constriction and whitelist evidence**
 
 ```bash
 git add app/tools/energy_saving_tool.py tests/test_energy_saving_tool.py
@@ -557,7 +557,7 @@ git commit -m "feat(energy): structure constriction report evidence"
 - Consumes: new expansion and constriction table keys plus existing `param_check`, `pre_sleep_load_table`, whitelist, and truncation metadata.
 - Produces: a single-cell synthesis contract with overview, expansion, constriction, embedded pre-sleep evidence, and whitelist sections.
 
-- [ ] **Step 1: Write failing prompt-contract tests**
+- [x] **Step 1: Write failing prompt-contract tests**
 
 Replace the current single-cell prompt test with:
 
@@ -586,7 +586,7 @@ def test_single_cell_prompt_uses_business_oriented_auditable_evidence():
     assert "未命中节电白名单" in prompt
 ```
 
-- [ ] **Step 2: Run the prompt test and verify failure**
+- [x] **Step 2: Run the prompt test and verify failure**
 
 Run:
 
@@ -597,7 +597,7 @@ PYTHONPATH=. uv run --with-requirements requirements.txt --with pytest --with py
 
 Expected: FAIL on missing table keys and forbidden implementation language.
 
-- [ ] **Step 3: Rewrite `SYNTHESIS_SINGLE_CELL` around approved sections**
+- [x] **Step 3: Rewrite `SYNTHESIS_SINGLE_CELL` around approved sections**
 
 Use this exact module order:
 
@@ -617,7 +617,7 @@ Require the whitelist section to use `is_whitelist`, `whitelist_reason`, `jd_sta
 
 For `param_check.is_compliant is None` or `param_check.success is false`, require “参数核查暂不可用” rather than a compliance claim.
 
-- [ ] **Step 4: Run all prompt and single-cell tests**
+- [x] **Step 4: Run all prompt and single-cell tests**
 
 Run:
 
@@ -628,7 +628,7 @@ PYTHONPATH=. uv run --with-requirements requirements.txt --with pytest --with py
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit the report prompt contract**
+- [x] **Step 5: Commit the report prompt contract**
 
 ```bash
 git add app/prompts/energy_saving.py tests/test_energy_prompt.py
@@ -648,7 +648,7 @@ git commit -m "feat(prompt): render auditable energy report"
 - Consumes: all implementation tasks and the clean `origin/main` baseline.
 - Produces: verified feature commits ready for merge into `main`.
 
-- [ ] **Step 1: Run the complete test suite**
+- [x] **Step 1: Run the complete test suite**
 
 Run:
 
@@ -658,7 +658,7 @@ PYTHONPATH=. uv run --with-requirements requirements.txt --with pytest --with py
 
 Expected: at least the baseline `69 passed, 4 skipped` with all new tests passing and no failures.
 
-- [ ] **Step 2: Run syntax and diff verification**
+- [x] **Step 2: Run syntax and diff verification**
 
 ```bash
 PYTHONPATH=. uv run --with-requirements requirements.txt python -m compileall -q app tests
