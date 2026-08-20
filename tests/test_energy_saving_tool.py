@@ -70,10 +70,119 @@ async def test_query_expansion_returns_process_and_dual_window_tables(monkeypatc
     assert result["process_data"][0]["suggestion"] == "可扩展"
     assert "低业务占比" in result["process_table"]
     assert "0秒" in result["process_table"]
-    assert "数据缺失" in result["process_table"]
+    assert "22:00-22:59" in result["process_table"]
+    assert "23:00-23:59" not in result["process_table"]
+    assert "00:00-00:59" not in result["process_table"]
     assert "22:00-00:59" in result["deployment_table"]
     assert "0,1,2,3,4,5" in result["deployment_table"]
+    assert result["expansion_result_status"] == "candidate_available"
+    assert result["process_evidence_status"] == "partial"
     assert result["is_whitelist"] is False
+
+
+@pytest.mark.asyncio
+async def test_query_expansion_without_result_does_not_create_zero_hour_conclusion(
+    monkeypatch,
+):
+    """缺少扩展结果时不得构造已完成评估的零时长结论。"""
+    async def fake_fetch_rows(sql, params):
+        return []
+
+    monkeypatch.setattr(energy_saving_tool, "fetch_rows", fake_fetch_rows)
+
+    result = await energy_saving_tool._query_expansion_data(
+        "460-00-1-1",
+        datetime(2026, 8, 10),
+    )
+
+    assert result["expansion_result_status"] == "unavailable"
+    assert result["candidate_table"] == ""
+    assert result["deployment_table"] == ""
+    assert result["high_load_type"] is None
+
+
+@pytest.mark.asyncio
+async def test_query_expansion_maps_reason_only_for_explicit_whitelist(monkeypatch):
+    """扩展原因仅在明确命中白名单时可作为白名单元数据输出。"""
+    async def fake_fetch_rows(sql, params):
+        if "jd_cell_detail_hour_nr" in str(sql):
+            return []
+        return [{
+            "cgi": params["cgi"],
+            "reason": "重要活动保障",
+            "is_whitelist": "是",
+            "hour_filter": None,
+            "hour_filter_early": None,
+        }]
+
+    monkeypatch.setattr(energy_saving_tool, "fetch_rows", fake_fetch_rows)
+
+    result = await energy_saving_tool._query_expansion_data(
+        "460-00-1-1",
+        datetime(2026, 8, 10),
+    )
+
+    assert result["is_whitelist"] is True
+    assert result["whitelist_reason"] == "重要活动保障"
+
+
+@pytest.mark.asyncio
+async def test_single_cell_handler_returns_direct_report_and_stage_performance(
+    monkeypatch,
+):
+    """真实 handler 应直出正文，并暴露实际执行阶段的耗时。"""
+    async def fake_query_expansion(cgi, stat_time):
+        return {
+            "data": [],
+            "table": "",
+            "process_data": [],
+            "process_table": "",
+            "candidate_table": "",
+            "deployment_table": "",
+            "expansion_result_status": "unavailable",
+            "process_evidence_status": "missing",
+            "high_load_type": None,
+            "is_whitelist": None,
+            "cell_name": "测试小区",
+        }
+
+    async def fake_param_check(db, cgi, stat_time):
+        return {
+            "success": False,
+            "is_compliant": None,
+            "error": "参数核查暂不可用",
+        }
+
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_query_expansion_data",
+        fake_query_expansion,
+    )
+    monkeypatch.setattr(energy_saving_tool, "_query_param_check", fake_param_check)
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "get_session_factory",
+        lambda: _SessionContext,
+    )
+
+    result = await energy_saving_tool.analyze_single_cell_energy(
+        analysis_target="expansion",
+        db=_LatestDateSession(),
+        cgi="460-00-1-1",
+    )
+
+    assert "暂不能判断是否需要扩展" in result["report_content"]
+    assert result["whitelist_status"] == "unknown"
+    for key in (
+        "latest_date_ms",
+        "expansion_ms",
+        "param_check_ms",
+        "report_render_ms",
+        "total_ms",
+    ):
+        assert result["performance"][key] >= 0
+    assert "constriction_ms" not in result["performance"]
+    assert "latest_date_ms" not in result["report_content"]
 
 
 @pytest.mark.asyncio
@@ -201,7 +310,8 @@ async def test_single_cell_response_normalizes_expansion_whitelist_metadata(
             "table": "扩展表",
             "cell_name": "测试小区",
             "is_whitelist": "是",
-            "reason": "重要活动保障",
+            "reason": "扩展业务原因",
+            "whitelist_reason": "重要活动保障",
             "starttime": "2026-08-01",
             "endtime": "2026-08-31",
         }
@@ -228,6 +338,7 @@ async def test_single_cell_response_normalizes_expansion_whitelist_metadata(
     )
 
     assert result["is_whitelist"] is True
+    assert result["whitelist_status"] == "whitelisted"
     assert result["whitelist_reason"] == "重要活动保障"
     assert result["jd_starttime"] == "2026-08-01"
     assert result["jd_endtime"] == "2026-08-31"
@@ -493,6 +604,7 @@ async def test_all_response_uses_constriction_whitelist_when_expansion_misses(
     )
 
     assert result["is_whitelist"] is True
+    assert result["whitelist_status"] == "whitelisted"
     assert result["whitelist_reason"] is None
     assert result["jd_starttime"] == "2026-08-01"
     assert result["jd_endtime"] == "2026-08-31"

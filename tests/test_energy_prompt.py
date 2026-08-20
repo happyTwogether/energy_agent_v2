@@ -26,7 +26,14 @@ def test_single_cell_prompt_uses_business_oriented_auditable_evidence():
     assert "同长度选择最晚" not in prompt
     assert "命中天数/有效天数" not in prompt
     assert "参数核查暂不可用" in prompt
-    assert "未命中节电白名单" in prompt
+    assert "expansion_result_status" in prompt
+    assert "暂不能判断是否需要扩展" in prompt
+    assert "expansion_process_evidence_status" in prompt
+    assert "whitelist_status" in prompt
+    assert "whitelisted" in prompt
+    assert "not_whitelisted" in prompt
+    assert "unknown" in prompt
+    assert "未命中节电白名单" not in prompt
 
 
 def test_batch_prompt_mentions_corrected_v14_statistics():

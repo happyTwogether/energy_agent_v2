@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -13,10 +14,15 @@ from app.services.energy_analysis import (
     build_expansion_hour_evidence,
     build_expansion_record,
     collect_site_type_cgis,
+    derive_expansion_result_status,
+    derive_process_evidence_status,
+    derive_whitelist_status,
     enrich_constriction_records,
+    filter_judgeable_expansion_evidence,
     is_pre_sleep_hour,
     normalize_boolean_flag,
 )
+from app.services.energy_report import build_single_cell_energy_report
 from app.services.energy_evidence import query_neighbor_relations, query_site_types
 from app.utils.cell_lookup import resolution_error_response
 from app.utils.export_util import truncate_and_export
@@ -48,6 +54,32 @@ def _build_md_table(headers: list[str], rows: list[str], empty_msg: str = "暂�
 
 def _needs_pre_sleep_load(analysis_target: str) -> bool:
     return analysis_target in {"all", "constriction", "pre_sleep_load"}
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return round((time.perf_counter() - started_at) * 1000, 2)
+
+
+def _record_stage_timing(
+    performance: dict[str, float],
+    stage: str,
+    started_at: float,
+) -> None:
+    elapsed_ms = _elapsed_ms(started_at)
+    performance[f"{stage}_ms"] = elapsed_ms
+    logger.info("energy_stage_timing stage=%s elapsed_ms=%.2f", stage, elapsed_ms)
+
+
+async def _run_timed_stage(
+    stage: str,
+    operation: Any,
+    performance: dict[str, float],
+) -> Any:
+    started_at = time.perf_counter()
+    try:
+        return await operation
+    finally:
+        _record_stage_timing(performance, stage, started_at)
 
 
 # pre_sleep_load 统计天数
@@ -98,6 +130,8 @@ async def analyze_single_cell_energy(
 
     返回结构化数据 + 基础表格，由 LLM 组装最终报告。
     """
+    total_started_at = time.perf_counter()
+    performance: dict[str, float] = {}
     cgi = (cgi or "").strip()
     cell_name = (cell_name or "").strip()
     if not cgi and not cell_name:
@@ -130,9 +164,11 @@ async def analyze_single_cell_energy(
             ) as max_date
         """)
 
+    latest_started_at = time.perf_counter()
     latest_result = await db.execute(latest_sql)
     latest_row = latest_result.mappings().first()
     db_latest_date = ensure_datetime(latest_row["max_date"]) if latest_row else None
+    _record_stage_timing(performance, "latest_date", latest_started_at)
 
     if not db_latest_date:
         return error_response("暂无节电分析数据。")
@@ -152,6 +188,7 @@ async def analyze_single_cell_energy(
 
     name_resolution = None
     if not cgi:
+        name_resolution_started_at = time.perf_counter()
         try:
             name_resolution = await resolve_cell_identifier(
                 db=db,
@@ -161,6 +198,12 @@ async def analyze_single_cell_energy(
         except Exception as exc:
             logger.error("单小区名称解析异常: %s", exc, exc_info=True)
             return error_response("小区名称解析失败，请稍后重试。")
+        finally:
+            _record_stage_timing(
+                performance,
+                "name_resolution",
+                name_resolution_started_at,
+            )
         if name_resolution.status != "resolved":
             return resolution_error_response(name_resolution)
         cgi = name_resolution.cgi or ""
@@ -185,15 +228,27 @@ async def analyze_single_cell_energy(
     task_names = []
 
     if need_expansion:
-        tasks.append(_query_expansion_data(cgi, query_date))
+        tasks.append(_run_timed_stage(
+            "expansion",
+            _query_expansion_data(cgi, query_date),
+            performance,
+        ))
         task_names.append("expansion")
 
     if need_constriction:
-        tasks.append(_query_constriction_data(cgi, query_date))
+        tasks.append(_run_timed_stage(
+            "constriction",
+            _query_constriction_data(cgi, query_date),
+            performance,
+        ))
         task_names.append("constriction")
 
     if need_pre_sleep_load:
-        tasks.append(_query_pre_sleep_load_data(cgi, query_date))
+        tasks.append(_run_timed_stage(
+            "pre_sleep_load",
+            _query_pre_sleep_load_data(cgi, query_date),
+            performance,
+        ))
         task_names.append("pre_sleep_load")
 
     # 参数核查也加入并行（扩展分析需要）
@@ -201,7 +256,11 @@ async def analyze_single_cell_energy(
         async def _query_param_check_with_session():
             async with get_session_factory()() as sess:
                 return await _query_param_check(sess, cgi, display_date)
-        tasks.append(_query_param_check_with_session())
+        tasks.append(_run_timed_stage(
+            "param_check",
+            _query_param_check_with_session(),
+            performance,
+        ))
         task_names.append("param_check")
 
     results = await asyncio.gather(*tasks) if tasks else []
@@ -215,6 +274,20 @@ async def analyze_single_cell_energy(
         result["expansion_process_table"] = expansion_result.get("process_table", "")
         result["expansion_candidate_table"] = expansion_result.get("candidate_table", "")
         result["expansion_deployment_table"] = expansion_result.get("deployment_table", "")
+        result["expansion_result_status"] = expansion_result.get(
+            "expansion_result_status",
+            derive_expansion_result_status(
+                expansion_result.get("data", [None])[0]
+                if expansion_result.get("data")
+                else None,
+            ),
+        )
+        result["expansion_process_evidence_status"] = expansion_result.get(
+            "process_evidence_status",
+            derive_process_evidence_status(
+                expansion_result.get("process_data", []),
+            ),
+        )
         expansion_data, expansion_meta = truncate_and_export(
             expansion_result["data"],
             prefix="single_cell_expansion",
@@ -222,7 +295,7 @@ async def analyze_single_cell_energy(
         result["expansion_data"] = expansion_data
         for key, value in expansion_meta.items():
             result[f"expansion_{key}"] = value
-        result["high_load_type"] = expansion_result.get("high_load_type", "否")
+        result["high_load_type"] = expansion_result.get("high_load_type")
         # 参数核查结果（仅保留关键字段）
         param_check_raw = results_map.get(
             "param_check",
@@ -245,21 +318,12 @@ async def analyze_single_cell_energy(
         # 节电信息 & 白名单信息（统一从扩展表获取）
         result["jd_type"] = expansion_result.get("jd_type")
         result["jd_reason"] = expansion_result.get("reason")
-        result["jd_starttime"] = expansion_result.get("starttime")
-        result["jd_endtime"] = expansion_result.get("endtime")
-        result["is_whitelist"] = normalize_boolean_flag(
-            expansion_result.get("is_whitelist"),
-        )
-        result["whitelist_reason"] = expansion_result.get("reason")
         # 基础信息
         _fill_base_info(result, expansion_result, cgi)
 
     # 处理收缩分析结果
     if "constriction" in results_map:
         constriction_result = results_map["constriction"]
-        constriction_is_whitelist = normalize_boolean_flag(
-            constriction_result.get("is_whitelist"),
-        )
         result["constriction_table"] = constriction_result["table"]
         result["constriction_main_table"] = constriction_result.get("main_table", "")
         result["constriction_relation_table"] = constriction_result.get("relation_table", "")
@@ -272,11 +336,6 @@ async def analyze_single_cell_energy(
         result["constriction_data"] = constriction_data
         for key, value in constriction_meta.items():
             result[f"constriction_{key}"] = value
-        if constriction_is_whitelist and not result.get("is_whitelist", False):
-            result["is_whitelist"] = True
-            result["whitelist_reason"] = constriction_result.get("whitelist_reason")
-            result["jd_starttime"] = constriction_result.get("starttime")
-            result["jd_endtime"] = constriction_result.get("endtime")
         # 基础信息（如果扩展分析没查，从收缩结果获取）
         if "cell_name" not in result:
             _fill_base_info(result, constriction_result, cgi)
@@ -310,9 +369,40 @@ async def analyze_single_cell_energy(
     result.setdefault("dist_name", "-")
     result.setdefault("county_name", "-")
     result.setdefault("prod_name", "-")
-    result.setdefault("is_whitelist", False)
-    result.setdefault("whitelist_reason", None)
-    result.setdefault("high_load_type", "否")
+    whitelist_sources = [
+        results_map.get("expansion"),
+        results_map.get("constriction"),
+    ]
+    result["whitelist_status"] = derive_whitelist_status(*whitelist_sources)
+    result["is_whitelist"] = result["whitelist_status"] == "whitelisted"
+    whitelist_source = next(
+        (
+            source
+            for source in whitelist_sources
+            if source and normalize_boolean_flag(source.get("is_whitelist"))
+        ),
+        None,
+    )
+    result["whitelist_reason"] = (
+        whitelist_source.get("whitelist_reason") if whitelist_source else None
+    )
+    result["jd_starttime"] = (
+        whitelist_source.get("starttime") if whitelist_source else None
+    )
+    result["jd_endtime"] = (
+        whitelist_source.get("endtime") if whitelist_source else None
+    )
+    result.setdefault("high_load_type", None if need_expansion else "否")
+
+    report_started_at = time.perf_counter()
+    result["report_content"] = build_single_cell_energy_report(result)
+    _record_stage_timing(performance, "report_render", report_started_at)
+    performance["total_ms"] = _elapsed_ms(total_started_at)
+    logger.info(
+        "energy_stage_timing stage=total elapsed_ms=%.2f",
+        performance["total_ms"],
+    )
+    result["performance"] = performance
 
     return result
 
@@ -384,7 +474,8 @@ async def _query_expansion_data(
     """读取 V1.4 扩展结果，并补齐逐小时过程证据。"""
     expansion_sql = text(f"""
         SELECT cgi, stat_time, is_highload, jd_type, reason, starttime, endtime,
-               is_whitelist, cell_name, dist_name, county_name, prod_name,
+               is_whitelist,
+               cell_name, dist_name, county_name, prod_name,
                hour_detail, hour_filter, hour_int,
                hour_filter_early, hour_int_early,
                deploy_hours, deploy_hours_continuous,
@@ -425,33 +516,51 @@ async def _query_expansion_data(
         ),
     )
     expansion_data = [build_expansion_record(row) for row in rows]
-    base_row = expansion_data[0] if expansion_data else {}
-    process_data = build_expansion_hour_evidence(base_row, sleep_rows)
-    process_table = _build_expansion_process_table(process_data)
-    candidate_table = _build_expansion_candidate_table(base_row)
-    deployment_table = _build_expansion_deployment_table(base_row)
+    base_row = expansion_data[0] if expansion_data else None
+    raw_process_data = build_expansion_hour_evidence(base_row or {}, sleep_rows)
+    process_data = filter_judgeable_expansion_evidence(raw_process_data)
+    process_table = (
+        _build_expansion_process_table(process_data) if process_data else ""
+    )
+    candidate_table = _build_expansion_candidate_table(base_row) if base_row else ""
+    deployment_table = (
+        _build_expansion_deployment_table(base_row) if base_row else ""
+    )
 
-    starttime = ensure_datetime(base_row.get("starttime"))
-    endtime = ensure_datetime(base_row.get("endtime"))
+    starttime = ensure_datetime(base_row.get("starttime")) if base_row else None
+    endtime = ensure_datetime(base_row.get("endtime")) if base_row else None
+    whitelist_flag = base_row.get("is_whitelist") if base_row else None
+    is_whitelisted = (
+        normalize_boolean_flag(whitelist_flag)
+        if whitelist_flag not in (None, "")
+        else None
+    )
 
     return {
         "data": expansion_data,
         "process_data": process_data,
+        "expansion_result_status": derive_expansion_result_status(base_row),
+        "process_evidence_status": derive_process_evidence_status(raw_process_data),
         "process_table": process_table,
         "candidate_table": candidate_table,
         "deployment_table": deployment_table,
-        "table": f"{candidate_table}\n\n{deployment_table}",
-        "high_load_type": base_row.get("is_highload") or "否",
-        "jd_type": base_row.get("jd_type"),
-        "reason": base_row.get("reason"),
+        "table": "\n\n".join(
+            table for table in (candidate_table, deployment_table) if table
+        ),
+        "high_load_type": (base_row.get("is_highload") or "否") if base_row else None,
+        "jd_type": base_row.get("jd_type") if base_row else None,
+        "reason": base_row.get("reason") if base_row else None,
+        "whitelist_reason": (
+            base_row.get("reason") if base_row and is_whitelisted is True else None
+        ),
         "starttime": starttime.strftime("%Y-%m-%d") if starttime else None,
         "endtime": endtime.strftime("%Y-%m-%d") if endtime else None,
-        "is_whitelist": normalize_boolean_flag(base_row.get("is_whitelist")),
+        "is_whitelist": is_whitelisted,
         # 基础信息
-        "cell_name": base_row.get("cell_name"),
-        "dist_name": base_row.get("dist_name"),
-        "county_name": base_row.get("county_name"),
-        "prod_name": base_row.get("prod_name"),
+        "cell_name": base_row.get("cell_name") if base_row else None,
+        "dist_name": base_row.get("dist_name") if base_row else None,
+        "county_name": base_row.get("county_name") if base_row else None,
+        "prod_name": base_row.get("prod_name") if base_row else None,
     }
 
 
@@ -498,7 +607,8 @@ async def _query_constriction_data(
     load_table = _build_constriction_load_table(constriction_data)
     result_table = _build_constriction_result_table(constriction_data)
 
-    first_row = constriction_rows[0] if constriction_rows else {}
+    first_row = constriction_rows[0] if constriction_rows else None
+    whitelist_flag = first_row.get("is_whitelist") if first_row else None
     return {
         "data": constriction_data,
         "main_table": main_table,
@@ -506,15 +616,21 @@ async def _query_constriction_data(
         "load_table": load_table,
         "result_table": result_table,
         "table": result_table,
-        "is_whitelist": normalize_boolean_flag(first_row.get("is_whitelist")),
-        "whitelist_reason": None,
-        "starttime": _format_date(first_row.get("starttime")),
-        "endtime": _format_date(first_row.get("endtime")),
+        "is_whitelist": (
+            normalize_boolean_flag(whitelist_flag)
+            if whitelist_flag not in (None, "")
+            else None
+        ),
+        "whitelist_reason": (
+            first_row.get("whitelist_reason") if first_row else None
+        ),
+        "starttime": _format_date(first_row.get("starttime")) if first_row else None,
+        "endtime": _format_date(first_row.get("endtime")) if first_row else None,
         # 基础信息
-        "cell_name": first_row.get("cell_name"),
-        "dist_name": first_row.get("dist_name"),
-        "county_name": first_row.get("county_name"),
-        "prod_name": first_row.get("prod_name"),
+        "cell_name": first_row.get("cell_name") if first_row else None,
+        "dist_name": first_row.get("dist_name") if first_row else None,
+        "county_name": first_row.get("county_name") if first_row else None,
+        "prod_name": first_row.get("prod_name") if first_row else None,
     }
 
 

@@ -56,3 +56,93 @@ def test_report_marks_indeterminate_param_check_as_unavailable():
 
     assert "参数核查结果暂不可用" in report
     assert "参数核查结果：不合规" not in report
+
+
+def test_all_report_preserves_complete_auditable_evidence():
+    """完整直出报告必须保留每类可复核证据和风险信息。"""
+    report = build_single_cell_energy_report({
+        "analysis_target": "all",
+        "cell_name": "测试小区",
+        "cgi": "460-00-1-1",
+        "stat_time": "2026-08-10",
+        "high_load_type": "下高",
+        "expansion_result_status": "candidate_available",
+        "expansion_process_evidence_status": "partial",
+        "expansion_process_table": "扩展过程证据表",
+        "expansion_candidate_table": "扩展候选表",
+        "expansion_deployment_table": "扩展部署表",
+        "expansion_data": [{"cgi": "460-00-1-1"}],
+        "constriction_data": [{"around_cgi": "neighbor"}],
+        "constriction_main_table": "收缩主小区条件表",
+        "constriction_relation_table": "收缩关系范围表",
+        "constriction_load_table": "收缩邻区负荷表",
+        "constriction_result_table": "收缩结果表",
+        "pre_sleep_load_data": [{"cgi": "460-00-1-1"}],
+        "pre_sleep_load_table": "休眠前负荷表",
+        "high_prb_days_7d": 3,
+        "param_check": {
+            "success": True,
+            "is_compliant": False,
+            "unqualified_items": [{
+                "param_name": "符号关断开关",
+                "current_value": "关闭",
+                "suggested_value": "开启",
+                "impact": "无法进入节能状态",
+            }],
+        },
+        "whitelist_status": "whitelisted",
+        "whitelist_reason": "重要活动保障",
+        "jd_starttime": "2026-08-01",
+        "jd_endtime": "2026-08-31",
+    })
+
+    for evidence in (
+        "扩展过程证据表",
+        "扩展候选表",
+        "扩展部署表",
+        "收缩主小区条件表",
+        "收缩关系范围表",
+        "收缩邻区负荷表",
+        "收缩结果表",
+        "休眠前负荷表",
+        "符号关断开关",
+        "关闭",
+        "开启",
+        "无法进入节能状态",
+        "重要活动保障",
+        "2026-08-01",
+        "2026-08-31",
+    ):
+        assert evidence in report
+
+
+def test_all_report_replaces_missing_evidence_with_short_explanations():
+    """没有对应结果时应输出说明，而不是伪造或展示空表。"""
+    report = build_single_cell_energy_report({
+        "analysis_target": "all",
+        "expansion_result_status": "unavailable",
+        "expansion_process_evidence_status": "missing",
+        "expansion_data": [],
+        "constriction_data": [],
+        "pre_sleep_load_data": [],
+        "param_check": {"success": False, "is_compliant": None},
+        "whitelist_status": "unknown",
+    })
+
+    assert "扩展过程证据暂不可用" in report
+    assert "收缩分析结果暂不可用" in report
+    assert "休眠前负荷数据暂不可用" in report
+    assert "| — |" not in report
+
+
+def test_report_overview_uses_untruncated_constriction_total_count():
+    """收缩概览应使用原始总数，而不是聊天返回的截断行数。"""
+    report = build_single_cell_energy_report({
+        "analysis_target": "constriction",
+        "constriction_data": [{"around_cgi": "neighbor"}],
+        "constriction_total_count": 51,
+        "whitelist_status": "unknown",
+    })
+
+    assert "共获得 51 条可复核收缩记录" in report
+    assert "共获得 1 条可复核收缩记录" not in report
