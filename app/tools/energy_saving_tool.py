@@ -247,8 +247,10 @@ async def analyze_single_cell_energy(
         result["jd_reason"] = expansion_result.get("reason")
         result["jd_starttime"] = expansion_result.get("starttime")
         result["jd_endtime"] = expansion_result.get("endtime")
-        result["is_whitelist"] = expansion_result.get("is_whitelist", False)
-        result["whitelist_reason"] = expansion_result.get("reason") or "无"
+        result["is_whitelist"] = normalize_boolean_flag(
+            expansion_result.get("is_whitelist"),
+        )
+        result["whitelist_reason"] = expansion_result.get("reason")
         # 基础信息
         _fill_base_info(result, expansion_result, cgi)
 
@@ -256,6 +258,10 @@ async def analyze_single_cell_energy(
     if "constriction" in results_map:
         constriction_result = results_map["constriction"]
         result["constriction_table"] = constriction_result["table"]
+        result["constriction_main_table"] = constriction_result.get("main_table", "")
+        result["constriction_relation_table"] = constriction_result.get("relation_table", "")
+        result["constriction_load_table"] = constriction_result.get("load_table", "")
+        result["constriction_result_table"] = constriction_result.get("result_table", "")
         constriction_data, constriction_meta = truncate_and_export(
             constriction_result["data"],
             prefix="single_cell_constriction",
@@ -267,8 +273,12 @@ async def analyze_single_cell_energy(
         if "cell_name" not in result:
             _fill_base_info(result, constriction_result, cgi)
             # 仅收缩时，白名单信息从收缩结果获取
-            result["is_whitelist"] = constriction_result.get("is_whitelist", False)
-            result["whitelist_reason"] = constriction_result.get("whitelist_reason", "无")
+            result["is_whitelist"] = normalize_boolean_flag(
+                constriction_result.get("is_whitelist"),
+            )
+            result["whitelist_reason"] = constriction_result.get("whitelist_reason")
+            result["jd_starttime"] = constriction_result.get("starttime")
+            result["jd_endtime"] = constriction_result.get("endtime")
 
     # ── Step 4: 仅负荷状态 ──
     if need_load and not need_expansion:
@@ -300,7 +310,7 @@ async def analyze_single_cell_energy(
     result.setdefault("county_name", "-")
     result.setdefault("prod_name", "-")
     result.setdefault("is_whitelist", False)
-    result.setdefault("whitelist_reason", "无")
+    result.setdefault("whitelist_reason", None)
     result.setdefault("high_load_type", "否")
 
     return result
@@ -456,7 +466,8 @@ async def _query_constriction_data(
                self_sleep_duration, prb_rate_ul, prb_rate_dl,
                prb_rate_ul_before, prb_rate_dl_before, prb_increase,
                before_sleep_hour, before_sleep_date,
-               is_whitelist, cell_name, dist_name, county_name, prod_name
+               is_whitelist, starttime, endtime,
+               cell_name, dist_name, county_name, prod_name
         FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day
         WHERE cgi = :cgi AND stat_time = :stat_time
     """)
@@ -481,22 +492,10 @@ async def _query_constriction_data(
         site_type_by_cell,
     )
 
-    table_rows = [_build_constriction_table_row(row) for row in constriction_data]
-    table_md = ""
-    if table_rows:
-        table_md = _build_md_table(
-            headers=[
-                "休眠前时间",
-                "关联小区",
-                "主小区休眠前PRB",
-                "主小区休眠时长(秒)",
-                "邻区休眠前/期间PRB",
-                "抬升量",
-                "距离及站型",
-                "关系状态",
-            ],
-            rows=table_rows,
-        )
+    main_table = _build_constriction_main_table(constriction_data)
+    relation_table = _build_constriction_relation_table(constriction_data)
+    load_table = _build_constriction_load_table(constriction_data)
+    result_table = _build_constriction_result_table(constriction_data)
 
     first_row = constriction_rows[0] if constriction_rows else {}
     whitelist_reason = next(
@@ -506,9 +505,15 @@ async def _query_constriction_data(
 
     return {
         "data": constriction_data,
-        "table": table_md,
-        "is_whitelist": bool(first_row.get("is_whitelist")),
+        "main_table": main_table,
+        "relation_table": relation_table,
+        "load_table": load_table,
+        "result_table": result_table,
+        "table": result_table,
+        "is_whitelist": normalize_boolean_flag(first_row.get("is_whitelist")),
         "whitelist_reason": whitelist_reason,
+        "starttime": _format_date(first_row.get("starttime")),
+        "endtime": _format_date(first_row.get("endtime")),
         # 基础信息
         "cell_name": first_row.get("cell_name"),
         "dist_name": first_row.get("dist_name"),
@@ -518,50 +523,124 @@ async def _query_constriction_data(
 
 
 def _format_prb(ul: Any, dl: Any) -> str:
-    ul_display = "—" if ul is None else f"{ul}%"
-    dl_display = "—" if dl is None else f"{dl}%"
+    ul_display = _format_prb_value(ul)
+    dl_display = _format_prb_value(dl)
     return f"上行{ul_display}/下行{dl_display}"
 
 
-def _build_constriction_table_row(row: dict[str, Any]) -> str:
+def _format_prb_value(value: Any) -> str:
+    return "—" if value is None else f"{float(value):.1f}%"
+
+
+def _format_date(value: Any) -> str | None:
+    parsed = ensure_datetime(value)
+    return parsed.strftime("%Y-%m-%d") if parsed else None
+
+
+def _format_constriction_hour(hour: Any) -> str:
+    if hour is None:
+        return "—"
+    return _format_hour_interval(int(hour))
+
+
+def _format_before_time(row: dict[str, Any]) -> str:
     before_date = row.get("before_sleep_date") or "—"
     before_hour = row.get("before_sleep_hour")
-    before_time = (
+    return (
         f"{before_date} {before_hour}:00"
         if before_hour is not None
         else str(before_date)
     )
+
+
+def _related_cell(row: dict[str, Any]) -> str:
     related_cgi = row.get("around_cgi") or "—"
     related_name = row.get("around_cgi_cell_name") or "—"
-    distance = row.get("distance")
-    relation = (
-        "关系信息缺失"
-        if row.get("relation_status") == "missing"
-        else row.get("relation_status")
+    return f"{related_name}({related_cgi})"
+
+
+def _build_constriction_main_table(rows: list[dict[str, Any]]) -> str:
+    unique_rows = {}
+    for row in rows:
+        key = (row.get("hours"), row.get("before_sleep_date"), row.get("before_sleep_hour"))
+        unique_rows.setdefault(key, row)
+    table_rows = [
+        f"| {_format_constriction_hour(row.get('hours'))} | {_format_before_time(row)} | "
+        f"{_format_prb_value(row.get('self_prb_rate_ul_before'))} | "
+        f"{_format_prb_value(row.get('self_prb_rate_dl_before'))} | "
+        f"{_format_prb_value(row.get('main_prb_before'))} | "
+        f"{row.get('self_sleep_duration') if row.get('self_sleep_duration') is not None else '—'} | "
+        "纳入周边影响分析 |"
+        for row in unique_rows.values()
+    ]
+    return _build_md_table(
+        ["休眠时段", "休眠前时间", "休眠前上行PRB", "休眠前下行PRB", "休眠前最高PRB", "休眠时长(秒)", "判断"],
+        table_rows,
     )
-    distance_display = "—" if distance is None else f"{distance}米"
-    main_prb = _format_prb(
-        row.get("self_prb_rate_ul_before"),
-        row.get("self_prb_rate_dl_before"),
+
+
+_RELATION_LABELS = {
+    "allowed": "满足分析范围",
+    "missing": "关系信息待核实",
+}
+
+
+def _build_constriction_relation_table(rows: list[dict[str, Any]]) -> str:
+    table_rows = []
+    for row in rows:
+        distance = row.get("distance")
+        distance_display = "—" if distance is None else f"{float(distance):.1f}米"
+        relation_label = _RELATION_LABELS.get(
+            row.get("relation_status"),
+            "不满足分析范围",
+        )
+        table_rows.append(
+            f"| {_related_cell(row)} | {row.get('around_network_type') or '—'} | "
+            f"{distance_display} | {row.get('main_site_type') or '—'} | "
+            f"{row.get('around_site_type') or '—'} | {relation_label} |"
+        )
+    return _build_md_table(
+        ["关联小区", "制式", "距离", "主小区站型", "关联小区站型", "关系判断"],
+        table_rows,
     )
-    around_prb_before = _format_prb(
-        row.get("prb_rate_ul_before"),
-        row.get("prb_rate_dl_before"),
+
+
+def _format_increase(value: Any) -> str:
+    return "—" if value is None else f"{float(value):.1f}个百分点"
+
+
+def _build_constriction_load_table(rows: list[dict[str, Any]]) -> str:
+    table_rows = [
+        f"| {_format_constriction_hour(row.get('hours'))} | {_related_cell(row)} | "
+        f"{_format_prb(row.get('prb_rate_ul_before'), row.get('prb_rate_dl_before'))} | "
+        f"{_format_prb(row.get('prb_rate_ul'), row.get('prb_rate_dl'))} | "
+        f"{_format_prb_value(row.get('around_prb_before'))} | "
+        f"{_format_prb_value(row.get('around_prb_during'))} | "
+        f"{_format_increase(row.get('prb_increase'))} | 受到影响 |"
+        for row in rows
+    ]
+    return _build_md_table(
+        ["主小区休眠时段", "关联小区", "休眠前PRB(上/下行)", "休眠期间PRB(上/下行)", "休眠前最高PRB", "休眠期间最高PRB", "抬升量", "影响判断"],
+        table_rows,
     )
-    around_prb = _format_prb(row.get("prb_rate_ul"), row.get("prb_rate_dl"))
-    sleep_duration = row.get("self_sleep_duration")
-    sleep_display = "—" if sleep_duration is None else sleep_duration
-    prb_increase = row.get("prb_increase")
-    increase_display = "—" if prb_increase is None else prb_increase
-    site_types = (
-        f"{row.get('main_site_type') or '—'}→"
-        f"{row.get('around_site_type') or '—'}"
-    )
-    return (
-        f"| {before_time} | {related_name}({related_cgi}) | "
-        f"{main_prb} | {sleep_display} | "
-        f"{around_prb_before} / {around_prb} | {increase_display} | "
-        f"{distance_display}，{site_types} | {relation} |"
+
+
+def _build_constriction_result_table(rows: list[dict[str, Any]]) -> str:
+    table_rows = []
+    for row in rows:
+        evidence = (
+            f"PRB最高由{_format_prb_value(row.get('around_prb_before'))}升至"
+            f"{_format_prb_value(row.get('around_prb_during'))}，"
+            f"抬升{_format_increase(row.get('prb_increase'))}"
+        )
+        table_rows.append(
+            f"| {_format_constriction_hour(row.get('hours'))} | "
+            f"{row.get('reason') or '关联小区负荷受影响'} | {_related_cell(row)} | "
+            f"{evidence} | 剔除该时段 |"
+        )
+    return _build_md_table(
+        ["原节电时段", "触发原因", "关联小区", "关键证据", "收缩建议"],
+        table_rows,
     )
 
 
@@ -764,6 +843,8 @@ async def _query_pre_sleep_load_data(
             "cgi": row.get("cgi") or cgi,
             "sleep_seconds": total_sleep_seconds,
             "sleep_display": _format_sleep_duration(total_sleep_seconds),
+            "prb_rate_ul": round(float(prb_rate_ul), 2),
+            "prb_rate_dl": round(float(prb_rate_dl), 2),
             "prb_rate": round(prb_rate, 2),
             "is_pre_sleep_hour": "是" if is_pre_sleep_hour else "否",
             "high_prb_days_7d": high_prb_days,
@@ -775,16 +856,20 @@ async def _query_pre_sleep_load_data(
         table_rows.append(
             f"| {item['time']} | {item['dist_name']} | {item['prod_name']} | "
             f"{item['gnb_name']} | {item['cell_name']} | {item['cgi']} | "
-            f"{item['sleep_seconds']} | {item['prb_rate']:.2f}% | "
+            f"{item['sleep_seconds']} | {item['prb_rate_ul']:.2f}% | "
+            f"{item['prb_rate_dl']:.2f}% | {item['prb_rate']:.2f}% | "
             f"{item['is_pre_sleep_hour']} | {item['high_prb_days_7d']} |"
         )
 
     if not table_rows:
-        table_rows.append("| — | 休眠生效前无高负荷 | — | — | — | — | — | — | — | — |")
+        table_rows.append(
+            "| — | 休眠生效前无高负荷 | — | — | — | — | — | — | — | — | — | — |"
+        )
 
     table_md = _build_md_table(
         headers=["时间", "地市名称", "厂家", "基站名称", "小区名称", "CGI",
-                 "休眠类生效时长(秒)", f"无线利用率(%)", "是否休眠前一小时", f"7天内PRB>{PRB_HIGH_LOAD_THRESHOLD:.0f}%天数"],
+                 "休眠类生效时长(秒)", "上行PRB利用率(%)", "下行PRB利用率(%)",
+                 "无线利用率(%)", "是否休眠前一小时", f"7天内PRB>{PRB_HIGH_LOAD_THRESHOLD:.0f}%天数"],
         rows=table_rows,
     )
 

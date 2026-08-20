@@ -190,6 +190,49 @@ async def test_param_check_failure_without_conclusion_is_unknown(monkeypatch):
     assert result["is_compliant"] is None
 
 
+@pytest.mark.asyncio
+async def test_single_cell_response_normalizes_expansion_whitelist_metadata(
+    monkeypatch,
+):
+    """扩展响应必须输出布尔白名单状态和完整有效期。"""
+    async def fake_query_expansion(cgi, stat_time):
+        return {
+            "data": [],
+            "table": "扩展表",
+            "cell_name": "测试小区",
+            "is_whitelist": "是",
+            "reason": "重要活动保障",
+            "starttime": "2026-08-01",
+            "endtime": "2026-08-31",
+        }
+
+    async def fake_param_check(db, cgi, stat_time):
+        return {"success": True, "is_compliant": True, "unqualified_count": 0}
+
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_query_expansion_data",
+        fake_query_expansion,
+    )
+    monkeypatch.setattr(energy_saving_tool, "_query_param_check", fake_param_check)
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "get_session_factory",
+        lambda: _SessionContext,
+    )
+
+    result = await energy_saving_tool.analyze_single_cell_energy(
+        analysis_target="expansion",
+        db=_LatestDateSession(),
+        cgi="460-00-1-1",
+    )
+
+    assert result["is_whitelist"] is True
+    assert result["whitelist_reason"] == "重要活动保障"
+    assert result["jd_starttime"] == "2026-08-01"
+    assert result["jd_endtime"] == "2026-08-31"
+
+
 def test_pre_sleep_load_is_required_for_all_and_constriction():
     """完整分析和收缩分析都必须形成休眠前负荷闭环。"""
     assert energy_saving_tool._needs_pre_sleep_load("all") is True
@@ -236,7 +279,23 @@ async def test_pre_sleep_query_counts_candidate_rows_in_python(monkeypatch):
         query = str(sql)
         queries.append(query)
         if "ORDER BY stat_time, prb_hour" in query:
-            return []
+            return [
+                {
+                    "stat_time": date(2026, 8, 10),
+                    "dist_name": "地市",
+                    "prod_name": "厂家",
+                    "gnb_name": "基站",
+                    "cell_name": "主小区",
+                    "cgi": "main",
+                    "ee_shallowsleeptimerru": 600,
+                    "ee_deepsleeptimerru": 0,
+                    "ee_supersleeptimerru": 0,
+                    "prb_hour": 23,
+                    "prb_rate_ul": 51.0,
+                    "prb_rate_dl": 48.0,
+                    "sleep_hour": "0",
+                }
+            ]
         assert "COUNT(" not in query
         assert "stat_time >= :start_date" in query
         assert "stat_time <= :end_date" in query
@@ -267,6 +326,11 @@ async def test_pre_sleep_query_counts_candidate_rows_in_python(monkeypatch):
 
     assert len(queries) == 2
     assert result["high_prb_days_7d"] == 1
+    assert result["data"][0]["prb_rate_ul"] == 51.0
+    assert result["data"][0]["prb_rate_dl"] == 48.0
+    assert result["data"][0]["prb_rate"] == 51.0
+    assert "上行PRB利用率(%)" in result["table"]
+    assert "下行PRB利用率(%)" in result["table"]
 
 
 @pytest.mark.asyncio
@@ -322,6 +386,56 @@ async def test_all_response_includes_pre_sleep_load(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_constriction_response_exposes_focused_tables_and_whitelist(
+    monkeypatch,
+):
+    """仅收缩分析也必须透传四张证据表和完整白名单信息。"""
+    async def fake_query_constriction(cgi, stat_time):
+        return {
+            "data": [],
+            "table": "结果表",
+            "main_table": "主小区条件表",
+            "relation_table": "关系范围表",
+            "load_table": "邻区负荷表",
+            "result_table": "收缩结果表",
+            "cell_name": "测试小区",
+            "is_whitelist": "是",
+            "whitelist_reason": "重要活动保障",
+            "starttime": "2026-08-01",
+            "endtime": "2026-08-31",
+        }
+
+    async def fake_query_pre_sleep(cgi, stat_time):
+        return {"data": [], "table": "休眠前负荷表", "high_prb_days_7d": 0}
+
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_query_constriction_data",
+        fake_query_constriction,
+    )
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_query_pre_sleep_load_data",
+        fake_query_pre_sleep,
+    )
+
+    result = await energy_saving_tool.analyze_single_cell_energy(
+        analysis_target="constriction",
+        db=_LatestDateSession(),
+        cgi="main",
+    )
+
+    assert result["constriction_main_table"] == "主小区条件表"
+    assert result["constriction_relation_table"] == "关系范围表"
+    assert result["constriction_load_table"] == "邻区负荷表"
+    assert result["constriction_result_table"] == "收缩结果表"
+    assert result["is_whitelist"] is True
+    assert result["whitelist_reason"] == "重要活动保障"
+    assert result["jd_starttime"] == "2026-08-01"
+    assert result["jd_endtime"] == "2026-08-31"
+
+
+@pytest.mark.asyncio
 async def test_query_constriction_enriches_relation_without_dropping_ten(
     monkeypatch,
 ):
@@ -338,8 +452,10 @@ async def test_query_constriction_enriches_relation_without_dropping_ten(
             base_row = {
                 "cgi": "main",
                 "hours": 0,
+                "reason": "邻区负荷抬升",
                 "site_type": None,
                 "around_cgi_network_type": "lte",
+                "around_cgi_cell_name": "关联小区",
                 "self_prb_rate_ul_before": 12.0,
                 "self_prb_rate_dl_before": 5.0,
                 "self_sleep_duration": 3600,
@@ -350,6 +466,9 @@ async def test_query_constriction_enriches_relation_without_dropping_ten(
                 "prb_increase": 10.0,
                 "before_sleep_hour": 23,
                 "before_sleep_date": date(2026, 8, 9),
+                "starttime": date(2026, 8, 1),
+                "endtime": date(2026, 8, 31),
+                "is_whitelist": "否",
             }
             return [
                 {**base_row, "around_cgi": "neighbor", "prb_increase": 10.0},
@@ -394,6 +513,16 @@ async def test_query_constriction_enriches_relation_without_dropping_ten(
     assert result["data"][0]["main_site_type"] == "室分"
     assert result["data"][0]["around_site_type"] == "宏站"
     assert result["data"][0]["relation_status"] == "allowed"
+    assert "休眠前最高PRB" in result["main_table"]
+    assert result["main_table"].count("2026-08-09 23:00") == 1
+    assert "80.0米" in result["relation_table"]
+    assert "50.0%" in result["load_table"]
+    assert "60.0%" in result["load_table"]
+    assert "10.0个百分点" in result["load_table"]
+    assert "剔除" in result["result_table"]
+    assert result["is_whitelist"] is False
+    assert result["starttime"] == "2026-08-01"
+    assert result["endtime"] == "2026-08-31"
     assert sum("jd_cell_around" in query for query in calls) == 1
     assert sum("nr_fix_prm" in query for query in calls) == 1
     assert sum("lte_fix_prm" in query for query in calls) == 1
