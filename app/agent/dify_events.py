@@ -54,6 +54,9 @@ class DifyRunResult:
     total_ms: float = 0.0                      # 端到端耗时
     max_input_tokens: int = 0                  # 单次调用峰值输入 token
     context_size: int = 0                      # 上下文窗口大小快照
+    # ── 端到端首 token 延迟（起点=HTTP 请求到达路由入口）──
+    e2e_first_model_token_ms: float | None = None
+    e2e_first_text_token_ms: float | None = None
 
 
 class DifyEventAdapter:
@@ -65,6 +68,7 @@ class DifyEventAdapter:
         message_id: str,
         task_id: str,
         created_at: int,
+        route_start_perf: float | None = None,
     ) -> None:
         self.conversation_id = conversation_id
         self.message_id = message_id
@@ -75,6 +79,7 @@ class DifyEventAdapter:
         self._thought_position = 0
 
         # ── 性能指标采集 ──
+        self._route_start_perf = route_start_perf
         self._start_perf = time.perf_counter()
         self._first_model_token_at: float | None = None
         self._first_text_token_at: float | None = None
@@ -183,6 +188,17 @@ class DifyEventAdapter:
             self.result.first_text_token_ms = round(
                 (self._first_text_token_at - self._start_perf) * 1000, 2,
             )
+        if self._route_start_perf is not None:
+            if self._first_model_token_at is not None:
+                self.result.e2e_first_model_token_ms = round(
+                    (self._first_model_token_at - self._route_start_perf) * 1000,
+                    2,
+                )
+            if self._first_text_token_at is not None:
+                self.result.e2e_first_text_token_ms = round(
+                    (self._first_text_token_at - self._route_start_perf) * 1000,
+                    2,
+                )
         self.result.max_input_tokens = self._max_input_tokens
         self.result.context_size = self._context_size
 

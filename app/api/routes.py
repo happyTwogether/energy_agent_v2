@@ -133,12 +133,14 @@ async def _persist_metrics(
                         (conversation_id, user_id, source,
                          prompt_tokens, completion_tokens, total_tokens,
                          first_model_token_ms, first_text_token_ms, total_ms,
+                         e2e_first_model_token_ms, e2e_first_text_token_ms,
                          throughput, max_input_tokens, context_size, context_ratio,
                          success, error_type)
                     VALUES
                         (:conversation_id, :user_id, :source,
                          :prompt_tokens, :completion_tokens, :total_tokens,
                          :first_model_token_ms, :first_text_token_ms, :total_ms,
+                         :e2e_first_model_token_ms, :e2e_first_text_token_ms,
                          :throughput, :max_input_tokens, :context_size, :context_ratio,
                          :success, :error_type)
                     """
@@ -153,6 +155,8 @@ async def _persist_metrics(
                     "first_model_token_ms": result.first_model_token_ms,
                     "first_text_token_ms": result.first_text_token_ms,
                     "total_ms": result.total_ms,
+                    "e2e_first_model_token_ms": result.e2e_first_model_token_ms,
+                    "e2e_first_text_token_ms": result.e2e_first_text_token_ms,
                     "throughput": throughput,
                     "max_input_tokens": max_input_tokens,
                     "context_size": context_size,
@@ -187,13 +191,17 @@ def _build_usage_metadata(token_usage: dict[str, int]) -> dict[str, Any]:
     }
 
 
-def _new_dify_adapter(conversation_id: str) -> DifyEventAdapter:
+def _new_dify_adapter(
+    conversation_id: str,
+    route_start_perf: float | None = None,
+) -> DifyEventAdapter:
     """为一次响应创建独立的 Dify 事件聚合器。"""
     return DifyEventAdapter(
         conversation_id=conversation_id,
         message_id=str(uuid.uuid4()),
         task_id=str(uuid.uuid4()),
         created_at=int(time.time()),
+        route_start_perf=route_start_perf,
     )
 
 
@@ -275,9 +283,10 @@ async def _dify_stream_generator(
     user_query: str,
     *,
     source: int = 0,
+    route_start_perf: float | None = None,
 ) -> AsyncGenerator[dict[str, str], None]:
     """流式输出 Dify 事件，并仅在正常完成后持久化答案。"""
-    adapter = _new_dify_adapter(conversation_id)
+    adapter = _new_dify_adapter(conversation_id, route_start_perf)
     events = stream_agent_events(messages, conversation_id)
     terminal_envelope: dict[str, str] | None = None
     async for envelope in adapter.stream(events):
@@ -320,9 +329,11 @@ async def _run_blocking(
     messages: list[dict[str, Any]],
     user: str,
     user_query: str,
+    *,
+    route_start_perf: float | None = None,
 ) -> dict[str, Any]:
     """消费同一 Dify 事件流，并返回 blocking JSON。"""
-    adapter = _new_dify_adapter(conversation_id)
+    adapter = _new_dify_adapter(conversation_id, route_start_perf)
     events = stream_agent_events(messages, conversation_id)
     async for _ in adapter.stream(events):
         pass
@@ -363,6 +374,7 @@ async def _run_blocking(
 @router.post("/chat/stream")
 async def chat_stream(http_request: Request, req: DifyChatRequest) -> Response:
     """PC Web 端 Dify 格式流式聊天接口。"""
+    route_start_perf = time.perf_counter()
     logger.info(
         "PC端聊天请求: query=%s, cid=%s, user=%s",
         req.query,
@@ -380,6 +392,7 @@ async def chat_stream(http_request: Request, req: DifyChatRequest) -> Response:
             user=req.user,
             user_query=req.query,
             source=1,
+            route_start_perf=route_start_perf,
         ),
         media_type="text/event-stream",
     )
@@ -392,6 +405,7 @@ async def dify_chat_messages(
 ) -> Response:
     """Dify 对话 API，支持 blocking 与 streaming。"""
     try:
+        route_start_perf = time.perf_counter()
         logger.info(
             "App端 Dify 请求: query=%s, cid=%s, mode=%s, user=%s",
             req.query,
@@ -409,6 +423,7 @@ async def dify_chat_messages(
                 messages=messages,
                 user=req.user,
                 user_query=req.query,
+                route_start_perf=route_start_perf,
             )
             return Response(
                 content=dumps_decimal(result, ensure_ascii=False),
@@ -422,6 +437,7 @@ async def dify_chat_messages(
                 user=req.user,
                 user_query=req.query,
                 source=0,
+                route_start_perf=route_start_perf,
             ),
             media_type="text/event-stream",
         )
