@@ -3,14 +3,30 @@
 from app.prompts import energy_saving
 
 
-def test_single_cell_prompt_uses_precomputed_v14_evidence():
+def test_single_cell_prompt_uses_business_oriented_auditable_evidence():
+    """防止报告漏用过程表、白名单有效期或暴露实现细节。"""
     prompt = energy_saving.SYNTHESIS_SINGLE_CELL
 
-    assert "deploy_hours_continuous" in prompt
-    assert "prb_increase" in prompt
-    assert "休眠前负荷" in prompt
-    assert "低业务占比 > 90%" not in prompt
-    assert "休眠时长 < 60秒" not in prompt
+    for key in (
+        "expansion_process_table",
+        "expansion_candidate_table",
+        "expansion_deployment_table",
+        "constriction_main_table",
+        "constriction_relation_table",
+        "constriction_load_table",
+        "constriction_result_table",
+        "pre_sleep_load_table",
+        "jd_starttime",
+        "jd_endtime",
+    ):
+        assert key in prompt
+    assert "数据库预计算" not in prompt
+    assert "V1.4 预计算" not in prompt
+    assert "扩展时段减去收缩时段" not in prompt
+    assert "同长度选择最晚" not in prompt
+    assert "命中天数/有效天数" not in prompt
+    assert "参数核查暂不可用" in prompt
+    assert "未命中节电白名单" in prompt
 
 
 def test_batch_prompt_mentions_corrected_v14_statistics():
