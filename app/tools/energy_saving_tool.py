@@ -342,7 +342,11 @@ async def analyze_single_cell_energy(
 
     # ── Step 4: 仅负荷状态 ──
     if need_load and not need_expansion:
-        load_info = await _check_high_load_with_base_info(db, cgi, query_date)
+        load_info = await _run_timed_stage(
+            "load",
+            _check_high_load_with_base_info(db, cgi, query_date),
+            performance,
+        )
         result["high_load_type"] = load_info.get("high_load_type", "否")
         # 基础信息
         if "cell_name" not in result:

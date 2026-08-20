@@ -186,6 +186,33 @@ async def test_single_cell_handler_returns_direct_report_and_stage_performance(
 
 
 @pytest.mark.asyncio
+async def test_single_cell_load_handler_reports_state_and_stage_performance(
+    monkeypatch,
+):
+    """仅负荷 handler 应直出结论并记录独立查询阶段耗时。"""
+    async def fake_check_high_load(db, cgi, stat_time):
+        return {"high_load_type": "上高", "cell_name": "测试小区"}
+
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_check_high_load_with_base_info",
+        fake_check_high_load,
+    )
+
+    result = await energy_saving_tool.analyze_single_cell_energy(
+        analysis_target="load",
+        db=_LatestDateSession(),
+        cgi="460-00-1-1",
+    )
+
+    assert "上高" in result["report_content"]
+    assert "上行高负荷" in result["report_content"]
+    assert result["performance"]["load_ms"] >= 0
+    assert "expansion_ms" not in result["performance"]
+    assert "load_ms" not in result["report_content"]
+
+
+@pytest.mark.asyncio
 async def test_single_cell_response_exposes_expansion_raw_data(monkeypatch):
     """顶层响应保留原始扩展字段和明确的截断元数据。"""
     expansion_row = {

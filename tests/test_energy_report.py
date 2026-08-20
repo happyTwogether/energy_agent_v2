@@ -129,10 +129,42 @@ def test_all_report_replaces_missing_evidence_with_short_explanations():
         "whitelist_status": "unknown",
     })
 
-    assert "扩展过程证据暂不可用" in report
-    assert "收缩分析结果暂不可用" in report
-    assert "休眠前负荷数据暂不可用" in report
+    for title in (
+        "扩展过程证据",
+        "扩展候选时段",
+        "扩展部署时段",
+        "主小区休眠条件核查",
+        "周边小区关联范围核查",
+        "周边小区负荷变化",
+        "需收缩节电时段",
+        "休眠前本小区负荷",
+    ):
+        assert f"### {title}" in report
+    for note in (
+        "未获得可判定的扩展过程证据",
+        "未获得扩展候选分析结果",
+        "未获得连续部署分析结果",
+        "未获得主小区休眠条件证据",
+        "未获得周边小区关联范围证据",
+        "未获得周边小区负荷证据",
+        "未获得收缩分析结果",
+        "未获得休眠前负荷证据",
+    ):
+        assert note in report
     assert "| — |" not in report
+
+
+def test_load_report_uses_explicit_high_load_state():
+    """仅负荷报告应明确输出结构化高负荷状态。"""
+    report = build_single_cell_energy_report({
+        "analysis_target": "load",
+        "high_load_type": "双高",
+        "whitelist_status": "unknown",
+    })
+
+    assert "## 负荷状态" in report
+    assert "双高" in report
+    assert "上下行高负荷" in report
 
 
 def test_report_overview_uses_untruncated_constriction_total_count():

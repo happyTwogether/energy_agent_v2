@@ -59,6 +59,20 @@ def _capacity_risk(high_load_type: Any) -> str:
     return "容量风险状态暂不可用。"
 
 
+def _load_status(high_load_type: Any) -> str:
+    messages = {
+        "上高": "当前负荷状态：上高（上行高负荷）。",
+        "下高": "当前负荷状态：下高（下行高负荷）。",
+        "双高": "当前负荷状态：双高（上下行高负荷）。",
+        "否": "当前负荷状态：非高负荷。",
+    }
+    return messages.get(high_load_type, "当前负荷状态：未知。")
+
+
+def _append_load(lines: list[str], result: dict[str, Any]) -> None:
+    lines.extend(["", "## 负荷状态", _load_status(result.get("high_load_type"))])
+
+
 def _append_expansion(lines: list[str], result: dict[str, Any]) -> None:
     lines.extend([
         "",
@@ -74,31 +88,40 @@ def _append_expansion(lines: list[str], result: dict[str, Any]) -> None:
         result.get("expansion_process_table")
         if result.get("expansion_process_evidence_status") in {"complete", "partial"}
         else None,
-        "扩展过程证据暂不可用。",
+        "未获得可判定的扩展过程证据。",
     )
-    if result.get("expansion_result_status") in {"no_candidate", "candidate_available"}:
-        _append_table_or_note(
-            lines, "扩展候选时段", result.get("expansion_candidate_table"),
-            "扩展候选结果暂不可用。",
-        )
-        _append_table_or_note(
-            lines, "扩展部署时段", result.get("expansion_deployment_table"),
-            "连续部署结果暂不可用。",
-        )
+    result_is_available = result.get("expansion_result_status") in {
+        "no_candidate", "candidate_available",
+    }
+    _append_table_or_note(
+        lines,
+        "扩展候选时段",
+        result.get("expansion_candidate_table") if result_is_available else None,
+        "未获得扩展候选分析结果。",
+    )
+    _append_table_or_note(
+        lines,
+        "扩展部署时段",
+        result.get("expansion_deployment_table") if result_is_available else None,
+        "未获得连续部署分析结果。",
+    )
 
 
 def _append_constriction(lines: list[str], result: dict[str, Any]) -> None:
     lines.extend(["", "## 休眠收缩"])
-    if result.get("constriction_data") == []:
-        lines.append("收缩分析结果暂不可用。")
-        return
+    has_result = result.get("constriction_data") != []
     for title, key, note in (
-        ("主小区休眠条件核查", "constriction_main_table", "主小区休眠条件暂不可用。"),
-        ("周边小区关联范围核查", "constriction_relation_table", "周边小区关系证据暂不可用。"),
-        ("周边小区负荷变化", "constriction_load_table", "周边小区负荷证据暂不可用。"),
-        ("需收缩节电时段", "constriction_result_table", "收缩结果暂不可用。"),
+        ("主小区休眠条件核查", "constriction_main_table", "未获得主小区休眠条件证据。"),
+        ("周边小区关联范围核查", "constriction_relation_table", "未获得周边小区关联范围证据。"),
+        ("周边小区负荷变化", "constriction_load_table", "未获得周边小区负荷证据。"),
+        ("需收缩节电时段", "constriction_result_table", "未获得收缩分析结果。"),
     ):
-        _append_table_or_note(lines, title, result.get(key), note)
+        _append_table_or_note(
+            lines,
+            title,
+            result.get(key) if has_result else None,
+            note,
+        )
 
 
 def _item_value(item: dict[str, Any], *keys: str) -> Any:
@@ -142,13 +165,13 @@ def _append_param_check(lines: list[str], result: dict[str, Any]) -> None:
 
 def _append_pre_sleep_load(lines: list[str], result: dict[str, Any]) -> None:
     if result.get("pre_sleep_load_data") == []:
-        lines.extend(["", "### 休眠前本小区负荷", "休眠前负荷数据暂不可用。"])
+        lines.extend(["", "### 休眠前本小区负荷", "未获得休眠前负荷证据。"])
         return
     _append_table_or_note(
         lines,
         "休眠前本小区负荷",
         result.get("pre_sleep_load_table"),
-        "休眠前负荷数据暂不可用。",
+        "未获得休眠前负荷证据。",
     )
     if result.get("high_prb_days_7d") is not None:
         lines.append(f"近 7 天休眠前高负荷天数：{result['high_prb_days_7d']} 天。")
@@ -184,5 +207,7 @@ def build_single_cell_energy_report(result: dict[str, Any]) -> str:
         _append_pre_sleep_load(lines, result)
     if target == "pre_sleep_load":
         _append_pre_sleep_load(lines, result)
+    if target == "load":
+        _append_load(lines, result)
     _append_whitelist(lines, result)
     return "\n".join(lines)
