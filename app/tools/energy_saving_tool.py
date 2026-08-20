@@ -10,10 +10,12 @@ from app.core.logging import get_logger
 from app.services.cell_resolver import resolve_cell_identifier
 from app.services.database import get_session_factory
 from app.services.energy_analysis import (
+    build_expansion_hour_evidence,
     build_expansion_record,
     collect_site_type_cgis,
     enrich_constriction_records,
     is_pre_sleep_hour,
+    normalize_boolean_flag,
 )
 from app.services.energy_evidence import query_neighbor_relations, query_site_types
 from app.utils.cell_lookup import resolution_error_response
@@ -54,6 +56,9 @@ PRE_SLEEP_LOAD_DAYS: int = 7
 PRB_HIGH_LOAD_THRESHOLD: float = 50.0
 # 不合规项最大返回条数
 MAX_UNQUALIFIED_ITEMS: int = 10
+# 扩展过程证据回看 15 天（含统计日）
+EXPANSION_LOOKBACK_DAYS: int = 14
+EXPANSION_HOURS = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]
 
 
 TOOL_DESCRIPTION = "通过 CGI 或小区中文名分析单个5G小区的节电详情，包含休眠扩展、休眠收缩、负荷状态和休眠生效前负荷偏高。"
@@ -206,6 +211,10 @@ async def analyze_single_cell_energy(
     if "expansion" in results_map:
         expansion_result = results_map["expansion"]
         result["expansion_table"] = expansion_result["table"]
+        result["expansion_process_data"] = expansion_result.get("process_data", [])
+        result["expansion_process_table"] = expansion_result.get("process_table", "")
+        result["expansion_candidate_table"] = expansion_result.get("candidate_table", "")
+        result["expansion_deployment_table"] = expansion_result.get("deployment_table", "")
         expansion_data, expansion_meta = truncate_and_export(
             expansion_result["data"],
             prefix="single_cell_expansion",
@@ -215,13 +224,23 @@ async def analyze_single_cell_energy(
             result[f"expansion_{key}"] = value
         result["high_load_type"] = expansion_result.get("high_load_type", "否")
         # 参数核查结果（仅保留关键字段）
-        param_check_raw = results_map.get("param_check", {"is_compliant": True})
+        param_check_raw = results_map.get(
+            "param_check",
+            {
+                "success": False,
+                "is_compliant": None,
+                "error": "参数核查暂不可用",
+            },
+        )
         result["param_check"] = {
-            "is_compliant": param_check_raw.get("is_compliant", True),
+            "success": param_check_raw.get("success", False),
+            "is_compliant": param_check_raw.get("is_compliant"),
             "unqualified_count": param_check_raw.get("unqualified_count", 0),
         }
+        if param_check_raw.get("error"):
+            result["param_check"]["error"] = param_check_raw["error"]
         # 如果不合规，保留不合规项（用于表格输出）
-        if not param_check_raw.get("is_compliant", True):
+        if param_check_raw.get("is_compliant") is False:
             result["param_check"]["unqualified_items"] = param_check_raw.get("unqualified_items", [])[:MAX_UNQUALIFIED_ITEMS]
         # 节电信息 & 白名单信息（统一从扩展表获取）
         result["jd_type"] = expansion_result.get("jd_type")
@@ -286,11 +305,72 @@ async def analyze_single_cell_energy(
 
     return result
 
+def _format_hour_interval(hour: int) -> str:
+    return f"{hour:02d}:00-{hour:02d}:59"
+
+
+def _format_optional_percentage(value: Any) -> str:
+    return "数据缺失" if value is None else f"{float(value):.1f}%"
+
+
+def _format_optional_boolean(value: bool | None) -> str:
+    if value is None:
+        return "数据缺失"
+    return "是" if value else "否"
+
+
+def _build_expansion_process_table(rows: list[dict[str, Any]]) -> str:
+    table_rows = []
+    for row in rows:
+        sleep_seconds = row.get("avg_sleep_seconds")
+        sleep_display = (
+            "数据缺失"
+            if sleep_seconds is None
+            else _format_sleep_duration(int(sleep_seconds))
+        )
+        table_rows.append(
+            f"| {_format_hour_interval(row['hour'])} | "
+            f"{_format_optional_percentage(row.get('low_flow_pct'))} | "
+            f"{_format_optional_boolean(row.get('is_low_business'))} | "
+            f"{sleep_display} | "
+            f"{_format_optional_boolean(row.get('is_zero_sleep'))} | "
+            f"{row.get('suggestion') or '数据缺失'} |"
+        )
+    return _build_md_table(
+        ["时段", "低业务占比", "低业务判断", "平均休眠时长", "零休眠判断", "扩展建议"],
+        table_rows,
+    )
+
+
+def _build_expansion_candidate_table(row: dict[str, Any]) -> str:
+    return _build_md_table(
+        ["分析时窗", "可扩展小时", "可扩展时长"],
+        [
+            f"| 22:00至次日08:00 | {row.get('hour_filter') or '无可扩展时段'} | "
+            f"{row.get('hour_int') or 0}小时 |",
+            f"| 00:00至06:00 | {row.get('hour_filter_early') or '无可扩展时段'} | "
+            f"{row.get('hour_int_early') or 0}小时 |",
+        ],
+    )
+
+
+def _build_expansion_deployment_table(row: dict[str, Any]) -> str:
+    return _build_md_table(
+        ["分析口径", "分析后的部署小时集合", "连续部署时段"],
+        [
+            f"| 含扩展时段 | {row.get('deploy_hours') or '—'} | "
+            f"{row.get('deploy_hours_continuous') or '—'} |",
+            f"| 仅常规夜间时段 | {row.get('deploy_hours_early') or '—'} | "
+            f"{row.get('deploy_hours_continuous_early') or '—'} |",
+        ],
+    )
+
+
 async def _query_expansion_data(
     cgi: str,
     stat_time: datetime,
 ) -> dict[str, Any]:
-    """直接读取数据库预计算的 V1.4 扩展结果。"""
+    """读取 V1.4 扩展结果，并补齐逐小时过程证据。"""
     expansion_sql = text(f"""
         SELECT cgi, stat_time, is_highload, jd_type, reason, starttime, endtime,
                is_whitelist, cell_name, dist_name, county_name, prod_name,
@@ -301,43 +381,61 @@ async def _query_expansion_data(
         FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
         WHERE cgi = :cgi AND stat_time = :stat_time
     """)
-    rows = await fetch_rows(expansion_sql, {"cgi": cgi, "stat_time": stat_time})
+    sleep_sql = text(f"""
+        SELECT hours,
+               AVG(
+                   CASE
+                       WHEN ee_shallowsleeptimerru IS NOT NULL
+                        AND ee_deepsleeptimerru IS NOT NULL
+                        AND ee_supersleeptimerru IS NOT NULL
+                       THEN ee_shallowsleeptimerru
+                          + ee_deepsleeptimerru
+                          + ee_supersleeptimerru
+                   END
+               ) AS avg_sleep_sum
+        FROM {DB_SCHEMA_AGENT}.jd_cell_detail_hour_nr
+        WHERE cgi = :cgi
+          AND stat_time >= :start_date
+          AND stat_time <= :end_date
+          AND hours = ANY(:night_hours)
+        GROUP BY hours
+        ORDER BY hours
+    """)
+    rows, sleep_rows = await asyncio.gather(
+        fetch_rows(expansion_sql, {"cgi": cgi, "stat_time": stat_time}),
+        fetch_rows(
+            sleep_sql,
+            {
+                "cgi": cgi,
+                "start_date": stat_time - timedelta(days=EXPANSION_LOOKBACK_DAYS),
+                "end_date": stat_time,
+                "night_hours": EXPANSION_HOURS,
+            },
+        ),
+    )
     expansion_data = [build_expansion_record(row) for row in rows]
     base_row = expansion_data[0] if expansion_data else {}
-
-    table_rows = [
-        "| "
-        f"{row.get('hour_filter') or '—'} | {row.get('hour_int') or 0} | "
-        f"{row.get('deploy_hours_continuous') or '—'} | "
-        f"{row.get('hour_filter_early') or '—'} | "
-        f"{row.get('hour_int_early') or 0} | "
-        f"{row.get('deploy_hours_continuous_early') or '—'} |"
-        for row in expansion_data
-    ]
-    table_md = _build_md_table(
-        headers=[
-            "可扩展时段(含扩展)",
-            "数量",
-            "连续部署时段(含扩展)",
-            "可扩展时段(常规)",
-            "常规数量",
-            "连续部署时段(常规)",
-        ],
-        rows=table_rows,
-    )
+    process_data = build_expansion_hour_evidence(base_row, sleep_rows)
+    process_table = _build_expansion_process_table(process_data)
+    candidate_table = _build_expansion_candidate_table(base_row)
+    deployment_table = _build_expansion_deployment_table(base_row)
 
     starttime = ensure_datetime(base_row.get("starttime"))
     endtime = ensure_datetime(base_row.get("endtime"))
 
     return {
         "data": expansion_data,
-        "table": table_md,
+        "process_data": process_data,
+        "process_table": process_table,
+        "candidate_table": candidate_table,
+        "deployment_table": deployment_table,
+        "table": f"{candidate_table}\n\n{deployment_table}",
         "high_load_type": base_row.get("is_highload") or "否",
         "jd_type": base_row.get("jd_type"),
         "reason": base_row.get("reason"),
         "starttime": starttime.strftime("%Y-%m-%d") if starttime else None,
         "endtime": endtime.strftime("%Y-%m-%d") if endtime else None,
-        "is_whitelist": bool(base_row.get("is_whitelist")),
+        "is_whitelist": normalize_boolean_flag(base_row.get("is_whitelist")),
         # 基础信息
         "cell_name": base_row.get("cell_name"),
         "dist_name": base_row.get("dist_name"),
@@ -497,7 +595,7 @@ async def _query_param_check(db: AsyncSession, cgi: str, stat_time: str | None =
         result = await query_energy_param_check(cgi=cgi, check_date=stat_time, db=db)
         return {
             "success": result.get("success", False),
-            "is_compliant": result.get("is_compliant", True),
+            "is_compliant": result.get("is_compliant"),
             "total_count": result.get("total_count", 0),
             "unqualified_count": result.get("unqualified_count", 0),
             "report_content": result.get("report_content", ""),

@@ -29,14 +29,18 @@ class _SessionContext:
 
 
 @pytest.mark.asyncio
-async def test_query_expansion_uses_precomputed_v14_fields(monkeypatch):
-    """扩展结果只读预计算表，并保留数据库给出的 90% 边界。"""
+async def test_query_expansion_returns_process_and_dual_window_tables(monkeypatch):
+    """扩展报告同时返回逐小时依据、候选结果和双口径部署结果。"""
     queries: list[str] = []
 
     async def fake_fetch_rows(sql, params):
         query = str(sql)
         queries.append(query)
-        assert "jd_cell_detail_hour_nr" not in query
+        if "jd_cell_detail_hour_nr" in query:
+            assert params["night_hours"] == [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]
+            assert params["start_date"] == datetime(2026, 7, 27)
+            assert params["end_date"] == datetime(2026, 8, 10)
+            return [{"hours": 22, "avg_sleep_sum": 0}]
         return [
             {
                 "cgi": params["cgi"],
@@ -44,12 +48,13 @@ async def test_query_expansion_uses_precomputed_v14_fields(monkeypatch):
                 "hour_detail": [{"hour": 22, "low_flow_pct": 90.0}],
                 "hour_filter": "22",
                 "hour_int": 1,
-                "hour_filter_early": None,
-                "hour_int_early": 0,
+                "hour_filter_early": "0",
+                "hour_int_early": 1,
                 "deploy_hours": "22,23,0",
                 "deploy_hours_continuous": "22:00-00:59",
-                "deploy_hours_early": None,
-                "deploy_hours_continuous_early": None,
+                "deploy_hours_early": "0,1,2,3,4,5",
+                "deploy_hours_continuous_early": "00:00-05:59",
+                "is_whitelist": "否",
             }
         ]
 
@@ -60,11 +65,15 @@ async def test_query_expansion_uses_precomputed_v14_fields(monkeypatch):
         datetime(2026, 8, 10),
     )
 
-    assert len(queries) == 1
+    assert len(queries) == 2
     assert result["data"][0]["hour_detail"][0]["low_flow_pct"] == 90.0
-    assert result["data"][0]["hour_int"] == 1
-    assert result["data"][0]["deploy_hours_continuous"] == "22:00-00:59"
-    assert "22:00-00:59" in result["table"]
+    assert result["process_data"][0]["suggestion"] == "可扩展"
+    assert "低业务占比" in result["process_table"]
+    assert "0秒" in result["process_table"]
+    assert "数据缺失" in result["process_table"]
+    assert "22:00-00:59" in result["deployment_table"]
+    assert "0,1,2,3,4,5" in result["deployment_table"]
+    assert result["is_whitelist"] is False
 
 
 @pytest.mark.asyncio
@@ -80,6 +89,10 @@ async def test_single_cell_response_exposes_expansion_raw_data(monkeypatch):
         return {
             "data": [expansion_row],
             "table": "扩展表",
+            "process_data": [{"hour": 22, "suggestion": "可扩展"}],
+            "process_table": "逐小时过程表",
+            "candidate_table": "候选时段表",
+            "deployment_table": "连续部署表",
             "cell_name": "测试小区",
         }
 
@@ -108,6 +121,73 @@ async def test_single_cell_response_exposes_expansion_raw_data(monkeypatch):
     assert result["expansion_total_count"] == 1
     assert result["expansion_returned_count"] == 1
     assert result["expansion_is_truncated"] is False
+    assert result["expansion_process_data"][0]["suggestion"] == "可扩展"
+    assert result["expansion_process_table"] == "逐小时过程表"
+    assert result["expansion_candidate_table"] == "候选时段表"
+    assert result["expansion_deployment_table"] == "连续部署表"
+
+
+@pytest.mark.asyncio
+async def test_single_cell_response_preserves_unavailable_param_state(monkeypatch):
+    """参数核查异常时不得被默认值伪装成合规。"""
+    async def fake_query_expansion(cgi, stat_time):
+        return {"data": [], "table": "扩展表", "cell_name": "测试小区"}
+
+    async def fake_param_check(db, cgi, stat_time):
+        return {
+            "success": False,
+            "is_compliant": None,
+            "error": "参数核查暂不可用",
+        }
+
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_query_expansion_data",
+        fake_query_expansion,
+    )
+    monkeypatch.setattr(energy_saving_tool, "_query_param_check", fake_param_check)
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "get_session_factory",
+        lambda: _SessionContext,
+    )
+
+    result = await energy_saving_tool.analyze_single_cell_energy(
+        analysis_target="expansion",
+        db=_LatestDateSession(),
+        cgi="460-00-1-1",
+    )
+
+    assert result["param_check"] == {
+        "success": False,
+        "is_compliant": None,
+        "unqualified_count": 0,
+        "error": "参数核查暂不可用",
+    }
+
+
+@pytest.mark.asyncio
+async def test_param_check_failure_without_conclusion_is_unknown(monkeypatch):
+    """上游核查失败且未给结论时，不得默认成参数合规。"""
+    from app.tools import energy_param_check_tool
+
+    async def fake_query_energy_param_check(cgi, check_date, db):
+        return {"success": False, "error": "核查服务失败"}
+
+    monkeypatch.setattr(
+        energy_param_check_tool,
+        "query_energy_param_check",
+        fake_query_energy_param_check,
+    )
+
+    result = await energy_saving_tool._query_param_check(
+        object(),
+        "460-00-1-1",
+        "2026-08-10",
+    )
+
+    assert result["success"] is False
+    assert result["is_compliant"] is None
 
 
 def test_pre_sleep_load_is_required_for_all_and_constriction():
