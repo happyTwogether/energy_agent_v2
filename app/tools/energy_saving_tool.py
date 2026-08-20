@@ -257,6 +257,9 @@ async def analyze_single_cell_energy(
     # 处理收缩分析结果
     if "constriction" in results_map:
         constriction_result = results_map["constriction"]
+        constriction_is_whitelist = normalize_boolean_flag(
+            constriction_result.get("is_whitelist"),
+        )
         result["constriction_table"] = constriction_result["table"]
         result["constriction_main_table"] = constriction_result.get("main_table", "")
         result["constriction_relation_table"] = constriction_result.get("relation_table", "")
@@ -269,16 +272,14 @@ async def analyze_single_cell_energy(
         result["constriction_data"] = constriction_data
         for key, value in constriction_meta.items():
             result[f"constriction_{key}"] = value
-        # 基础信息（如果扩展分析没查，从收缩结果获取）
-        if "cell_name" not in result:
-            _fill_base_info(result, constriction_result, cgi)
-            # 仅收缩时，白名单信息从收缩结果获取
-            result["is_whitelist"] = normalize_boolean_flag(
-                constriction_result.get("is_whitelist"),
-            )
+        if constriction_is_whitelist and not result.get("is_whitelist", False):
+            result["is_whitelist"] = True
             result["whitelist_reason"] = constriction_result.get("whitelist_reason")
             result["jd_starttime"] = constriction_result.get("starttime")
             result["jd_endtime"] = constriction_result.get("endtime")
+        # 基础信息（如果扩展分析没查，从收缩结果获取）
+        if "cell_name" not in result:
+            _fill_base_info(result, constriction_result, cgi)
 
     # ── Step 4: 仅负荷状态 ──
     if need_load and not need_expansion:
@@ -498,11 +499,6 @@ async def _query_constriction_data(
     result_table = _build_constriction_result_table(constriction_data)
 
     first_row = constriction_rows[0] if constriction_rows else {}
-    whitelist_reason = next(
-        (row["reason"] for row in constriction_rows if row.get("reason")),
-        "无",
-    )
-
     return {
         "data": constriction_data,
         "main_table": main_table,
@@ -511,7 +507,7 @@ async def _query_constriction_data(
         "result_table": result_table,
         "table": result_table,
         "is_whitelist": normalize_boolean_flag(first_row.get("is_whitelist")),
-        "whitelist_reason": whitelist_reason,
+        "whitelist_reason": None,
         "starttime": _format_date(first_row.get("starttime")),
         "endtime": _format_date(first_row.get("endtime")),
         # 基础信息

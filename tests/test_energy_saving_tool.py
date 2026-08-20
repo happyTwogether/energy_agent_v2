@@ -436,6 +436,69 @@ async def test_constriction_response_exposes_focused_tables_and_whitelist(
 
 
 @pytest.mark.asyncio
+async def test_all_response_uses_constriction_whitelist_when_expansion_misses(
+    monkeypatch,
+):
+    """扩展未命中时，完整分析仍须保留收缩侧的白名单风险。"""
+    async def fake_query_expansion(cgi, stat_time):
+        return {
+            "data": [],
+            "table": "扩展表",
+            "cell_name": "测试小区",
+            "is_whitelist": False,
+        }
+
+    async def fake_query_constriction(cgi, stat_time):
+        return {
+            "data": [],
+            "table": "收缩表",
+            "is_whitelist": True,
+            "whitelist_reason": None,
+            "starttime": "2026-08-01",
+            "endtime": "2026-08-31",
+        }
+
+    async def fake_query_pre_sleep(cgi, stat_time):
+        return {"data": [], "table": "休眠前负荷表", "high_prb_days_7d": 0}
+
+    async def fake_param_check(db, cgi, stat_time):
+        return {"success": True, "is_compliant": True, "unqualified_count": 0}
+
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_query_expansion_data",
+        fake_query_expansion,
+    )
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_query_constriction_data",
+        fake_query_constriction,
+    )
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_query_pre_sleep_load_data",
+        fake_query_pre_sleep,
+    )
+    monkeypatch.setattr(energy_saving_tool, "_query_param_check", fake_param_check)
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "get_session_factory",
+        lambda: _SessionContext,
+    )
+
+    result = await energy_saving_tool.analyze_single_cell_energy(
+        analysis_target="all",
+        db=_LatestDateSession(),
+        cgi="main",
+    )
+
+    assert result["is_whitelist"] is True
+    assert result["whitelist_reason"] is None
+    assert result["jd_starttime"] == "2026-08-01"
+    assert result["jd_endtime"] == "2026-08-31"
+
+
+@pytest.mark.asyncio
 async def test_query_constriction_enriches_relation_without_dropping_ten(
     monkeypatch,
 ):
@@ -521,6 +584,7 @@ async def test_query_constriction_enriches_relation_without_dropping_ten(
     assert "10.0个百分点" in result["load_table"]
     assert "剔除" in result["result_table"]
     assert result["is_whitelist"] is False
+    assert result["whitelist_reason"] is None
     assert result["starttime"] == "2026-08-01"
     assert result["endtime"] == "2026-08-31"
     assert sum("jd_cell_around" in query for query in calls) == 1
