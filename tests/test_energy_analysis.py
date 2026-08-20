@@ -4,12 +4,63 @@ from app.services.energy_analysis import (
     build_expansion_hour_evidence,
     build_expansion_record,
     collect_site_type_cgis,
+    derive_expansion_result_status,
+    derive_process_evidence_status,
+    derive_whitelist_status,
     enrich_constriction_records,
     evaluate_neighbor_relation,
+    filter_judgeable_expansion_evidence,
     neighbor_policy,
     normalize_boolean_flag,
     normalize_network_type,
 )
+
+
+def test_expansion_result_status_distinguishes_absence_from_no_candidate():
+    assert derive_expansion_result_status(None) == "unavailable"
+    assert derive_expansion_result_status(
+        {"hour_filter": None, "hour_filter_early": None},
+    ) == "no_candidate"
+    assert derive_expansion_result_status(
+        {"hour_filter": "22"},
+    ) == "candidate_available"
+    assert derive_expansion_result_status(
+        {"hour_filter": 0},
+    ) == "candidate_available"
+
+
+def test_process_table_filters_hours_without_both_judgement_inputs():
+    rows = [
+        {"hour": 22, "low_flow_pct": 95.0, "avg_sleep_seconds": 0.0},
+        {"hour": 23, "low_flow_pct": None, "avg_sleep_seconds": 0.0},
+        {"hour": 0, "low_flow_pct": 95.0, "avg_sleep_seconds": None},
+    ]
+
+    assert filter_judgeable_expansion_evidence(rows) == [rows[0]]
+    assert derive_process_evidence_status(rows) == "partial"
+
+
+def test_process_evidence_status_is_missing_without_judgeable_rows():
+    rows = [{"hour": 22, "low_flow_pct": None, "avg_sleep_seconds": 0.0}]
+
+    assert derive_process_evidence_status(rows) == "missing"
+
+
+def test_process_evidence_status_is_complete_for_all_expansion_hours():
+    rows = [
+        {"hour": hour, "low_flow_pct": 95.0, "avg_sleep_seconds": 0.0}
+        for hour in [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]
+    ]
+
+    assert derive_process_evidence_status(rows) == "complete"
+
+
+def test_whitelist_status_does_not_turn_missing_source_into_no():
+    assert derive_whitelist_status({}) == "unknown"
+    assert derive_whitelist_status({"is_whitelist": "否"}) == "not_whitelisted"
+    assert derive_whitelist_status(
+        {"is_whitelist": "否"}, {"is_whitelist": "是"},
+    ) == "whitelisted"
 
 
 def test_expansion_record_preserves_database_boundary_and_continuous_fields():

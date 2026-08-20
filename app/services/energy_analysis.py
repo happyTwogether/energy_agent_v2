@@ -27,6 +27,7 @@ _SITE_POLICIES: dict[str, tuple[float, frozenset[str] | None]] = {
 EXPANSION_HOURS = (22, 23, 0, 1, 2, 3, 4, 5, 6, 7)
 LOW_FLOW_PCT_THRESHOLD = 90.0
 _TRUE_FLAGS = frozenset({"1", "true", "yes", "y", "是"})
+_EXPANSION_CANDIDATE_FIELDS = ("hour_filter", "hour_filter_early")
 
 
 def normalize_boolean_flag(value: Any) -> bool:
@@ -36,6 +37,55 @@ def normalize_boolean_flag(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in _TRUE_FLAGS
+
+
+def derive_expansion_result_status(record: dict[str, Any] | None) -> str:
+    """区分缺少扩展结果与已完成但无候选时窗。"""
+    if record is None:
+        return "unavailable"
+    if any(
+        value is not None and str(value).strip()
+        for value in (record.get(field) for field in _EXPANSION_CANDIDATE_FIELDS)
+    ):
+        return "candidate_available"
+    return "no_candidate"
+
+
+def filter_judgeable_expansion_evidence(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """仅保留低业务占比和休眠均值均已返回的过程行。"""
+    return [
+        row
+        for row in rows
+        if row.get("low_flow_pct") is not None
+        and row.get("avg_sleep_seconds") is not None
+    ]
+
+
+def derive_process_evidence_status(rows: list[dict[str, Any]]) -> str:
+    """返回扩展逐小时过程证据的完备程度。"""
+    judgeable_rows = filter_judgeable_expansion_evidence(rows)
+    if not judgeable_rows:
+        return "missing"
+    judgeable_hours = {row.get("hour") for row in judgeable_rows}
+    if judgeable_hours == set(EXPANSION_HOURS):
+        return "complete"
+    return "partial"
+
+
+def derive_whitelist_status(*sources: dict[str, Any] | None) -> str:
+    """根据已返回的白名单字段汇总三态结果。"""
+    flags = [
+        source["is_whitelist"]
+        for source in sources
+        if source and source.get("is_whitelist") not in (None, "")
+    ]
+    if any(normalize_boolean_flag(flag) for flag in flags):
+        return "whitelisted"
+    if flags:
+        return "not_whitelisted"
+    return "unknown"
 
 
 def _hour_set(value: Any) -> set[int]:
