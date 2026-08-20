@@ -23,7 +23,7 @@ def _expansion_status(status: Any) -> str:
     if status == "unavailable":
         return "暂不能判断是否需要扩展。"
     if status == "no_candidate":
-        return "当前未识别需新增的扩展时段。"
+        return "已完成扩展评估，当前未识别需新增的扩展时段，保持现有配置。"
     if status == "candidate_available":
         return "已识别需新增的扩展时段。"
     return "扩展结果状态暂不可知。"
@@ -33,8 +33,9 @@ def _append_expansion(lines: list[str], result: dict[str, Any]) -> None:
     lines.extend(["", "## 休眠扩展", _expansion_status(result.get("expansion_result_status"))])
     if result.get("expansion_process_evidence_status") in {"complete", "partial"}:
         _append_table(lines, "扩展过程证据", result.get("expansion_process_table"))
-    _append_table(lines, "扩展候选时段", result.get("expansion_candidate_table"))
-    _append_table(lines, "扩展部署时段", result.get("expansion_deployment_table"))
+    if result.get("expansion_result_status") in {"no_candidate", "candidate_available"}:
+        _append_table(lines, "扩展候选时段", result.get("expansion_candidate_table"))
+        _append_table(lines, "扩展部署时段", result.get("expansion_deployment_table"))
 
 
 def _append_constriction(lines: list[str], result: dict[str, Any]) -> None:
@@ -48,8 +49,12 @@ def _append_param_check(lines: list[str], result: dict[str, Any]) -> None:
         return
     lines.extend(["", "## 参数核查"])
     if param_check.get("success") is True:
-        status = "合规" if param_check.get("is_compliant") is True else "不合规"
-        lines.append(f"参数核查结果：{status}。")
+        if param_check.get("is_compliant") is True:
+            lines.append("参数核查结果：合规。")
+        elif param_check.get("is_compliant") is False:
+            lines.append("参数核查结果：不合规。")
+        else:
+            lines.append("参数核查结果暂不可用。")
     else:
         lines.append("参数核查结果暂不可用。")
 
