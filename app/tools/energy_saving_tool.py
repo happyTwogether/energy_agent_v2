@@ -20,7 +20,7 @@ from app.services.energy_analysis import (
     enrich_constriction_records,
     filter_judgeable_expansion_evidence,
     is_pre_sleep_hour,
-    normalize_boolean_flag,
+    parse_boolean_flag,
 )
 from app.services.energy_report import build_single_cell_energy_report
 from app.services.energy_evidence import query_neighbor_relations, query_site_types
@@ -324,16 +324,28 @@ async def analyze_single_cell_energy(
     # 处理收缩分析结果
     if "constriction" in results_map:
         constriction_result = results_map["constriction"]
-        result["constriction_table"] = constriction_result["table"]
-        result["constriction_main_table"] = constriction_result.get("main_table", "")
-        result["constriction_relation_table"] = constriction_result.get("relation_table", "")
-        result["constriction_load_table"] = constriction_result.get("load_table", "")
-        result["constriction_result_table"] = constriction_result.get("result_table", "")
         constriction_data, constriction_meta = truncate_and_export(
             constriction_result["data"],
             prefix="single_cell_constriction",
         )
         result["constriction_data"] = constriction_data
+        result["constriction_main_table"] = (
+            _build_constriction_main_table(constriction_data)
+            if constriction_data else ""
+        )
+        result["constriction_relation_table"] = (
+            _build_constriction_relation_table(constriction_data)
+            if constriction_data else ""
+        )
+        result["constriction_load_table"] = (
+            _build_constriction_load_table(constriction_data)
+            if constriction_data else ""
+        )
+        result["constriction_result_table"] = (
+            _build_constriction_result_table(constriction_data)
+            if constriction_data else ""
+        )
+        result["constriction_table"] = result["constriction_result_table"]
         for key, value in constriction_meta.items():
             result[f"constriction_{key}"] = value
         # 基础信息（如果扩展分析没查，从收缩结果获取）
@@ -355,13 +367,15 @@ async def analyze_single_cell_energy(
     # ── Step 5: 休眠生效前负荷偏高分析 ──
     if "pre_sleep_load" in results_map:
         pre_sleep_result = results_map["pre_sleep_load"]
-        result["pre_sleep_load_table"] = pre_sleep_result["table"]
         result["high_prb_days_7d"] = pre_sleep_result.get("high_prb_days_7d", 0)
         pre_sleep_data, pre_sleep_meta = truncate_and_export(
             pre_sleep_result["data"],
             prefix="single_cell_pre_sleep_load",
         )
         result["pre_sleep_load_data"] = pre_sleep_data
+        result["pre_sleep_load_table"] = (
+            _build_pre_sleep_load_table(pre_sleep_data) if pre_sleep_data else ""
+        )
         for key, value in pre_sleep_meta.items():
             result[f"pre_sleep_load_{key}"] = value
         # 基础信息
@@ -383,7 +397,7 @@ async def analyze_single_cell_energy(
         (
             source
             for source in whitelist_sources
-            if source and normalize_boolean_flag(source.get("is_whitelist"))
+            if source and parse_boolean_flag(source.get("is_whitelist")) is True
         ),
         None,
     )
@@ -534,11 +548,7 @@ async def _query_expansion_data(
     starttime = ensure_datetime(base_row.get("starttime")) if base_row else None
     endtime = ensure_datetime(base_row.get("endtime")) if base_row else None
     whitelist_flag = base_row.get("is_whitelist") if base_row else None
-    is_whitelisted = (
-        normalize_boolean_flag(whitelist_flag)
-        if whitelist_flag not in (None, "")
-        else None
-    )
+    is_whitelisted = parse_boolean_flag(whitelist_flag)
 
     return {
         "data": expansion_data,
@@ -620,11 +630,7 @@ async def _query_constriction_data(
         "load_table": load_table,
         "result_table": result_table,
         "table": result_table,
-        "is_whitelist": (
-            normalize_boolean_flag(whitelist_flag)
-            if whitelist_flag not in (None, "")
-            else None
-        ),
+        "is_whitelist": parse_boolean_flag(whitelist_flag),
         "whitelist_reason": (
             first_row.get("whitelist_reason") if first_row else None
         ),
@@ -861,6 +867,26 @@ def _count_high_pre_sleep_days(rows: list[dict[str, Any]]) -> int:
     return len(high_dates)
 
 
+def _build_pre_sleep_load_table(data: list[dict[str, Any]]) -> str:
+    table_rows = [
+        f"| {item['time']} | {item['dist_name']} | {item['prod_name']} | "
+        f"{item['gnb_name']} | {item['cell_name']} | {item['cgi']} | "
+        f"{item['sleep_seconds']} | {item['prb_rate_ul']:.2f}% | "
+        f"{item['prb_rate_dl']:.2f}% | {item['prb_rate']:.2f}% | "
+        f"{item['is_pre_sleep_hour']} | {item['high_prb_days_7d']} |"
+        for item in data
+    ]
+    return _build_md_table(
+        headers=[
+            "时间", "地市名称", "厂家", "基站名称", "小区名称", "CGI",
+            "休眠类生效时长(秒)", "上行PRB利用率(%)", "下行PRB利用率(%)",
+            "无线利用率(%)", "是否休眠前一小时",
+            f"7天内PRB>{PRB_HIGH_LOAD_THRESHOLD:.0f}%天数",
+        ],
+        rows=table_rows,
+    )
+
+
 async def _query_pre_sleep_load_data(
     cgi: str,
     stat_time: datetime,
@@ -966,28 +992,7 @@ async def _query_pre_sleep_load_data(
             "high_prb_days_7d": high_prb_days,
         })
 
-    # 生成表格
-    table_rows = []
-    for item in data:
-        table_rows.append(
-            f"| {item['time']} | {item['dist_name']} | {item['prod_name']} | "
-            f"{item['gnb_name']} | {item['cell_name']} | {item['cgi']} | "
-            f"{item['sleep_seconds']} | {item['prb_rate_ul']:.2f}% | "
-            f"{item['prb_rate_dl']:.2f}% | {item['prb_rate']:.2f}% | "
-            f"{item['is_pre_sleep_hour']} | {item['high_prb_days_7d']} |"
-        )
-
-    if not table_rows:
-        table_rows.append(
-            "| — | 休眠生效前无高负荷 | — | — | — | — | — | — | — | — | — | — |"
-        )
-
-    table_md = _build_md_table(
-        headers=["时间", "地市名称", "厂家", "基站名称", "小区名称", "CGI",
-                 "休眠类生效时长(秒)", "上行PRB利用率(%)", "下行PRB利用率(%)",
-                 "无线利用率(%)", "是否休眠前一小时", f"7天内PRB>{PRB_HIGH_LOAD_THRESHOLD:.0f}%天数"],
-        rows=table_rows,
-    )
+    table_md = _build_pre_sleep_load_table(data)
 
     # 获取基础信息（从第一条记录）
     first_row = detail_rows[0] if detail_rows else {}

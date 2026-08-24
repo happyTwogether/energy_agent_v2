@@ -167,6 +167,21 @@ def test_load_report_uses_explicit_high_load_state():
     assert "上下行高负荷" in report
 
 
+def test_pre_sleep_empty_detail_keeps_seven_day_high_load_risk():
+    """当日无明细时仍须保留独立计算的近七日风险结论。"""
+    report = build_single_cell_energy_report({
+        "analysis_target": "pre_sleep_load",
+        "pre_sleep_load_data": [],
+        "high_prb_days_7d": 4,
+        "whitelist_status": "unknown",
+    })
+
+    assert "未获得休眠前负荷证据" in report
+    assert "近 7 天休眠前高负荷天数：4 天" in report
+    assert "持续高负荷风险" in report
+    assert "| — |" not in report
+
+
 def test_report_overview_uses_untruncated_constriction_total_count():
     """收缩概览应使用原始总数，而不是聊天返回的截断行数。"""
     report = build_single_cell_energy_report({
@@ -178,3 +193,43 @@ def test_report_overview_uses_untruncated_constriction_total_count():
 
     assert "共获得 51 条可复核收缩记录" in report
     assert "共获得 1 条可复核收缩记录" not in report
+
+
+def test_param_check_table_escapes_markdown_control_characters():
+    """参数值不得借助竖线或换行破坏 Markdown 表格结构。"""
+    report = build_single_cell_energy_report({
+        "analysis_target": "expansion",
+        "expansion_result_status": "unavailable",
+        "param_check": {
+            "success": True,
+            "is_compliant": False,
+            "unqualified_items": [{
+                "param_name": "参数\\名|甲\n乙",
+                "current_value": "开\\关|值",
+                "suggested_value": "建议\r\n值",
+                "impact": "影响\r内容",
+            }],
+        },
+        "whitelist_status": "unknown",
+    })
+
+    assert "参数\\\\名\\|甲<br>乙" in report
+    assert "开\\\\关\\|值" in report
+    assert "建议<br>值" in report
+    assert "影响<br>内容" in report
+
+
+def test_report_overview_preserves_nonempty_date_note():
+    """自动回退日期的原因应原样进入确定性报告概览。"""
+    date_note = (
+        "您查询的日期 2026-08-20 暂无数据，"
+        "已自动查询最新数据日期 2026-08-10"
+    )
+    report = build_single_cell_energy_report({
+        "analysis_target": "load",
+        "stat_time": "2026-08-10",
+        "date_note": date_note,
+        "whitelist_status": "unknown",
+    })
+
+    assert date_note in report

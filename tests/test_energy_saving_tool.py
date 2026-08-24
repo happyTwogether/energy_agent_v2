@@ -28,6 +28,51 @@ class _SessionContext:
         return False
 
 
+def _constriction_record(index: int) -> dict:
+    return {
+        "cgi": "main",
+        "hours": index % 24,
+        "before_sleep_date": date(2026, 8, 9),
+        "before_sleep_hour": (index - 1) % 24,
+        "self_prb_rate_ul_before": 10.0,
+        "self_prb_rate_dl_before": 20.0,
+        "main_prb_before": 20.0,
+        "self_sleep_duration": 3600,
+        "around_cgi": f"neighbor-{index:03d}",
+        "around_cgi_cell_name": f"邻区-{index:03d}",
+        "around_network_type": "4G",
+        "distance": 80.0,
+        "main_site_type": "室分",
+        "around_site_type": "宏站",
+        "relation_status": "allowed",
+        "prb_rate_ul_before": 20.0,
+        "prb_rate_dl_before": 30.0,
+        "prb_rate_ul": 40.0,
+        "prb_rate_dl": 50.0,
+        "around_prb_before": 30.0,
+        "around_prb_during": 50.0,
+        "prb_increase": 20.0,
+        "reason": "邻区负荷抬升",
+    }
+
+
+def _pre_sleep_record(index: int) -> dict:
+    return {
+        "time": f"2026-08-10 {index % 24:02d}:00:00",
+        "dist_name": "地市",
+        "prod_name": "厂家",
+        "gnb_name": "基站",
+        "cell_name": f"休眠小区-{index:03d}",
+        "cgi": f"pre-{index:03d}",
+        "sleep_seconds": 600,
+        "prb_rate_ul": 51.0,
+        "prb_rate_dl": 40.0,
+        "prb_rate": 51.0,
+        "is_pre_sleep_hour": "是",
+        "high_prb_days_7d": 4,
+    }
+
+
 @pytest.mark.asyncio
 async def test_query_expansion_returns_process_and_dual_window_tables(monkeypatch):
     """扩展报告同时返回逐小时依据、候选结果和双口径部署结果。"""
@@ -127,6 +172,31 @@ async def test_query_expansion_maps_reason_only_for_explicit_whitelist(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_query_expansion_preserves_unknown_whitelist_flag(monkeypatch):
+    """查询层不得把白名单脏值提前压成明确否。"""
+    async def fake_fetch_rows(sql, params):
+        if "jd_cell_detail_hour_nr" in str(sql):
+            return []
+        return [{
+            "cgi": params["cgi"],
+            "reason": "业务原因",
+            "is_whitelist": "未知",
+            "hour_filter": None,
+            "hour_filter_early": None,
+        }]
+
+    monkeypatch.setattr(energy_saving_tool, "fetch_rows", fake_fetch_rows)
+
+    result = await energy_saving_tool._query_expansion_data(
+        "460-00-1-1",
+        datetime(2026, 8, 10),
+    )
+
+    assert result["is_whitelist"] is None
+    assert result["whitelist_reason"] is None
+
+
+@pytest.mark.asyncio
 async def test_single_cell_handler_returns_direct_report_and_stage_performance(
     monkeypatch,
 ):
@@ -210,6 +280,33 @@ async def test_single_cell_load_handler_reports_state_and_stage_performance(
     assert result["performance"]["load_ms"] >= 0
     assert "expansion_ms" not in result["performance"]
     assert "load_ms" not in result["report_content"]
+
+
+@pytest.mark.asyncio
+async def test_single_cell_future_date_fallback_note_is_rendered(monkeypatch):
+    """未来日期自动回退说明须保留在结构化结果和直出正文中。"""
+    async def fake_check_high_load(db, cgi, stat_time):
+        return {"high_load_type": "否", "cell_name": "测试小区"}
+
+    monkeypatch.setattr(
+        energy_saving_tool,
+        "_check_high_load_with_base_info",
+        fake_check_high_load,
+    )
+
+    result = await energy_saving_tool.analyze_single_cell_energy(
+        analysis_target="load",
+        db=_LatestDateSession(),
+        cgi="460-00-1-1",
+        stat_time="2026-08-20",
+    )
+
+    expected_note = (
+        "您查询的日期 2026-08-20 暂无数据，"
+        "已自动查询最新数据日期 2026-08-10"
+    )
+    assert result["date_note"] == expected_note
+    assert expected_note in result["report_content"]
 
 
 @pytest.mark.asyncio
@@ -482,7 +579,7 @@ async def test_all_response_includes_pre_sleep_load(monkeypatch):
 
     async def fake_query_pre_sleep(cgi, stat_time):
         return {
-            "data": [{"cgi": cgi, "is_pre_sleep_hour": "是"}],
+            "data": [_pre_sleep_record(0)],
             "table": "休眠前负荷表",
             "high_prb_days_7d": 1,
         }
@@ -518,9 +615,107 @@ async def test_all_response_includes_pre_sleep_load(monkeypatch):
         cgi="main",
     )
 
-    assert result["pre_sleep_load_table"] == "休眠前负荷表"
+    assert "pre-000" in result["pre_sleep_load_table"]
     assert result["pre_sleep_load_data"][0]["is_pre_sleep_hour"] == "是"
     assert result["high_prb_days_7d"] == 1
+
+
+@pytest.mark.asyncio
+async def test_constriction_report_rebuilds_tables_from_truncated_chat_data(
+    monkeypatch,
+):
+    """收缩表和正文不得绕过聊天截断写入第 51 条记录。"""
+    rows = [_constriction_record(index) for index in range(51)]
+
+    async def fake_query_constriction(cgi, stat_time):
+        return {
+            "data": rows,
+            "table": "FULL neighbor-050",
+            "main_table": "FULL neighbor-050",
+            "relation_table": "FULL neighbor-050",
+            "load_table": "FULL neighbor-050",
+            "result_table": "FULL neighbor-050",
+            "cell_name": "测试小区",
+            "is_whitelist": None,
+        }
+
+    async def fake_query_pre_sleep(cgi, stat_time):
+        return {"data": [], "table": "", "high_prb_days_7d": 0}
+
+    def fake_truncate(data, prefix):
+        if prefix == "single_cell_constriction":
+            return data[:50], {
+                "is_truncated": True,
+                "total_count": 51,
+                "returned_count": 50,
+                "download_url": "/downloads/constriction-full.xlsx",
+            }
+        return data, {
+            "is_truncated": False,
+            "total_count": len(data),
+            "returned_count": len(data),
+        }
+
+    monkeypatch.setattr(
+        energy_saving_tool, "_query_constriction_data", fake_query_constriction,
+    )
+    monkeypatch.setattr(
+        energy_saving_tool, "_query_pre_sleep_load_data", fake_query_pre_sleep,
+    )
+    monkeypatch.setattr(energy_saving_tool, "truncate_and_export", fake_truncate)
+
+    result = await energy_saving_tool.analyze_single_cell_energy(
+        analysis_target="constriction",
+        db=_LatestDateSession(),
+        cgi="main",
+    )
+
+    assert "neighbor-049" in result["constriction_result_table"]
+    assert "neighbor-050" not in result["constriction_result_table"]
+    assert "neighbor-050" not in result["report_content"]
+    assert "仅展示部分数据" in result["report_content"]
+    assert "/downloads/constriction-full.xlsx" in result["report_content"]
+
+
+@pytest.mark.asyncio
+async def test_pre_sleep_report_rebuilds_table_from_truncated_chat_data(
+    monkeypatch,
+):
+    """休眠前负荷表和正文不得绕过聊天截断写入第 51 条记录。"""
+    rows = [_pre_sleep_record(index) for index in range(51)]
+
+    async def fake_query_pre_sleep(cgi, stat_time):
+        return {
+            "data": rows,
+            "table": "FULL pre-050",
+            "high_prb_days_7d": 4,
+            "cell_name": "测试小区",
+        }
+
+    def fake_truncate(data, prefix):
+        return data[:50], {
+            "is_truncated": True,
+            "total_count": 51,
+            "returned_count": 50,
+            "download_url": "/downloads/pre-sleep-full.xlsx",
+        }
+
+    monkeypatch.setattr(
+        energy_saving_tool, "_query_pre_sleep_load_data", fake_query_pre_sleep,
+    )
+    monkeypatch.setattr(energy_saving_tool, "truncate_and_export", fake_truncate)
+
+    result = await energy_saving_tool.analyze_single_cell_energy(
+        analysis_target="pre_sleep_load",
+        db=_LatestDateSession(),
+        cgi="main",
+    )
+
+    assert "pre-049" in result["pre_sleep_load_table"]
+    assert "pre-050" not in result["pre_sleep_load_table"]
+    assert "pre-050" not in result["report_content"]
+    assert "仅展示部分数据" in result["report_content"]
+    assert "/downloads/pre-sleep-full.xlsx" in result["report_content"]
 
 
 @pytest.mark.asyncio
@@ -530,7 +725,7 @@ async def test_constriction_response_exposes_focused_tables_and_whitelist(
     """仅收缩分析也必须透传四张证据表和完整白名单信息。"""
     async def fake_query_constriction(cgi, stat_time):
         return {
-            "data": [],
+            "data": [_constriction_record(0)],
             "table": "结果表",
             "main_table": "主小区条件表",
             "relation_table": "关系范围表",
@@ -563,10 +758,10 @@ async def test_constriction_response_exposes_focused_tables_and_whitelist(
         cgi="main",
     )
 
-    assert result["constriction_main_table"] == "主小区条件表"
-    assert result["constriction_relation_table"] == "关系范围表"
-    assert result["constriction_load_table"] == "邻区负荷表"
-    assert result["constriction_result_table"] == "收缩结果表"
+    assert "休眠前最高PRB" in result["constriction_main_table"]
+    assert "neighbor-000" in result["constriction_relation_table"]
+    assert "neighbor-000" in result["constriction_load_table"]
+    assert "邻区负荷抬升" in result["constriction_result_table"]
     assert result["is_whitelist"] is True
     assert result["whitelist_reason"] == "重要活动保障"
     assert result["jd_starttime"] == "2026-08-01"

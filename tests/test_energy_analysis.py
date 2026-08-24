@@ -1,5 +1,7 @@
 """V1.4 节电分析纯业务规则测试。"""
 
+import pytest
+
 from app.services.energy_analysis import (
     build_expansion_hour_evidence,
     build_expansion_record,
@@ -13,6 +15,7 @@ from app.services.energy_analysis import (
     neighbor_policy,
     normalize_boolean_flag,
     normalize_network_type,
+    parse_boolean_flag,
 )
 
 
@@ -27,6 +30,17 @@ def test_expansion_result_status_distinguishes_absence_from_no_candidate():
     assert derive_expansion_result_status(
         {"hour_filter": 0},
     ) == "candidate_available"
+    assert derive_expansion_result_status(
+        {"hour_filter": "0"},
+    ) == "candidate_available"
+
+
+@pytest.mark.parametrize("value", [[], "[]", "  ", "invalid", ["bad"]])
+def test_expansion_result_status_rejects_empty_or_invalid_candidates(value):
+    assert derive_expansion_result_status({
+        "hour_filter": value,
+        "hour_filter_early": None,
+    }) == "no_candidate"
 
 
 def test_process_table_filters_hours_without_both_judgement_inputs():
@@ -57,10 +71,31 @@ def test_process_evidence_status_is_complete_for_all_expansion_hours():
 
 def test_whitelist_status_does_not_turn_missing_source_into_no():
     assert derive_whitelist_status({}) == "unknown"
+    assert derive_whitelist_status({"is_whitelist": "未知"}) == "unknown"
+    assert derive_whitelist_status({"is_whitelist": "N/A"}) == "unknown"
+    assert derive_whitelist_status({"is_whitelist": "unexpected"}) == "unknown"
     assert derive_whitelist_status({"is_whitelist": "否"}) == "not_whitelisted"
+    assert derive_whitelist_status(
+        {"is_whitelist": "未知"}, {"is_whitelist": "否"},
+    ) == "not_whitelisted"
     assert derive_whitelist_status(
         {"is_whitelist": "否"}, {"is_whitelist": "是"},
     ) == "whitelisted"
+
+
+@pytest.mark.parametrize("value", [True, "是", "true", "YES", 1])
+def test_boolean_flag_parser_recognizes_explicit_true(value):
+    assert parse_boolean_flag(value) is True
+
+
+@pytest.mark.parametrize("value", [False, "否", "false", "NO", 0])
+def test_boolean_flag_parser_recognizes_explicit_false(value):
+    assert parse_boolean_flag(value) is False
+
+
+@pytest.mark.parametrize("value", [None, "", "  ", "未知", "N/A", "unexpected"])
+def test_boolean_flag_parser_preserves_unknown_values(value):
+    assert parse_boolean_flag(value) is None
 
 
 def test_expansion_record_preserves_database_boundary_and_continuous_fields():

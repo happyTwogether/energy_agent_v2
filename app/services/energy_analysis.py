@@ -27,16 +27,27 @@ _SITE_POLICIES: dict[str, tuple[float, frozenset[str] | None]] = {
 EXPANSION_HOURS = (22, 23, 0, 1, 2, 3, 4, 5, 6, 7)
 LOW_FLOW_PCT_THRESHOLD = 90.0
 _TRUE_FLAGS = frozenset({"1", "true", "yes", "y", "是"})
+_FALSE_FLAGS = frozenset({"0", "false", "no", "n", "否"})
 _EXPANSION_CANDIDATE_FIELDS = ("hour_filter", "hour_filter_early")
+
+
+def parse_boolean_flag(value: Any) -> bool | None:
+    """仅解析明确的布尔值，脏值和缺失值保持未知。"""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in _TRUE_FLAGS:
+        return True
+    if normalized in _FALSE_FLAGS:
+        return False
+    return None
 
 
 def normalize_boolean_flag(value: Any) -> bool:
     """将数据库常见布尔值归一化，避免非空文本“否”被判为真。"""
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in _TRUE_FLAGS
+    return parse_boolean_flag(value) is True
 
 
 def derive_expansion_result_status(record: dict[str, Any] | None) -> str:
@@ -44,8 +55,8 @@ def derive_expansion_result_status(record: dict[str, Any] | None) -> str:
     if record is None:
         return "unavailable"
     if any(
-        value is not None and str(value).strip()
-        for value in (record.get(field) for field in _EXPANSION_CANDIDATE_FIELDS)
+        _hour_set(record.get(field))
+        for field in _EXPANSION_CANDIDATE_FIELDS
     ):
         return "candidate_available"
     return "no_candidate"
@@ -77,13 +88,13 @@ def derive_process_evidence_status(rows: list[dict[str, Any]]) -> str:
 def derive_whitelist_status(*sources: dict[str, Any] | None) -> str:
     """根据已返回的白名单字段汇总三态结果。"""
     flags = [
-        source["is_whitelist"]
+        parse_boolean_flag(source["is_whitelist"])
         for source in sources
         if source and source.get("is_whitelist") not in (None, "")
     ]
-    if any(normalize_boolean_flag(flag) for flag in flags):
+    if any(flag is True for flag in flags):
         return "whitelisted"
-    if flags:
+    if any(flag is False for flag in flags):
         return "not_whitelisted"
     return "unknown"
 

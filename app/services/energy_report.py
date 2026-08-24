@@ -12,6 +12,7 @@ def _title_and_overview(result: dict[str, Any]) -> list[str]:
         ("CGI", "cgi"),
         ("统计日期", "stat_time"),
         ("分析目标", "analysis_target"),
+        ("日期说明", "date_note"),
     ):
         if result.get(key):
             lines.append(f"- {label}：{result[key]}")
@@ -40,6 +41,19 @@ def _append_table_or_note(
 ) -> None:
     if not _append_table(lines, title, table):
         lines.extend(["", f"### {title}", note])
+
+
+def _append_truncation_notice(
+    lines: list[str],
+    prefix: str,
+    result: dict[str, Any],
+) -> None:
+    if result.get(f"{prefix}_is_truncated") is not True:
+        return
+    lines.extend(["", "仅展示部分数据。"])
+    download_url = result.get(f"{prefix}_download_url")
+    if isinstance(download_url, str) and download_url:
+        lines.append(f"📥 [下载完整数据]({download_url})")
 
 
 def _expansion_status(status: Any) -> str:
@@ -122,6 +136,7 @@ def _append_constriction(lines: list[str], result: dict[str, Any]) -> None:
             result.get(key) if has_result else None,
             note,
         )
+    _append_truncation_notice(lines, "constriction", result)
 
 
 def _item_value(item: dict[str, Any], *keys: str) -> Any:
@@ -131,17 +146,28 @@ def _item_value(item: dict[str, Any], *keys: str) -> Any:
     return "未提供"
 
 
+def _markdown_cell(value: Any) -> str:
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    return text.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
+
+
 def _param_items_table(items: list[dict[str, Any]]) -> str:
     rows = ["| 参数项 | 当前值 | 建议值 | 影响 |", "|---|---|---|---|"]
     for item in items:
         rows.append(
             "| {name} | {current} | {suggested} | {impact} |".format(
-                name=_item_value(item, "param_name", "saving_para_name"),
-                current=_item_value(item, "current_value", "saving_para_value"),
-                suggested=_item_value(item, "suggested_value", "recommend_value"),
-                impact=_item_value(
-                    item, "impact", "objective_reason", "subjective_reason",
+                name=_markdown_cell(
+                    _item_value(item, "param_name", "saving_para_name"),
                 ),
+                current=_markdown_cell(
+                    _item_value(item, "current_value", "saving_para_value"),
+                ),
+                suggested=_markdown_cell(
+                    _item_value(item, "suggested_value", "recommend_value"),
+                ),
+                impact=_markdown_cell(_item_value(
+                    item, "impact", "objective_reason", "subjective_reason",
+                )),
             ),
         )
     return "\n".join(rows)
@@ -166,15 +192,19 @@ def _append_param_check(lines: list[str], result: dict[str, Any]) -> None:
 def _append_pre_sleep_load(lines: list[str], result: dict[str, Any]) -> None:
     if result.get("pre_sleep_load_data") == []:
         lines.extend(["", "### 休眠前本小区负荷", "未获得休眠前负荷证据。"])
-        return
-    _append_table_or_note(
-        lines,
-        "休眠前本小区负荷",
-        result.get("pre_sleep_load_table"),
-        "未获得休眠前负荷证据。",
-    )
-    if result.get("high_prb_days_7d") is not None:
-        lines.append(f"近 7 天休眠前高负荷天数：{result['high_prb_days_7d']} 天。")
+    else:
+        _append_table_or_note(
+            lines,
+            "休眠前本小区负荷",
+            result.get("pre_sleep_load_table"),
+            "未获得休眠前负荷证据。",
+        )
+    high_days = result.get("high_prb_days_7d")
+    if high_days is not None:
+        lines.append(f"近 7 天休眠前高负荷天数：{high_days} 天。")
+    if isinstance(high_days, (int, float)) and high_days >= 3:
+        lines.append("存在持续高负荷风险，建议优先收缩相关时段。")
+    _append_truncation_notice(lines, "pre_sleep_load", result)
 
 
 def _append_whitelist(lines: list[str], result: dict[str, Any]) -> None:
