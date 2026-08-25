@@ -1,0 +1,16 @@
+[2026-08-24 09:40:19] [INFO] [agent.routes] PC端聊天请求: query=5G小区：衡阳雁峰5G云数据中心D59002539193TF-H5W-2671；节电空间, cid=, user=15084863620
+INFO:     192.168.32.4:42906 - "POST /api/v1/chat/stream HTTP/1.1" 200 OK
+[2026-08-24 09:40:24] [INFO] [agent.energy_saving_tool] 单小区节电分析: cgi=, cell_name=衡阳雁峰5G云数据中心D59002539193TF-H5W-2671, target=all, stat_time=None
+[2026-08-24 09:40:24] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=latest_date elapsed_ms=3.44
+[2026-08-24 09:40:24] [INFO] [agent.cell_resolver] 小区名解析: cell_name=衡阳雁峰5G云数据中心D59002539193TF-H5W-2671, network=5G
+[2026-08-24 09:40:24] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=name_resolution elapsed_ms=82.31
+[2026-08-24 09:40:24] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=pre_sleep_load elapsed_ms=299.96
+[2026-08-24 09:40:24] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=constriction elapsed_ms=301.83
+[2026-08-24 09:40:24] [INFO] [agent.param_check_tool] 节能参数核查: date=20260823, query=cgi=460-00-2539193-71, table=jd_agent.eng_check_result
+[2026-08-24 09:40:25] [INFO] [agent.param_check_tool] 节能参数核查完成: date=20260823, query=cgi=460-00-2539193-71, total=7, unqualified=1, excluded=1
+[2026-08-24 09:40:25] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=param_check elapsed_ms=1221.44
+[2026-08-24 09:40:28] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=expansion elapsed_ms=3612.42
+[2026-08-24 09:40:53] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=runtime_data elapsed_ms=25425.89
+[2026-08-24 09:40:53] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=report_render elapsed_ms=0.11
+[2026-08-24 09:40:53] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=total elapsed_ms=29125.38
+[2026-08-24 09:40:53] [INFO] [agent.message_store] 消息存储成功: conversation_id=c7316128-7208-40cb-9eed-c709a63f0fd9, user=15084863620, source=1, tokens=4845
