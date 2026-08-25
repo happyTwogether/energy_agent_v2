@@ -1100,9 +1100,23 @@ async def _query_pre_sleep_load_data(
               FROM regexp_split_to_table(
                   COALESCE(sleep_hour, ''), '\\s*,\\s*'
               ) AS sleep_value
-              WHERE btrim(sleep_value) IN (
-                  (((prb_hour + 1) % 24)::text),
-                  lpad((((prb_hour + 1) % 24)::text), 2, '0')
+              CROSS JOIN LATERAL (
+                  SELECT NULLIF(
+                      regexp_replace(
+                          COALESCE(prb_hour::text, ''),
+                          '[^0-9]', '', 'g'
+                      ),
+                      ''
+                  )::numeric AS prb_hour_number
+              ) AS normalized
+              WHERE btrim(COALESCE(prb_hour::text, '')) ~ '^[0-9]{{1,2}}$'
+                AND normalized.prb_hour_number BETWEEN 0 AND 23
+                AND btrim(sleep_value) IN (
+                  (((normalized.prb_hour_number + 1) % 24)::text),
+                  lpad(
+                      (((normalized.prb_hour_number + 1) % 24)::text),
+                      2, '0'
+                  )
               )
           )
     """)

@@ -543,6 +543,10 @@ async def test_pre_sleep_query_aggregates_seven_days_in_sql(monkeypatch):
         assert "regexp_split_to_table" in query
         assert "sleep_value::int" not in query
         assert "btrim(sleep_value)" in query
+        assert "prb_hour + 1" not in query
+        assert "regexp_replace(" in query
+        assert "COALESCE(prb_hour::text, '')" in query
+        assert "::numeric" in query
         assert "::text" in query
         assert "stat_time >= :start_date" in query
         assert "stat_time <= :end_date" in query
