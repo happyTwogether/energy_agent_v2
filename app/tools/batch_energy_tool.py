@@ -58,6 +58,52 @@ _MAP_HIGHLOAD: dict[str, str] = {
 }
 PRB_HIGH_LOAD_THRESHOLD = 50.0
 
+EXPANSION_EXPORT_FIELDS = (
+    "stat_time", "dist_name", "county_name", "prod_name", "gnb_name",
+    "cell_name", "cgi", "work_band", "cover_type", "cover_scen", "site_type",
+    "hour_detail", "hour_filter", "hour_int", "hour_filter_early",
+    "hour_int_early", "is_whitelist", "jd_type", "reason", "deploy_hours",
+    "deploy_hours_continuous", "deploy_hours_early",
+    "deploy_hours_continuous_early",
+)
+CONSTRICTION_EXPORT_FIELDS = (
+    "stat_time", "dist_name", "county_name", "prod_name", "gnb_name",
+    "cell_name", "cgi", "work_band", "cover_type", "cover_scen", "site_type",
+    "self_prb_rate_ul_before", "self_prb_rate_dl_before", "self_sleep_duration",
+    "hours", "around_cgi_network_type", "around_cgi", "around_cgi_cell_name",
+    "prb_rate_ul", "prb_rate_dl", "prb_rate_ul_before", "prb_rate_dl_before",
+    "prb_increase", "before_sleep_hour", "before_sleep_date", "distance",
+    "around_site_type",
+)
+ENERGY_EXPORT_COLUMN_MAPPING = {
+    "stat_time": "统计开始日期", "dist_name": "地市名称",
+    "county_name": "区县名称", "prod_name": "厂家", "gnb_name": "基站名称",
+    "cell_name": "小区名称", "cgi": "CGI", "work_band": "频段",
+    "cover_type": "覆盖类型", "cover_scen": "覆盖场景", "site_type": "站型",
+    "hour_detail": "可扩展休眠小时详情",
+    "hour_filter": "未休眠扩展时段小时列表(含扩展时段)",
+    "hour_int": "未休眠可扩展时间数量(含扩展时段)",
+    "hour_filter_early": "未休眠可扩展时段小时列表(仅夜间常规时段)",
+    "hour_int_early": "未休眠可扩展时间数量(仅夜间常规时段)",
+    "is_whitelist": "是否白名单", "jd_type": "节电类型", "reason": "白名单原因",
+    "deploy_hours": "含已休眠部署时段_不连续(含扩展时段)",
+    "deploy_hours_continuous": "含已休眠连续部署时段(含扩展时段)",
+    "deploy_hours_early": "含已休眠部署时段_不连续(仅夜间常规时段)",
+    "deploy_hours_continuous_early": "含已休眠连续部署时段(仅夜间常规时段)",
+    "self_prb_rate_ul_before": "自身小区休眠前上行PRB利用率",
+    "self_prb_rate_dl_before": "自身小区休眠前下行PRB利用率",
+    "self_sleep_duration": "自身小区深度+超级休眠时长（秒）",
+    "hours": "休眠收缩时间节点", "around_cgi_network_type": "影响关联小区网络",
+    "around_cgi": "影响关联小区CGI", "around_cgi_cell_name": "影响关联小区名称",
+    "prb_rate_ul": "周边小区上行PRB利用率",
+    "prb_rate_dl": "周边小区下行PRB利用率",
+    "prb_rate_ul_before": "周边小区休眠前上行PRB利用率",
+    "prb_rate_dl_before": "周边小区休眠前下行PRB利用率",
+    "prb_increase": "周边小区PRB抬升量", "before_sleep_hour": "休眠前小时",
+    "before_sleep_date": "休眠前日期", "distance": "关联小区距离（米）",
+    "around_site_type": "关联小区站型",
+}
+
 
 TOOL_DESCRIPTION = "批量诊断5G小区节电情况。支持全省、地市、区县、厂家级别查询，可全量分析或仅分析扩展或收缩维度。"
 TOOL_INPUT_SCHEMA = {
@@ -118,8 +164,9 @@ async def _do_analyze(
     """核心分析流程。"""
 
     # ── 1. 解析查询日期（始终先查 DB 最新日期，用户日期超出时自动兜底）──
+    need_expansion = analysis_target in (TARGET_ALL, TARGET_EXPANSION)
     need_constriction = analysis_target in (TARGET_ALL, TARGET_CONSTRICTION)
-    db_latest_date = await _resolve_latest_date(need_constriction)
+    db_latest_date = await _resolve_latest_date(analysis_target)
     if not db_latest_date:
         return error_response("暂无节电分析数据。")
 
@@ -153,6 +200,7 @@ async def _do_analyze(
     # ── 3. 并行查询扩展、收缩预计算表 ──
     expansion_sql = text(f"""
         SELECT cgi, cell_name, gnb_name, dist_name, county_name, prod_name,
+               stat_time, work_band, cover_type, cover_scen, site_type,
                is_highload, saving_switch_state, is_whitelist, reason,
                jd_type, starttime, endtime, hour_detail,
                hour_filter, hour_int, hour_filter_early, hour_int_early,
@@ -162,7 +210,11 @@ async def _do_analyze(
         WHERE {where_sql}
     """)
 
-    query_tasks = [fetch_rows(expansion_sql, bind_params)]
+    query_tasks = []
+    query_names = []
+    if need_expansion:
+        query_tasks.append(fetch_rows(expansion_sql, bind_params))
+        query_names.append("expansion")
 
     if need_constriction:
         constriction_sql = text(f"""
@@ -172,14 +224,17 @@ async def _do_analyze(
                    self_sleep_duration, prb_rate_ul, prb_rate_dl,
                    prb_rate_ul_before, prb_rate_dl_before, prb_increase,
                    before_sleep_hour, before_sleep_date,
-                   is_whitelist, cell_name, dist_name, county_name, prod_name
+                   is_whitelist, cell_name, gnb_name, dist_name, county_name,
+                   prod_name, work_band, cover_type, cover_scen
             FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day
             WHERE {where_sql}
         """)
         query_tasks.append(fetch_rows(constriction_sql, bind_params))
+        query_names.append("constriction")
 
     gathered = await asyncio.gather(*query_tasks)
-    expansion_rows = gathered[0]
+    query_results = dict(zip(query_names, gathered))
+    expansion_rows = query_results.get("expansion", [])
 
     # ── 4. 构建数据映射 ──
     all_cgis: set[str] = set()
@@ -192,12 +247,16 @@ async def _do_analyze(
     constriction_map: dict[str, list[int]] = {}
     sleep_count_map: dict[str, int] = {}
     constriction_rows: list[dict[str, Any]] = []
+    constriction_base_map: dict[str, dict[str, Any]] = {}
     pre_sleep_rows: list[dict[str, Any]] = []
     if need_constriction:
-        constriction_rows = await _enrich_batch_constriction_rows(gathered[1])
+        constriction_rows = await _enrich_batch_constriction_rows(
+            query_results.get("constriction", []),
+        )
         for row in constriction_rows:
             cgi = row["cgi"]
             all_cgis.add(cgi)
+            constriction_base_map.setdefault(cgi, row)
             if cgi not in constriction_map:
                 constriction_map[cgi] = []
             if row["hours"] is not None:
@@ -219,21 +278,34 @@ async def _do_analyze(
         county_name=county_name,
         prod_name=prod_name,
         analysis_target=analysis_target,
+        constriction_base_map=constriction_base_map,
     )
+    if analysis_target == TARGET_ALL:
+        _augment_summary_rows(table_data, expansion_map, constriction_rows)
 
     # ── 6. 统计问题清单，但完整结果不因问题过滤而丢失 ──
     stats.update(_compute_batch_stats(table_data))
     stats["param_noncompliant"] = _count_noncompliant_cells(expansion_rows)
     filtered_data = _filter_empty_cells(table_data, analysis_target)
     stats["problem_total"] = len(filtered_data)
-    download_url = export_sheets_to_excel(
-        {
+    if analysis_target == TARGET_EXPANSION:
+        export_sheets = {
+            "扩展明细": _project_export_rows(expansion_rows, EXPANSION_EXPORT_FIELDS),
+        }
+    elif analysis_target == TARGET_CONSTRICTION:
+        export_sheets = {
+            "收缩明细": _project_export_rows(constriction_rows, CONSTRICTION_EXPORT_FIELDS),
+        }
+    else:
+        export_sheets = {
             "小区汇总": table_data,
-            "扩展明细": expansion_rows,
-            "收缩明细": constriction_rows,
-            "休眠前高负荷": pre_sleep_rows,
-        },
+            "扩展明细": _project_export_rows(expansion_rows, EXPANSION_EXPORT_FIELDS),
+            "收缩明细": _project_export_rows(constriction_rows, CONSTRICTION_EXPORT_FIELDS),
+        }
+    download_url = export_sheets_to_excel(
+        export_sheets,
         prefix="batch_analysis",
+        column_mapping=ENERGY_EXPORT_COLUMN_MAPPING,
     )
 
     # ── 7. 生成 report_content ──
@@ -260,24 +332,78 @@ async def _do_analyze(
 # ═══════════════════════════════════════════════════════════════════
 
 
-async def _resolve_latest_date(need_constriction: bool) -> datetime | None:
+async def _resolve_latest_date(analysis_target: str) -> datetime | None:
     """自动获取最新数据日期（使用独立 session）。
 
-    涉及收缩表时取 expansion 和 constriction 两张表最大日期的较小值，
-    确保两表都有数据；否则只查 expansion 表。
+    单维度只查询对应表的最大日期；全量取两张表最大日期的较小值。
     """
-    exp_sql = text(f"SELECT MAX(stat_time) as max_date FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day")
-    rows = await fetch_rows(exp_sql, {})
-    exp_max = ensure_datetime(rows[0]["max_date"]) if rows else None
-
-    if not need_constriction or not exp_max:
-        return exp_max
-
     const_sql = text(f"SELECT MAX(stat_time) as max_date FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day")
-    rows = await fetch_rows(const_sql, {})
-    const_max = ensure_datetime(rows[0]["max_date"]) if rows else None
+    exp_sql = text(f"SELECT MAX(stat_time) as max_date FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day")
+    if analysis_target == TARGET_EXPANSION:
+        rows = await fetch_rows(exp_sql, {})
+        return ensure_datetime(rows[0]["max_date"]) if rows else None
+    if analysis_target == TARGET_CONSTRICTION:
+        rows = await fetch_rows(const_sql, {})
+        return ensure_datetime(rows[0]["max_date"]) if rows else None
 
-    return min(exp_max, const_max) if const_max else exp_max
+    exp_rows, const_rows = await asyncio.gather(
+        fetch_rows(exp_sql, {}),
+        fetch_rows(const_sql, {}),
+    )
+    exp_max = ensure_datetime(exp_rows[0]["max_date"]) if exp_rows else None
+    const_max = ensure_datetime(const_rows[0]["max_date"]) if const_rows else None
+
+    if exp_max and const_max:
+        return min(exp_max, const_max)
+    return exp_max or const_max
+
+
+def _project_export_rows(
+    rows: list[dict[str, Any]],
+    fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """按确认字段顺序投影并稳定排序导出明细。"""
+    projected = [{field: row.get(field) for field in fields} for row in rows]
+    return sorted(
+        projected,
+        key=lambda row: (
+            str(row.get("cgi") or ""),
+            str(row.get("hours") or ""),
+            str(row.get("around_cgi") or ""),
+        ),
+    )
+
+
+def _augment_summary_rows(
+    table_data: list[dict[str, Any]],
+    expansion_map: dict[str, dict[str, Any]],
+    constriction_rows: list[dict[str, Any]],
+) -> None:
+    """为全量模式补充一 CGI 一行的一对多汇总指标。"""
+    contraction_by_cgi: dict[str, list[dict[str, Any]]] = {}
+    for item in constriction_rows:
+        contraction_by_cgi.setdefault(str(item.get("cgi") or ""), []).append(item)
+    for row in table_data:
+        cgi = str(row.get("CGI") or "")
+        expansion = expansion_map.get(cgi, {})
+        contraction = contraction_by_cgi.get(cgi, [])
+        hours = sorted({item["hours"] for item in contraction if item.get("hours") is not None})
+        around_cgis = {item.get("around_cgi") for item in contraction if item.get("around_cgi")}
+        increases = [
+            float(item["prb_increase"])
+            for item in contraction
+            if item.get("prb_increase") is not None
+        ]
+        row.update({
+            "扩展时段（含扩展时段）": expansion.get("hour_filter") or "无",
+            "扩展时段（仅夜间常规时段）": expansion.get("hour_filter_early") or "无",
+            "连续部署时段（含扩展时段）": expansion.get("deploy_hours_continuous") or "无",
+            "连续部署时段（仅夜间常规时段）": expansion.get("deploy_hours_continuous_early") or "无",
+            "收缩记录数": len(contraction),
+            "需剔除的原节电时段": "、".join(map(str, hours)) if hours else "无",
+            "受影响关联小区数": len(around_cgis),
+            "最大PRB抬升量": max(increases) if increases else None,
+        })
 
 
 async def _query_pre_sleep_rows(
@@ -401,6 +527,7 @@ def _build_table_data(
     county_name: str | None,
     prod_name: str | None,
     analysis_target: str,
+    constriction_base_map: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """合并三表数据，生成表格行和统计。"""
     table_data: list[dict[str, Any]] = []
@@ -418,17 +545,19 @@ def _build_table_data(
     show_expansion = analysis_target in (TARGET_ALL, TARGET_EXPANSION)
     show_constriction = analysis_target in (TARGET_ALL, TARGET_CONSTRICTION)
 
-    for cgi in all_cgis:
+    constriction_base_map = constriction_base_map or {}
+    for cgi in sorted(all_cgis):
         exp_info = expansion_map.get(cgi, {})
+        base_info = exp_info or constriction_base_map.get(cgi, {})
         const_hours = constriction_map.get(cgi, [])
 
         # ── 基础信息 ──
         row: dict[str, Any] = {
-            _COL_BASE[0]: exp_info.get("dist_name") or dist_name or "-",
-            _COL_BASE[1]: exp_info.get("county_name") or county_name or "-",
-            _COL_BASE[2]: exp_info.get("prod_name") or prod_name or "-",
-            _COL_BASE[3]: exp_info.get("gnb_name") or "-",
-            _COL_BASE[4]: exp_info.get("cell_name") or "-",
+            _COL_BASE[0]: base_info.get("dist_name") or dist_name or "-",
+            _COL_BASE[1]: base_info.get("county_name") or county_name or "-",
+            _COL_BASE[2]: base_info.get("prod_name") or prod_name or "-",
+            _COL_BASE[3]: base_info.get("gnb_name") or "-",
+            _COL_BASE[4]: base_info.get("cell_name") or "-",
             _COL_BASE[5]: cgi,
         }
 
@@ -469,13 +598,14 @@ def _build_table_data(
             row[_COL_CONSTRICTION[1]] = sleep_count
 
         # ── 白名单（所有模式保留）──
-        is_whitelist_raw = exp_info.get("is_whitelist")
+        whitelist_info = exp_info or constriction_base_map.get(cgi, {})
+        is_whitelist_raw = whitelist_info.get("is_whitelist")
         if _is_database_true(is_whitelist_raw):
             stats["whitelist"] += 1
-            reason = exp_info.get("reason") or "无"
-            jd_type = exp_info.get("jd_type") or "无"
-            st = ensure_datetime(exp_info.get("starttime"))
-            et = ensure_datetime(exp_info.get("endtime"))
+            reason = whitelist_info.get("reason") or "无"
+            jd_type = whitelist_info.get("jd_type") or "无"
+            st = ensure_datetime(whitelist_info.get("starttime"))
+            et = ensure_datetime(whitelist_info.get("endtime"))
             st_str = st.strftime("%Y-%m-%d") if st else "无"
             et_str = et.strftime("%Y-%m-%d") if et else "无"
             row[_COL_WHITELIST] = (

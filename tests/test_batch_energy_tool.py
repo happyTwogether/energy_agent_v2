@@ -144,7 +144,7 @@ async def test_batch_analysis_exports_complete_v14_sheets(monkeypatch):
             ]
         raise AssertionError(query)
 
-    def fake_export_sheets(sheets, prefix):
+    def fake_export_sheets(sheets, prefix, column_mapping=None):
         captured_sheets.update(sheets)
         return "/downloads/batch.xlsx"
 
@@ -168,8 +168,92 @@ async def test_batch_analysis_exports_complete_v14_sheets(monkeypatch):
     assert result["stats"]["problem_total"] == 1
     assert result["stats"]["param_noncompliant"] == 1
     assert len(captured_sheets["小区汇总"]) == 2
+    summary_b = next(row for row in captured_sheets["小区汇总"] if row["CGI"] == "b")
+    assert summary_b["扩展时段（含扩展时段）"] == "22"
+    assert summary_b["收缩记录数"] == 1
+    assert summary_b["需剔除的原节电时段"] == "0"
+    assert summary_b["受影响关联小区数"] == 1
+    assert summary_b["最大PRB抬升量"] == 10.0
     assert captured_sheets["收缩明细"][0]["prb_increase"] == 10.0
     assert captured_sheets["收缩明细"][0]["distance"] == 80.0
-    assert captured_sheets["收缩明细"][0]["main_site_type"] == "室分"
     assert captured_sheets["收缩明细"][0]["around_site_type"] == "宏站"
-    assert len(captured_sheets["休眠前高负荷"]) == 1
+    assert "main_site_type" not in captured_sheets["收缩明细"][0]
+    assert list(captured_sheets) == ["小区汇总", "扩展明细", "收缩明细"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("analysis_target", "expected_sheet", "forbidden_table"),
+    [
+        ("expansion", "扩展明细", "jd_cell_constriction_day"),
+        ("constriction", "收缩明细", "jd_cell_expansion_day"),
+    ],
+)
+async def test_single_dimension_batch_exports_only_its_detail_sheet(
+    monkeypatch,
+    analysis_target,
+    expected_sheet,
+    forbidden_table,
+):
+    captured_sheets = {}
+    queries: list[str] = []
+
+    async def fake_latest_date(target):
+        assert target == analysis_target
+        return datetime(2026, 8, 10)
+
+    async def fake_fetch_rows(sql, params):
+        query = str(sql)
+        queries.append(query)
+        if "jd_cell_expansion_day" in query:
+            return [{"cgi": "a", "stat_time": date(2026, 8, 10)}]
+        if "jd_cell_constriction_day" in query:
+            return [{
+                "cgi": "a",
+                "stat_time": date(2026, 8, 10),
+                "hours": 1,
+                "around_cgi": None,
+            }]
+        if "jd_cell_pre_hour_busy" in query:
+            return []
+        raise AssertionError(query)
+
+    async def fake_enrich(rows):
+        return rows
+
+    def fake_export(sheets, prefix, column_mapping=None):
+        captured_sheets.update(sheets)
+        return "/downloads/batch.xlsx"
+
+    monkeypatch.setattr(batch_energy_tool, "_resolve_latest_date", fake_latest_date)
+    monkeypatch.setattr(batch_energy_tool, "fetch_rows", fake_fetch_rows)
+    monkeypatch.setattr(batch_energy_tool, "_enrich_batch_constriction_rows", fake_enrich)
+    monkeypatch.setattr(batch_energy_tool, "export_sheets_to_excel", fake_export)
+
+    result = await batch_energy_tool._do_analyze(
+        dist_name=None,
+        county_name=None,
+        prod_name=None,
+        stat_time=None,
+        analysis_target=analysis_target,
+    )
+
+    assert result["success"] is True
+    assert list(captured_sheets) == [expected_sheet]
+    assert all(forbidden_table not in query for query in queries)
+
+
+def test_export_field_orders_match_confirmed_csv_headers():
+    assert len(batch_energy_tool.EXPANSION_EXPORT_FIELDS) == 23
+    assert batch_energy_tool.EXPANSION_EXPORT_FIELDS[:3] == (
+        "stat_time", "dist_name", "county_name",
+    )
+    assert batch_energy_tool.EXPANSION_EXPORT_FIELDS[-2:] == (
+        "deploy_hours_early", "deploy_hours_continuous_early",
+    )
+    assert len(batch_energy_tool.CONSTRICTION_EXPORT_FIELDS) == 27
+    assert batch_energy_tool.CONSTRICTION_EXPORT_FIELDS[-2:] == (
+        "distance", "around_site_type",
+    )
+    assert batch_energy_tool.ENERGY_EXPORT_COLUMN_MAPPING["distance"] == "关联小区距离（米）"
+    assert batch_energy_tool.ENERGY_EXPORT_COLUMN_MAPPING["around_site_type"] == "关联小区站型"

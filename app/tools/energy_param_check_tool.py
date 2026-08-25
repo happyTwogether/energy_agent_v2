@@ -1,3 +1,4 @@
+import time as clock
 from datetime import datetime, timedelta, time
 from typing import Any
 
@@ -26,9 +27,12 @@ _STATES_NOT_UNQUALIFIED = frozenset({_COMPLIANT_STATE}) | _EXCLUDED_STATES
 async def _get_check_date(db: AsyncSession, user_date: str | None) -> tuple[str, str]:
     """确定核查日期，返回 (date_str, date_note)。
 
-    始终先查 DB 最新日期；用户指定日期超出数据范围时自动兜底。
+    用户指定日期时直接使用；未指定时才查询 DB 最新日期。
     """
-    # 先查 DB 最新日期
+    if user_date:
+        return user_date.replace("-", ""), ""
+
+    # 未指定日期时查询 DB 最新日期
     db_latest: datetime | None = None
     try:
         sql = text(f"SELECT MAX(check_time) AS latest FROM {DB_SCHEMA_RULE}.eng_check_result")
@@ -38,14 +42,6 @@ async def _get_check_date(db: AsyncSession, user_date: str | None) -> tuple[str,
             db_latest = row["latest"]
     except Exception:
         pass
-
-    if user_date:
-        user_str = user_date.replace("-", "")
-        if db_latest and hasattr(db_latest, "strftime"):
-            db_str = db_latest.strftime("%Y%m%d")
-            if user_str > db_str:
-                return db_str, f"您查询的日期 {user_date} 暂无数据，已自动查询最新数据日期 {db_latest.strftime('%Y-%m-%d')}"
-        return user_str, ""
 
     if db_latest and hasattr(db_latest, "strftime"):
         return db_latest.strftime("%Y%m%d"), ""
@@ -304,7 +300,13 @@ async def query_energy_param_check(
     """查询小区节能参数核查结果。"""
     cgi = (cgi or "").strip()
     cell_name = (cell_name or "").strip()
+    date_started_at = clock.perf_counter()
     date_str, date_note = await _get_check_date(db, check_date)
+    date_resolution_ms = round((clock.perf_counter() - date_started_at) * 1000, 2)
+    logger.info(
+        "energy_stage_timing stage=param_date_resolution elapsed_ms=%.2f",
+        date_resolution_ms,
+    )
 
     name_resolution = None
     if not cgi and cell_name:
@@ -340,12 +342,22 @@ async def query_energy_param_check(
     logger.info("节能参数核查: date=%s, query=%s, table=%s.eng_check_result", date_str, query_label, DB_SCHEMA_RULE)
 
     try:
+        detail_started_at = clock.perf_counter()
         data = await _fetch_param_check(db, date_str, cgi, None, dist_name, prod_name)
+        detail_query_ms = round((clock.perf_counter() - detail_started_at) * 1000, 2)
+        logger.info(
+            "energy_stage_timing stage=param_detail_query elapsed_ms=%.2f",
+            detail_query_ms,
+        )
 
         if not data:
             return {
                 "success": True,
                 "report_content": f"未查询到 {query_label} 在 {date_str} 的参数核查数据。",
+                "performance": {
+                    "param_date_resolution_ms": date_resolution_ms,
+                    "param_detail_query_ms": detail_query_ms,
+                },
                 **({"date_note": date_note} if date_note else {}),
             }
 
@@ -396,6 +408,10 @@ async def query_energy_param_check(
             "returned_count": len(returned_items),
             "is_truncated": is_truncated_val,
             "unqualified_cgi_count": unique_unqualified_cgis,
+            "performance": {
+                "param_date_resolution_ms": date_resolution_ms,
+                "param_detail_query_ms": detail_query_ms,
+            },
             **({"date_note": date_note} if date_note else {}),
             "download_url": meta.pop("download_url", None),
             **meta,

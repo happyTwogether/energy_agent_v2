@@ -82,7 +82,7 @@ async def test_query_expansion_returns_process_and_dual_window_tables(monkeypatc
         query = str(sql)
         queries.append(query)
         if "jd_cell_detail_hour_nr" in query:
-            assert params["night_hours"] == [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]
+            assert params["night_hours"] == [22, 0]
             assert params["start_date"] == datetime(2026, 7, 27)
             assert params["end_date"] == datetime(2026, 8, 10)
             return [{"hours": 22, "avg_sleep_sum": 0}]
@@ -117,7 +117,8 @@ async def test_query_expansion_returns_process_and_dual_window_tables(monkeypatc
     assert "0秒" in result["process_table"]
     assert "22:00-22:59" in result["process_table"]
     assert "23:00-23:59" not in result["process_table"]
-    assert "00:00-00:59" not in result["process_table"]
+    assert "00:00-00:59" in result["process_table"]
+    assert result["process_data"][1]["suggestion"] == "可扩展"
     assert "22:00-00:59" in result["deployment_table"]
     assert "0,1,2,3,4,5" in result["deployment_table"]
     assert result["expansion_result_status"] == "candidate_available"
@@ -129,8 +130,11 @@ async def test_query_expansion_returns_process_and_dual_window_tables(monkeypatc
 async def test_query_expansion_without_result_does_not_create_zero_hour_conclusion(
     monkeypatch,
 ):
-    """缺少扩展结果时不得构造已完成评估的零时长结论。"""
+    """扩展表成功空结果应解释为无候选，并保留十个过程时点。"""
+    queries: list[str] = []
+
     async def fake_fetch_rows(sql, params):
+        queries.append(str(sql))
         return []
 
     monkeypatch.setattr(energy_saving_tool, "fetch_rows", fake_fetch_rows)
@@ -140,10 +144,14 @@ async def test_query_expansion_without_result_does_not_create_zero_hour_conclusi
         datetime(2026, 8, 10),
     )
 
-    assert result["expansion_result_status"] == "unavailable"
+    assert len(queries) == 2
+    assert result["expansion_result_status"] == "no_candidate"
+    assert [row["hour"] for row in result["process_data"]] == [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]
+    assert all(row["suggestion"] == "未进入候选（指标不完整）" for row in result["process_data"])
     assert result["candidate_table"] == ""
     assert result["deployment_table"] == ""
     assert result["high_load_type"] is None
+    assert result["is_whitelist"] is False
 
 
 @pytest.mark.asyncio
@@ -506,8 +514,8 @@ def test_high_prb_days_only_counts_actual_pre_sleep_hours():
 
 
 @pytest.mark.asyncio
-async def test_pre_sleep_query_counts_candidate_rows_in_python(monkeypatch):
-    """七日 SQL 有闭区间和阈值，实际休眠前关系在 Python 中判定。"""
+async def test_pre_sleep_query_aggregates_seven_days_in_sql(monkeypatch):
+    """七日高负荷天数由数据库聚合，只返回一个统计值。"""
     queries: list[str] = []
 
     async def fake_fetch_rows(sql, params):
@@ -531,26 +539,12 @@ async def test_pre_sleep_query_counts_candidate_rows_in_python(monkeypatch):
                     "sleep_hour": "0",
                 }
             ]
-        assert "COUNT(" not in query
+        assert "COUNT(DISTINCT stat_time)" in query
+        assert "regexp_split_to_table" in query
         assert "stat_time >= :start_date" in query
         assert "stat_time <= :end_date" in query
         assert "prb_rate_ul > :prb_threshold" in query
-        return [
-            {
-                "stat_time": date(2026, 8, 9),
-                "prb_hour": 23,
-                "sleep_hour": "0",
-                "prb_rate_ul": 51.0,
-                "prb_rate_dl": 1.0,
-            },
-            {
-                "stat_time": date(2026, 8, 8),
-                "prb_hour": 22,
-                "sleep_hour": "0",
-                "prb_rate_ul": 90.0,
-                "prb_rate_dl": 1.0,
-            },
-        ]
+        return [{"high_prb_days_7d": 1}]
 
     monkeypatch.setattr(energy_saving_tool, "fetch_rows", fake_fetch_rows)
 
@@ -561,6 +555,7 @@ async def test_pre_sleep_query_counts_candidate_rows_in_python(monkeypatch):
 
     assert len(queries) == 2
     assert result["high_prb_days_7d"] == 1
+    assert result["current_sleep_hours"] == [0]
     assert result["data"][0]["prb_rate_ul"] == 51.0
     assert result["data"][0]["prb_rate_dl"] == 48.0
     assert result["data"][0]["prb_rate"] == 51.0
@@ -917,6 +912,10 @@ async def test_query_constriction_enriches_relation_without_dropping_ten(
     assert "60.0%" in result["load_table"]
     assert "10.0个百分点" in result["load_table"]
     assert "剔除" in result["result_table"]
+    assert "自身小区休眠前上行PRB利用率" in result["detail_table"]
+    assert "关联小区距离（米）" in result["detail_table"]
+    assert "关联小区站型" in result["detail_table"]
+    assert result["detail_table"].count("| 12.0 |") == 2
     assert result["is_whitelist"] is False
     assert result["whitelist_reason"] is None
     assert result["starttime"] == "2026-08-01"

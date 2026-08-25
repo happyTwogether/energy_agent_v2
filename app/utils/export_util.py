@@ -8,6 +8,7 @@
 import json
 import os
 import uuid
+from copy import copy
 from datetime import datetime
 from typing import Any
 
@@ -169,6 +170,13 @@ def export_sheets_to_excel(
                     sheet_name=sheet_name[:31],
                     index=False,
                 )
+                worksheet = writer.sheets[sheet_name[:31]]
+                worksheet.freeze_panes = "A2"
+                worksheet.auto_filter.ref = worksheet.dimensions
+                for cell in worksheet[1]:
+                    header_font = copy(cell.font)
+                    header_font.bold = True
+                    cell.font = header_font
 
         logger.info(
             "多工作表 Excel 导出成功: %s, 工作表数: %s",

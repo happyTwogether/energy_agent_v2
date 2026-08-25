@@ -27,7 +27,7 @@ def test_report_uses_explicit_non_whitelist_and_only_ready_process_rows():
         "whitelist_status": "not_whitelisted",
     })
 
-    assert "已完成扩展评估，当前未识别需新增的扩展时段，保持现有配置" in report
+    assert "经过智能体分析，该小区没有可以扩展的时段" in report
     assert "该小区不是节电白名单小区" in report
     assert "23:00-23:59" not in report
 
@@ -116,21 +116,24 @@ def test_all_report_preserves_complete_auditable_evidence():
         assert evidence in report
 
 
-def test_all_report_replaces_missing_evidence_with_short_explanations():
-    """没有对应结果时应输出说明，而不是伪造或展示空表。"""
+def test_all_report_uses_business_conclusions_without_empty_evidence_sections():
+    """成功空结果是业务结论，不应渲染缺证据标题。"""
     report = build_single_cell_energy_report({
         "analysis_target": "all",
-        "expansion_result_status": "unavailable",
+        "expansion_result_status": "no_candidate",
         "expansion_process_evidence_status": "missing",
         "expansion_data": [],
         "constriction_data": [],
         "pre_sleep_load_data": [],
         "param_check": {"success": False, "is_compliant": None},
-        "whitelist_status": "unknown",
+        "whitelist_status": "not_whitelisted",
     })
 
+    assert "经过智能体分析，该小区没有可以扩展的时段" in report
+    assert "该小区没有需要剔除的原节电时段" in report
+    assert "经智能体分析，近7天未发现休眠生效前持续高负荷情况" in report
+    assert "该小区不是节电白名单小区" in report
     for title in (
-        "扩展过程证据",
         "扩展候选时段",
         "扩展部署时段",
         "主小区休眠条件核查",
@@ -139,19 +142,52 @@ def test_all_report_replaces_missing_evidence_with_short_explanations():
         "需收缩节电时段",
         "休眠前本小区负荷",
     ):
-        assert f"### {title}" in report
-    for note in (
-        "未获得可判定的扩展过程证据",
-        "未获得扩展候选分析结果",
-        "未获得连续部署分析结果",
-        "未获得主小区休眠条件证据",
-        "未获得周边小区关联范围证据",
-        "未获得周边小区负荷证据",
-        "未获得收缩分析结果",
-        "未获得休眠前负荷证据",
-    ):
-        assert note in report
+        assert f"### {title}" not in report
+    assert "未获得" not in report
     assert "| — |" not in report
+
+
+def test_report_orders_horizontal_expansion_detail_and_param_check():
+    report = build_single_cell_energy_report({
+        "analysis_target": "expansion",
+        "expansion_result_status": "candidate_available",
+        "high_load_type": "下高",
+        "expansion_process_table": "过程表",
+        "expansion_detail_table": "| 可扩展休眠小时详情 | 是否白名单 |\n|---|---|\n| 22点 | 否 |",
+        "expansion_deployment_table": "连续部署表",
+        "param_check": {"success": True, "is_compliant": True},
+        "whitelist_status": "not_whitelisted",
+    })
+
+    assert "实施扩展前需先完成相应方向的负荷压降" in report
+    assert "字段中文名称" not in report
+    assert "| 可扩展休眠小时详情 | 是否白名单 |" in report
+    assert report.index("容量与风险说明") < report.index("低业务与休眠情况分析")
+    assert report.index("低业务与休眠情况分析") < report.index("扩展结果明细")
+    assert report.index("扩展结果明细") < report.index("连续部署结果")
+    assert report.index("连续部署结果") < report.index("参数核查")
+
+
+def test_report_separates_neighbor_impact_from_pre_sleep_analysis():
+    report = build_single_cell_energy_report({
+        "analysis_target": "constriction",
+        "constriction_data": [{"hours": 1}],
+        "current_sleep_hours": [0, 1],
+        "constriction_main_table": "主小区表",
+        "constriction_relation_table": "关系表",
+        "constriction_load_table": "负荷表",
+        "constriction_result_table": "需剔除表",
+        "pre_sleep_load_data": [{"cgi": "a"}],
+        "pre_sleep_load_table": "休眠前表",
+        "high_prb_days_7d": 4,
+        "whitelist_status": "not_whitelisted",
+    })
+
+    assert "### 周边200米关联小区高负荷影响判断" in report
+    assert "当前已生效的休眠时间点：0、1点" in report
+    assert "#### 需剔除的原节电时段" in report
+    assert "### 休眠生效前高负荷分析" in report
+    assert "调整后的建议节能时间节点" not in report
 
 
 def test_load_report_uses_explicit_high_load_state():
@@ -176,7 +212,7 @@ def test_pre_sleep_empty_detail_keeps_seven_day_high_load_risk():
         "whitelist_status": "unknown",
     })
 
-    assert "未获得休眠前负荷证据" in report
+    assert "未获得休眠前负荷证据" not in report
     assert "近 7 天休眠前高负荷天数：4 天" in report
     assert "持续高负荷风险" in report
     assert "| — |" not in report

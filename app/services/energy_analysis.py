@@ -74,6 +74,19 @@ def filter_judgeable_expansion_evidence(
     ]
 
 
+def select_expansion_process_rows(
+    rows: list[dict[str, Any]],
+    record: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """有候选时只保留命中小时，无候选时保留全部分析小时用于解释。"""
+    candidate_hours: set[int] = set()
+    for field in _EXPANSION_CANDIDATE_FIELDS:
+        candidate_hours.update(_hour_set((record or {}).get(field)))
+    if not candidate_hours:
+        return rows
+    return [row for row in rows if row.get("hour") in candidate_hours]
+
+
 def derive_process_evidence_status(rows: list[dict[str, Any]]) -> str:
     """返回扩展逐小时过程证据的完备程度。"""
     judgeable_rows = filter_judgeable_expansion_evidence(rows)
@@ -124,7 +137,7 @@ def _expansion_suggestion(
     if hour in expandable_hours:
         return "可扩展"
     if low_business is None or zero_sleep is None:
-        return "数据缺失"
+        return "未进入候选（指标不完整）"
     if not low_business:
         return "不建议（低业务占比不足）"
     if not zero_sleep:
@@ -169,6 +182,7 @@ def build_expansion_hour_evidence(
         for row in sleep_rows
     }
     expandable_hours = _hour_set(record.get("hour_filter"))
+    expandable_hours.update(_hour_set(record.get("hour_filter_early")))
     return [
         _build_expansion_hour_row(
             hour, detail_by_hour, sleep_by_hour, expandable_hours,

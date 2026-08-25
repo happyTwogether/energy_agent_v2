@@ -28,12 +28,15 @@ def test_single_cell_prompt_uses_business_oriented_auditable_evidence():
     assert "参数核查暂不可用" in prompt
     assert "expansion_result_status" in prompt
     assert "暂不能判断是否需要扩展" in prompt
-    assert "expansion_process_evidence_status" in prompt
     assert "whitelist_status" in prompt
     assert "whitelisted" in prompt
     assert "not_whitelisted" in prompt
     assert "unknown" in prompt
     assert "未命中节电白名单" not in prompt
+    assert "经过智能体分析，该小区没有可以扩展的时段" in prompt
+    assert "当前已生效的休眠时间点" in prompt
+    assert "需剔除的原节电时段" in prompt
+    assert "直接原样返回 `report_content`" in prompt
 
 
 def test_batch_prompt_mentions_corrected_v14_statistics():
@@ -41,4 +44,6 @@ def test_batch_prompt_mentions_corrected_v14_statistics():
 
     assert "param_noncompliant" in prompt
     assert "high_sleep_count" in prompt
-    assert "四个工作表" in prompt
+    assert "仅扩展为“扩展明细”" in prompt
+    assert "仅收缩为“收缩明细”" in prompt
+    assert "全量为“小区汇总、扩展明细、收缩明细”" in prompt

@@ -124,6 +124,8 @@ SYNTHESIS_SINGLE_CELL = _SYNTHESIS_IDENTITY + """\
 ## 你的任务
 你是 5G 小区节能分析专家。仅依据工具返回的结构化结果生成可复核、面向业务人员的报告；不重算时段、不二次筛选数据、不补写缺失原因或日期。
 
+如果工具返回非空 `report_content`，直接原样返回 `report_content`，不得重排章节、改写业务结论或重新生成表格。以下规则仅用于兼容旧结果中没有 `report_content` 的情况。
+
 **标题格式**：小区节能空间分析（小区名称 | CGI | 统计日期）。使用 `cell_name`、`cgi`、`stat_time` 原样填充。
 
 **通用输出要求**：
@@ -143,23 +145,20 @@ SYNTHESIS_SINGLE_CELL = _SYNTHESIS_IDENTITY + """\
 按以下固定顺序输出：
 
 1. **容量与风险说明**：依据 `high_load_type` 说明容量条件。上高、下高或双高时，明确先完成相应方向的负荷压降再实施扩展；为“否”时，说明具备继续评估扩展空间的容量条件。
-2. **结果状态**：仅按 `expansion_result_status` 表述结论。为 `unavailable` 时只能写“暂不能判断是否需要扩展”，不得写成 0 小时、无可扩展时段或无需扩展；为 `no_candidate` 时说明已评估但未识别新增时段；为 `candidate_available` 时展示候选结果。
-3. **小时级过程依据**：仅当 `expansion_process_evidence_status` 为 `complete` 或 `partial` 时完整展示 `expansion_process_table`。该表已过滤低业务明细或休眠值缺失的时点；不得补回、推断或以 0 替代缺失时点。
-4. **两套扩展候选**：完整展示 `expansion_candidate_table`，分别保留“22:00至次日08:00”和“00:00至06:00”两套结果。
-5. **两套连续部署结果**：完整展示 `expansion_deployment_table`，直接呈现含扩展时段和仅常规夜间时段的部署小时集合、连续部署时段；不要解释连续时段的推导方式。
-6. **参数核查**：当 `param_check.success` 为 false 或 `param_check.is_compliant` 为 null 时，明确写“参数核查暂不可用”，不得作出合规结论；为 true 时说明配置合规；为 false 时展示精简不合规项（参数项、当前值、建议值、影响）。
-7. **综合扩展建议**：给出首选方案（含扩展时段的连续部署结果）和备选方案（仅常规夜间时段的连续部署结果）。高负荷或参数不合规时，写成满足前置条件后再实施的建议。
+2. **结果状态**：仅按 `expansion_result_status` 表述结论。为 `unavailable` 时只能写“暂不能判断是否需要扩展”；为 `no_candidate` 时固定写“经过智能体分析，该小区没有可以扩展的时段”；为 `candidate_available` 时展示候选结果。
+3. **低业务与休眠情况分析**：完整展示 `expansion_process_table`。有候选时只含命中时点；无候选时包含全部 10 个分析时点及未命中原因。不得推断或以 0 替代缺失指标。
+4. **扩展结果明细**：横向展示 `expansion_detail_table`，不得改成“字段中文名称/结果”的纵向表。
+5. **两套扩展候选**：仅有候选时展示 `expansion_candidate_table`。
+6. **两套连续部署结果**：仅有候选时展示 `expansion_deployment_table`；不要解释连续时段推导方式。
+7. **参数核查**：当 `param_check.success` 为 false 或 `param_check.is_compliant` 为 null 时，明确写“参数核查暂不可用”，不得作出合规结论。
+8. **综合扩展建议**：高负荷或参数不合规时，写成满足前置条件后再实施的建议。
 
 ### 节能收缩
 按以下固定顺序输出，并保持所有工具已返回的收缩记录；`prb_increase=10.0` 同样保留，不要再次按抬升量过滤：
 
-1. **收缩结论**：简要说明受影响的关联小区、是否需收缩及近 7 天休眠前高负荷天数 `high_prb_days_7d`。
-2. **主小区休眠条件核查**：完整展示 `constriction_main_table`。
-3. **周边小区关联范围核查**：完整展示 `constriction_relation_table`。若关系信息待核实，只说明待核实，不得编造距离或站型。
-4. **周边小区负荷变化**：完整展示 `constriction_load_table`。
-5. **需收缩节电时段**：完整展示 `constriction_result_table`，并据此说明收缩、缩短或观察建议。
-6. **休眠前本小区负荷**：完整展示 `pre_sleep_load_table`。若 `high_prb_days_7d >= 3`，提示存在持续高负荷风险并建议优先收缩相关时段；无数据时如实说明。
-7. **综合收缩建议**：分别说明关联小区负荷影响和本小区休眠前高负荷两类依据，不编造未返回的时段或结论。
+1. **周边200米关联小区高负荷影响判断**：先展示 `current_sleep_hours` 对应的“当前已生效的休眠时间点”，再依次展示 `constriction_main_table`、`constriction_relation_table`、`constriction_load_table` 和 `constriction_result_table`；最后一表标题为“需剔除的原节电时段”。不计算调整后的完整节电时点。
+2. **休眠生效前高负荷分析**：单独展示 `pre_sleep_load_table` 和 `high_prb_days_7d`，不得与周边小区影响混排。无明细且统计为 0 时写“经智能体分析，近7天未发现休眠生效前持续高负荷情况”。
+3. 收缩结果为空时写“该小区没有需要剔除的原节电时段”，不输出空过程表或“未获得证据”。
 
 ### 特殊情况备注
 报告只根据 `whitelist_status` 输出三态白名单结论，不根据兼容字段 `is_whitelist` 推断：
@@ -192,7 +191,7 @@ SYNTHESIS_BATCH_CELLS = _SYNTHESIS_IDENTITY + """\
 
 📥 [点击此处下载完整批量分析 Excel 报告]({{download_url 来自工具返回}})
 
-完整 Excel 包含“小区汇总、扩展明细、收缩明细、休眠前高负荷”四个工作表（无数据的明细表会省略）。总计数量使用 `stats.total`，不得改成问题清单数量。
+Excel 工作表随查询目标固定：仅扩展为“扩展明细”，仅收缩为“收缩明细”，全量为“小区汇总、扩展明细、收缩明细”。总计数量使用 `stats.total`，不得改成问题清单数量。
 
 **⚠️ 此工具会生成真实 Excel 文件，download_url 必须来自工具返回，绝不能编造。**"""
 

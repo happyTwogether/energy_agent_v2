@@ -18,9 +18,9 @@ from app.services.energy_analysis import (
     derive_process_evidence_status,
     derive_whitelist_status,
     enrich_constriction_records,
-    filter_judgeable_expansion_evidence,
     is_pre_sleep_hour,
     parse_boolean_flag,
+    select_expansion_process_rows,
 )
 from app.services.energy_report import build_single_cell_energy_report
 from app.services.energy_evidence import query_neighbor_relations, query_site_types
@@ -92,6 +92,52 @@ MAX_UNQUALIFIED_ITEMS: int = 10
 EXPANSION_LOOKBACK_DAYS: int = 14
 EXPANSION_HOURS = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]
 
+BASE_FIELD_LABELS = (
+    ("stat_time", "统计开始日期"),
+    ("dist_name", "地市名称"),
+    ("county_name", "区县名称"),
+    ("prod_name", "厂家"),
+    ("gnb_name", "基站名称"),
+    ("cell_name", "小区名称"),
+    ("cgi", "CGI"),
+    ("work_band", "频段"),
+    ("cover_type", "覆盖类型"),
+    ("cover_scen", "覆盖场景"),
+    ("site_type", "站型"),
+)
+EXPANSION_FIELD_LABELS = (
+    ("hour_detail", "可扩展休眠小时详情"),
+    ("hour_filter", "未休眠扩展时段小时列表(含扩展时段)"),
+    ("hour_int", "未休眠可扩展时间数量(含扩展时段)"),
+    ("hour_filter_early", "未休眠可扩展时段小时列表(仅夜间常规时段)"),
+    ("hour_int_early", "未休眠可扩展时间数量(仅夜间常规时段)"),
+    ("is_whitelist", "是否白名单"),
+    ("jd_type", "节电类型"),
+    ("reason", "白名单原因"),
+    ("deploy_hours", "含已休眠部署时段_不连续(含扩展时段)"),
+    ("deploy_hours_continuous", "含已休眠连续部署时段(含扩展时段)"),
+    ("deploy_hours_early", "含已休眠部署时段_不连续(仅夜间常规时段)"),
+    ("deploy_hours_continuous_early", "含已休眠连续部署时段(仅夜间常规时段)"),
+)
+CONSTRICTION_FIELD_LABELS = (
+    ("self_prb_rate_ul_before", "自身小区休眠前上行PRB利用率"),
+    ("self_prb_rate_dl_before", "自身小区休眠前下行PRB利用率"),
+    ("self_sleep_duration", "自身小区深度+超级休眠时长（秒）"),
+    ("hours", "休眠收缩时间节点"),
+    ("around_cgi_network_type", "影响关联小区网络"),
+    ("around_cgi", "影响关联小区CGI"),
+    ("around_cgi_cell_name", "影响关联小区名称"),
+    ("prb_rate_ul", "周边小区上行PRB利用率"),
+    ("prb_rate_dl", "周边小区下行PRB利用率"),
+    ("prb_rate_ul_before", "周边小区休眠前上行PRB利用率"),
+    ("prb_rate_dl_before", "周边小区休眠前下行PRB利用率"),
+    ("prb_increase", "周边小区PRB抬升量"),
+    ("before_sleep_hour", "休眠前小时"),
+    ("before_sleep_date", "休眠前日期"),
+    ("distance", "关联小区距离（米）"),
+    ("around_site_type", "关联小区站型"),
+)
+
 
 TOOL_DESCRIPTION = "通过 CGI 或小区中文名分析单个5G小区的节电详情，包含休眠扩展、休眠收缩、负荷状态和休眠生效前负荷偏高。"
 TOOL_INPUT_SCHEMA = {
@@ -155,6 +201,16 @@ async def analyze_single_cell_energy(
         latest_sql = text(f"""
             SELECT MAX(stat_time) as max_date
             FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
+        """)
+    elif analysis_target in {"expansion", "load"}:
+        latest_sql = text(f"""
+            SELECT MAX(stat_time) as max_date
+            FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
+        """)
+    elif analysis_target == "constriction":
+        latest_sql = text(f"""
+            SELECT MAX(stat_time) as max_date
+            FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day
         """)
     else:
         latest_sql = text(f"""
@@ -274,6 +330,9 @@ async def analyze_single_cell_energy(
         result["expansion_process_table"] = expansion_result.get("process_table", "")
         result["expansion_candidate_table"] = expansion_result.get("candidate_table", "")
         result["expansion_deployment_table"] = expansion_result.get("deployment_table", "")
+        result["base_info_table"] = expansion_result.get("base_info_table", "")
+        result["expansion_detail_table"] = expansion_result.get("detail_table", "")
+        performance.update(expansion_result.get("performance", {}))
         result["expansion_result_status"] = expansion_result.get(
             "expansion_result_status",
             derive_expansion_result_status(
@@ -310,6 +369,7 @@ async def analyze_single_cell_energy(
             "is_compliant": param_check_raw.get("is_compliant"),
             "unqualified_count": param_check_raw.get("unqualified_count", 0),
         }
+        performance.update(param_check_raw.get("performance", {}))
         if param_check_raw.get("error"):
             result["param_check"]["error"] = param_check_raw["error"]
         # 如果不合规，保留不合规项（用于表格输出）
@@ -345,6 +405,9 @@ async def analyze_single_cell_energy(
             _build_constriction_result_table(constriction_data)
             if constriction_data else ""
         )
+        result["constriction_detail_table"] = constriction_result.get("detail_table", "")
+        if not result.get("base_info_table"):
+            result["base_info_table"] = constriction_result.get("base_info_table", "")
         result["constriction_table"] = result["constriction_result_table"]
         for key, value in constriction_meta.items():
             result[f"constriction_{key}"] = value
@@ -376,6 +439,8 @@ async def analyze_single_cell_energy(
         result["pre_sleep_load_table"] = (
             _build_pre_sleep_load_table(pre_sleep_data) if pre_sleep_data else ""
         )
+        result["current_sleep_hours"] = pre_sleep_result.get("current_sleep_hours", [])
+        performance.update(pre_sleep_result.get("performance", {}))
         for key, value in pre_sleep_meta.items():
             result[f"pre_sleep_load_{key}"] = value
         # 基础信息
@@ -485,6 +550,59 @@ def _build_expansion_deployment_table(row: dict[str, Any]) -> str:
     )
 
 
+def _format_horizontal_value(value: Any) -> str:
+    if value in (None, ""):
+        return "—"
+    if isinstance(value, (dict, list, tuple)):
+        import json  # noqa: PLC0415
+
+        value = json.dumps(value, ensure_ascii=False, default=str)
+    return str(value).replace("|", "\\|").replace("\n", "<br>")
+
+
+def _parse_hour_values(value: Any) -> set[int]:
+    if isinstance(value, (list, tuple, set)):
+        parts = value
+    elif value is None:
+        parts = []
+    else:
+        parts = str(value).strip("[]").split(",")
+    result: set[int] = set()
+    for part in parts:
+        try:
+            result.add(int(str(part).strip()))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _build_horizontal_detail_table(
+    row: dict[str, Any] | None,
+    fields: tuple[tuple[str, str], ...],
+) -> str:
+    if not row:
+        return ""
+    headers = [label for key, label in fields if key in row]
+    values = [_format_horizontal_value(row.get(key)) for key, _ in fields if key in row]
+    if not headers:
+        return ""
+    return _build_md_table(headers, ["| " + " | ".join(values) + " |"])
+
+
+def _build_horizontal_detail_rows_table(
+    rows: list[dict[str, Any]],
+    fields: tuple[tuple[str, str], ...],
+) -> str:
+    if not rows:
+        return ""
+    headers = [label for _, label in fields]
+    table_rows = [
+        "| " + " | ".join(_format_horizontal_value(row.get(key)) for key, _ in fields) + " |"
+        for row in rows
+    ]
+    return _build_md_table(headers, table_rows)
+
+
 async def _query_expansion_data(
     cgi: str,
     stat_time: datetime,
@@ -493,7 +611,8 @@ async def _query_expansion_data(
     expansion_sql = text(f"""
         SELECT cgi, stat_time, is_highload, jd_type, reason, starttime, endtime,
                is_whitelist,
-               cell_name, dist_name, county_name, prod_name,
+               cell_name, gnb_name, dist_name, county_name, prod_name,
+               work_band, cover_type, cover_scen, site_type,
                hour_detail, hour_filter, hour_int,
                hour_filter_early, hour_int_early,
                deploy_hours, deploy_hours_continuous,
@@ -521,43 +640,65 @@ async def _query_expansion_data(
         GROUP BY hours
         ORDER BY hours
     """)
-    rows, sleep_rows = await asyncio.gather(
-        fetch_rows(expansion_sql, {"cgi": cgi, "stat_time": stat_time}),
-        fetch_rows(
-            sleep_sql,
-            {
-                "cgi": cgi,
-                "start_date": stat_time - timedelta(days=EXPANSION_LOOKBACK_DAYS),
-                "end_date": stat_time,
-                "night_hours": EXPANSION_HOURS,
-            },
-        ),
-    )
+    query_performance: dict[str, float] = {}
+    expansion_started_at = time.perf_counter()
+    rows = await fetch_rows(expansion_sql, {"cgi": cgi, "stat_time": stat_time})
+    _record_stage_timing(query_performance, "expansion_result_query", expansion_started_at)
     expansion_data = [build_expansion_record(row) for row in rows]
     base_row = expansion_data[0] if expansion_data else None
+    candidate_hours: set[int] = set()
+    for field in ("hour_filter", "hour_filter_early"):
+        candidate_hours.update(_parse_hour_values((base_row or {}).get(field)))
+    query_hours = [
+        hour for hour in EXPANSION_HOURS
+        if not candidate_hours or hour in candidate_hours
+    ]
+    sleep_started_at = time.perf_counter()
+    sleep_rows = await fetch_rows(
+        sleep_sql,
+        {
+            "cgi": cgi,
+            "start_date": stat_time - timedelta(days=EXPANSION_LOOKBACK_DAYS),
+            "end_date": stat_time,
+            "night_hours": query_hours,
+        },
+    )
+    _record_stage_timing(query_performance, "expansion_sleep_aggregation", sleep_started_at)
     raw_process_data = build_expansion_hour_evidence(base_row or {}, sleep_rows)
-    process_data = filter_judgeable_expansion_evidence(raw_process_data)
+    process_data = select_expansion_process_rows(raw_process_data, base_row)
     process_table = (
         _build_expansion_process_table(process_data) if process_data else ""
     )
-    candidate_table = _build_expansion_candidate_table(base_row) if base_row else ""
+    result_status = (
+        derive_expansion_result_status(base_row) if base_row else "no_candidate"
+    )
+    candidate_table = (
+        _build_expansion_candidate_table(base_row)
+        if base_row and result_status == "candidate_available"
+        else ""
+    )
     deployment_table = (
-        _build_expansion_deployment_table(base_row) if base_row else ""
+        _build_expansion_deployment_table(base_row)
+        if base_row and result_status == "candidate_available"
+        else ""
     )
 
     starttime = ensure_datetime(base_row.get("starttime")) if base_row else None
     endtime = ensure_datetime(base_row.get("endtime")) if base_row else None
     whitelist_flag = base_row.get("is_whitelist") if base_row else None
-    is_whitelisted = parse_boolean_flag(whitelist_flag)
+    is_whitelisted = False if base_row is None else parse_boolean_flag(whitelist_flag)
 
     return {
         "data": expansion_data,
         "process_data": process_data,
-        "expansion_result_status": derive_expansion_result_status(base_row),
+        "expansion_result_status": result_status,
         "process_evidence_status": derive_process_evidence_status(raw_process_data),
         "process_table": process_table,
         "candidate_table": candidate_table,
         "deployment_table": deployment_table,
+        "base_info_table": _build_horizontal_detail_table(base_row, BASE_FIELD_LABELS),
+        "detail_table": _build_horizontal_detail_table(base_row, EXPANSION_FIELD_LABELS),
+        "performance": query_performance,
         "table": "\n\n".join(
             table for table in (candidate_table, deployment_table) if table
         ),
@@ -575,6 +716,11 @@ async def _query_expansion_data(
         "dist_name": base_row.get("dist_name") if base_row else None,
         "county_name": base_row.get("county_name") if base_row else None,
         "prod_name": base_row.get("prod_name") if base_row else None,
+        "gnb_name": base_row.get("gnb_name") if base_row else None,
+        "work_band": base_row.get("work_band") if base_row else None,
+        "cover_type": base_row.get("cover_type") if base_row else None,
+        "cover_scen": base_row.get("cover_scen") if base_row else None,
+        "site_type": base_row.get("site_type") if base_row else None,
     }
 
 
@@ -591,7 +737,8 @@ async def _query_constriction_data(
                prb_rate_ul_before, prb_rate_dl_before, prb_increase,
                before_sleep_hour, before_sleep_date,
                is_whitelist, starttime, endtime,
-               cell_name, dist_name, county_name, prod_name
+               cell_name, gnb_name, dist_name, county_name, prod_name,
+               work_band, cover_type, cover_scen
         FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day
         WHERE cgi = :cgi AND stat_time = :stat_time
     """)
@@ -629,8 +776,15 @@ async def _query_constriction_data(
         "relation_table": relation_table,
         "load_table": load_table,
         "result_table": result_table,
+        "base_info_table": _build_horizontal_detail_table(first_row, BASE_FIELD_LABELS),
+        "detail_table": _build_horizontal_detail_rows_table(
+            constriction_data,
+            CONSTRICTION_FIELD_LABELS,
+        ),
         "table": result_table,
-        "is_whitelist": parse_boolean_flag(whitelist_flag),
+        "is_whitelist": (
+            False if first_row is None else parse_boolean_flag(whitelist_flag)
+        ),
         "whitelist_reason": (
             first_row.get("whitelist_reason") if first_row else None
         ),
@@ -641,6 +795,11 @@ async def _query_constriction_data(
         "dist_name": first_row.get("dist_name") if first_row else None,
         "county_name": first_row.get("county_name") if first_row else None,
         "prod_name": first_row.get("prod_name") if first_row else None,
+        "gnb_name": first_row.get("gnb_name") if first_row else None,
+        "work_band": first_row.get("work_band") if first_row else None,
+        "cover_type": first_row.get("cover_type") if first_row else None,
+        "cover_scen": first_row.get("cover_scen") if first_row else None,
+        "site_type": first_row.get("site_type") if first_row else None,
     }
 
 
@@ -801,6 +960,7 @@ async def _query_param_check(db: AsyncSession, cgi: str, stat_time: str | None =
             "unqualified_count": result.get("unqualified_count", 0),
             "report_content": result.get("report_content", ""),
             "unqualified_items": result.get("unqualified_items", []),
+            "performance": result.get("performance", {}),
         }
     except Exception as exc:
         logger.error("参数核查调用异常: %s", exc, exc_info=True)
@@ -910,6 +1070,7 @@ async def _query_pre_sleep_load_data(
         SELECT
             stat_time,
             dist_name,
+            county_name,
             prod_name,
             gnb_name,
             cell_name,
@@ -928,24 +1089,55 @@ async def _query_pre_sleep_load_data(
     """)
 
     stat_sql = text(f"""
-        SELECT stat_time, prb_hour, sleep_hour, prb_rate_ul, prb_rate_dl
+        SELECT COUNT(DISTINCT stat_time) AS high_prb_days_7d
         FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
         WHERE cgi = :cgi
           AND stat_time >= :start_date
           AND stat_time <= :end_date
           AND (prb_rate_ul > :prb_threshold OR prb_rate_dl > :prb_threshold)
+          AND EXISTS (
+              SELECT 1
+              FROM regexp_split_to_table(
+                  COALESCE(sleep_hour, ''), '\\s*,\\s*'
+              ) AS sleep_value
+              WHERE sleep_value ~ '^\\d+$'
+                AND prb_hour = ((sleep_value::int + 23) % 24)
+          )
     """)
 
+    query_performance: dict[str, float] = {}
+
+    async def _timed_fetch(
+        stage: str,
+        sql: Any,
+        params: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        started_at = time.perf_counter()
+        try:
+            return await fetch_rows(sql, params)
+        finally:
+            _record_stage_timing(query_performance, stage, started_at)
+
     detail_rows, stat_rows = await asyncio.gather(
-        fetch_rows(detail_sql, {"cgi": cgi, "stat_time": stat_time}),
-        fetch_rows(stat_sql, {
+        _timed_fetch(
+            "pre_sleep_daily_detail",
+            detail_sql,
+            {"cgi": cgi, "stat_time": stat_time},
+        ),
+        _timed_fetch("pre_sleep_7d_stat", stat_sql, {
             "cgi": cgi,
             "start_date": start_date_7d,
             "end_date": stat_time,
             "prb_threshold": PRB_HIGH_LOAD_THRESHOLD,
         }),
     )
-    high_prb_days = _count_high_pre_sleep_days(stat_rows)
+    high_prb_days = int(
+        (stat_rows[0].get("high_prb_days_7d") if stat_rows else 0) or 0,
+    )
+
+    current_sleep_hours: set[int] = set()
+    for row in detail_rows:
+        current_sleep_hours.update(_parse_hour_values(row.get("sleep_hour")))
 
     # 构建表格数据
     data: list[dict[str, Any]] = []
@@ -1001,6 +1193,10 @@ async def _query_pre_sleep_load_data(
         "data": data,
         "table": table_md,
         "high_prb_days_7d": high_prb_days,
+        "current_sleep_hours": [
+            hour for hour in EXPANSION_HOURS if hour in current_sleep_hours
+        ],
+        "performance": query_performance,
         "cell_name": first_row.get("cell_name") or cgi,
         "dist_name": first_row.get("dist_name") or "-",
         "county_name": first_row.get("county_name") or "-",

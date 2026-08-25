@@ -16,6 +16,7 @@ from app.services.energy_analysis import (
     normalize_boolean_flag,
     normalize_network_type,
     parse_boolean_flag,
+    select_expansion_process_rows,
 )
 
 
@@ -155,7 +156,29 @@ def test_expansion_hour_evidence_keeps_source_result_as_decision():
         "suggestion": "可扩展",
     }
     assert evidence[1]["suggestion"] == "以综合分析结果为准"
-    assert evidence[2]["suggestion"] == "数据缺失"
+    assert evidence[2]["suggestion"] == "未进入候选（指标不完整）"
+
+
+def test_process_rows_show_only_candidates_when_candidates_exist():
+    rows = [{"hour": hour} for hour in [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]]
+
+    selected = select_expansion_process_rows(
+        rows,
+        {"hour_filter": "22,23", "hour_filter_early": "0"},
+    )
+
+    assert [row["hour"] for row in selected] == [22, 23, 0]
+
+
+def test_process_rows_keep_all_ten_hours_when_no_candidate_exists():
+    rows = [{"hour": hour} for hour in [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]]
+
+    selected = select_expansion_process_rows(
+        rows,
+        {"hour_filter": None, "hour_filter_early": "[]"},
+    )
+
+    assert selected == rows
 
 
 def test_network_type_normalization_covers_database_values():

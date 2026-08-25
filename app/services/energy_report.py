@@ -22,7 +22,10 @@ def _title_and_overview(result: dict[str, Any]) -> list[str]:
         count = result.get("constriction_total_count")
         if not isinstance(count, int):
             count = len(result.get("constriction_data") or [])
-        lines.append(f"- 收缩结论：共获得 {count} 条可复核收缩记录。")
+        if count:
+            lines.append(f"- 收缩结论：共获得 {count} 条可复核收缩记录。")
+        else:
+            lines.append("- 收缩结论：该小区没有需要剔除的原节电时段。")
     return lines
 
 
@@ -59,7 +62,7 @@ def _append_truncation_notice(
 def _expansion_status(status: Any) -> str:
     messages = {
         "unavailable": "暂不能判断是否需要扩展。",
-        "no_candidate": "已完成扩展评估，当前未识别需新增的扩展时段，保持现有配置。",
+        "no_candidate": "经过智能体分析，该小区没有可以扩展的时段。",
         "candidate_available": "已识别需新增的扩展时段。",
     }
     return messages.get(status, "扩展结果状态暂不可知。")
@@ -96,46 +99,33 @@ def _append_expansion(lines: list[str], result: dict[str, Any]) -> None:
         "### 容量与风险说明",
         _capacity_risk(result.get("high_load_type")),
     ])
-    _append_table_or_note(
-        lines,
-        "扩展过程证据",
-        result.get("expansion_process_table")
-        if result.get("expansion_process_evidence_status") in {"complete", "partial"}
-        else None,
-        "未获得可判定的扩展过程证据。",
-    )
-    result_is_available = result.get("expansion_result_status") in {
-        "no_candidate", "candidate_available",
-    }
-    _append_table_or_note(
-        lines,
-        "扩展候选时段",
-        result.get("expansion_candidate_table") if result_is_available else None,
-        "未获得扩展候选分析结果。",
-    )
-    _append_table_or_note(
-        lines,
-        "扩展部署时段",
-        result.get("expansion_deployment_table") if result_is_available else None,
-        "未获得连续部署分析结果。",
-    )
+    _append_table(lines, "低业务与休眠情况分析", result.get("expansion_process_table"))
+    _append_table(lines, "扩展结果明细", result.get("expansion_detail_table"))
+    if result.get("expansion_result_status") == "candidate_available":
+        _append_table(lines, "扩展候选时段", result.get("expansion_candidate_table"))
+        _append_table(lines, "连续部署结果", result.get("expansion_deployment_table"))
 
 
 def _append_constriction(lines: list[str], result: dict[str, Any]) -> None:
     lines.extend(["", "## 休眠收缩"])
-    has_result = result.get("constriction_data") != []
-    for title, key, note in (
-        ("主小区休眠条件核查", "constriction_main_table", "未获得主小区休眠条件证据。"),
-        ("周边小区关联范围核查", "constriction_relation_table", "未获得周边小区关联范围证据。"),
-        ("周边小区负荷变化", "constriction_load_table", "未获得周边小区负荷证据。"),
-        ("需收缩节电时段", "constriction_result_table", "未获得收缩分析结果。"),
+    has_result = bool(result.get("constriction_data"))
+    if not has_result:
+        lines.append("该小区没有需要剔除的原节电时段。")
+        return
+    lines.extend(["", "### 周边200米关联小区高负荷影响判断"])
+    sleep_hours = result.get("current_sleep_hours") or []
+    if sleep_hours:
+        lines.append("当前已生效的休眠时间点：" + "、".join(map(str, sleep_hours)) + "点。")
+    for title, key in (
+        ("主小区休眠条件", "constriction_main_table"),
+        ("周边小区关联范围", "constriction_relation_table"),
+        ("周边小区负荷变化", "constriction_load_table"),
+        ("需剔除的原节电时段", "constriction_result_table"),
+        ("收缩结果明细", "constriction_detail_table"),
     ):
-        _append_table_or_note(
-            lines,
-            title,
-            result.get(key) if has_result else None,
-            note,
-        )
+        table = result.get(key)
+        if isinstance(table, str) and table.strip():
+            lines.extend(["", f"#### {title}", table.strip()])
     _append_truncation_notice(lines, "constriction", result)
 
 
@@ -190,17 +180,17 @@ def _append_param_check(lines: list[str], result: dict[str, Any]) -> None:
 
 
 def _append_pre_sleep_load(lines: list[str], result: dict[str, Any]) -> None:
+    lines.extend(["", "### 休眠生效前高负荷分析"])
     if result.get("pre_sleep_load_data") == []:
-        lines.extend(["", "### 休眠前本小区负荷", "未获得休眠前负荷证据。"])
+        high_days = result.get("high_prb_days_7d")
+        if not high_days:
+            lines.append("经智能体分析，近7天未发现休眠生效前持续高负荷情况。")
     else:
-        _append_table_or_note(
-            lines,
-            "休眠前本小区负荷",
-            result.get("pre_sleep_load_table"),
-            "未获得休眠前负荷证据。",
-        )
+        table = result.get("pre_sleep_load_table")
+        if isinstance(table, str) and table.strip():
+            lines.extend(["", "#### 休眠前本小区负荷", table.strip()])
     high_days = result.get("high_prb_days_7d")
-    if high_days is not None:
+    if high_days:
         lines.append(f"近 7 天休眠前高负荷天数：{high_days} 天。")
     if isinstance(high_days, (int, float)) and high_days >= 3:
         lines.append("存在持续高负荷风险，建议优先收缩相关时段。")
@@ -228,10 +218,12 @@ def _append_whitelist(lines: list[str], result: dict[str, Any]) -> None:
 def build_single_cell_energy_report(result: dict[str, Any]) -> str:
     """将已获得的单小区分析结果确定性地渲染为 Markdown。"""
     lines = _title_and_overview(result)
+    _append_table(lines, "基础信息", result.get("base_info_table"))
     target = result.get("analysis_target")
     if target in {"all", "expansion"}:
         _append_expansion(lines, result)
         _append_param_check(lines, result)
+        lines.extend(["", "### 综合扩展建议", _expansion_status(result.get("expansion_result_status"))])
     if target in {"all", "constriction"}:
         _append_constriction(lines, result)
         _append_pre_sleep_load(lines, result)

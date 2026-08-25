@@ -25,10 +25,14 @@ def test_export_sheets_creates_named_worksheets(tmp_path, monkeypatch):
     )
 
     workbook_path = next(tmp_path.glob("*.xlsx"))
-    workbook = openpyxl.load_workbook(workbook_path, read_only=True)
+    workbook = openpyxl.load_workbook(workbook_path)
     assert workbook.sheetnames == ["小区汇总", "扩展明细", "收缩明细"]
     assert '"low_flow_pct": 90.0' in workbook["扩展明细"]["B2"].value
     assert workbook["收缩明细"]["B2"].value == 10.0
+    for worksheet in workbook.worksheets:
+        assert worksheet.freeze_panes == "A2"
+        assert worksheet.auto_filter.ref == worksheet.dimensions
+        assert worksheet["A1"].font.bold is True
     assert url is not None
 
 
