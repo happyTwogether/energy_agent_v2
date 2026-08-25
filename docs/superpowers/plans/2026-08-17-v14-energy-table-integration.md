@@ -420,17 +420,16 @@ Expected: FAIL because `_needs_pre_sleep_load` / `_count_high_pre_sleep_days` �
 
 - [x] **Step 3: 实现路由和单小区七日明细计数**
 
-`_query_pre_sleep_load_data` 的七日查询改为拉取高 PRB 候选行：
+`_query_pre_sleep_load_data` 的七日查询拉取单小区必要字段：
 
 ```sql
 SELECT stat_time, prb_hour, sleep_hour, prb_rate_ul, prb_rate_dl
 FROM jd_agent.jd_cell_pre_hour_busy
 WHERE cgi = :cgi
   AND stat_time BETWEEN :start_date AND :end_date
-  AND (prb_rate_ul > :threshold OR prb_rate_dl > :threshold)
 ```
 
-随后使用 `_check_is_pre_sleep_hour` 按日期去重计数。`analyze_single_cell_energy` 对 `all` 和 `constriction` 与其他独立查询并行获取休眠前负荷，避免串行增加响应时间。
+生产库中这些数值字段可能包含空字符串，因此 SQL 不执行数值比较或小时转换。随后在 Python 中安全解析 PRB 利用率，使用 `_check_is_pre_sleep_hour` 过滤真实休眠前小时，并按日期去重计数。批量查询使用同一口径，且仅查询实际存在收缩记录的 CGI。`analyze_single_cell_energy` 对 `all` 和 `constriction` 与其他独立查询并行获取休眠前负荷，避免串行增加响应时间。
 
 - [x] **Step 4: 验证完整分析和休眠前负荷测试**
 

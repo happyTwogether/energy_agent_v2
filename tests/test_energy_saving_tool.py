@@ -514,8 +514,8 @@ def test_high_prb_days_only_counts_actual_pre_sleep_hours():
 
 
 @pytest.mark.asyncio
-async def test_pre_sleep_query_aggregates_seven_days_in_sql(monkeypatch):
-    """七日高负荷天数由数据库聚合，只返回一个统计值。"""
+async def test_pre_sleep_query_counts_dirty_seven_day_rows_in_python(monkeypatch):
+    """七日统计不在 SQL 中强制转换生产库的脏字符串。"""
     queries: list[str] = []
 
     async def fake_fetch_rows(sql, params):
@@ -539,19 +539,39 @@ async def test_pre_sleep_query_aggregates_seven_days_in_sql(monkeypatch):
                     "sleep_hour": "0",
                 }
             ]
-        assert "COUNT(DISTINCT stat_time)" in query
-        assert "regexp_split_to_table" in query
-        assert "sleep_value::int" not in query
-        assert "btrim(sleep_value, ' []')" in query
-        assert "prb_hour + 1" not in query
-        assert "regexp_replace(" in query
-        assert "COALESCE(prb_hour::text, '')" in query
-        assert "::numeric" in query
-        assert "::text" in query
+        assert "stat_time, prb_hour, sleep_hour" in query
+        assert "prb_rate_ul, prb_rate_dl" in query
+        assert "COUNT(" not in query
+        assert "regexp_split_to_table" not in query
+        assert "::" not in query
         assert "stat_time >= :start_date" in query
         assert "stat_time <= :end_date" in query
-        assert "prb_rate_ul > :prb_threshold" in query
-        return [{"high_prb_days_7d": 1}]
+        assert "prb_rate_ul >" not in query
+        assert "prb_rate_dl >" not in query
+        assert "prb_threshold" not in params
+        return [
+            {
+                "stat_time": date(2026, 8, 9),
+                "prb_hour": "23",
+                "sleep_hour": "0",
+                "prb_rate_ul": "51",
+                "prb_rate_dl": "",
+            },
+            {
+                "stat_time": date(2026, 8, 9),
+                "prb_hour": "",
+                "sleep_hour": "",
+                "prb_rate_ul": "",
+                "prb_rate_dl": "",
+            },
+            {
+                "stat_time": date(2026, 8, 10),
+                "prb_hour": "22",
+                "sleep_hour": "0",
+                "prb_rate_ul": "99",
+                "prb_rate_dl": "99",
+            },
+        ]
 
     monkeypatch.setattr(energy_saving_tool, "fetch_rows", fake_fetch_rows)
 

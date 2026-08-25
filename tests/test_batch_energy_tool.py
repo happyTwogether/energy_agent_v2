@@ -44,6 +44,51 @@ def test_pre_sleep_count_uses_distinct_dates_per_cell():
     }
 
 
+@pytest.mark.asyncio
+async def test_batch_pre_sleep_query_filters_dirty_metrics_in_python(monkeypatch):
+    async def fake_fetch_rows(sql, params):
+        query = str(sql)
+        assert "prb_rate_ul >" not in query
+        assert "prb_rate_dl >" not in query
+        assert "prb_threshold" not in params
+        return [
+            {
+                "cgi": "a",
+                "stat_time": date(2026, 8, 9),
+                "prb_hour": "23",
+                "sleep_hour": "0",
+                "prb_rate_ul": "51",
+                "prb_rate_dl": "",
+            },
+            {
+                "cgi": "a",
+                "stat_time": date(2026, 8, 8),
+                "prb_hour": "",
+                "sleep_hour": "",
+                "prb_rate_ul": "",
+                "prb_rate_dl": "",
+            },
+            {
+                "cgi": "a",
+                "stat_time": date(2026, 8, 7),
+                "prb_hour": "23",
+                "sleep_hour": "0",
+                "prb_rate_ul": "50",
+                "prb_rate_dl": None,
+            },
+        ]
+
+    monkeypatch.setattr(batch_energy_tool, "fetch_rows", fake_fetch_rows)
+
+    rows = await batch_energy_tool._query_pre_sleep_rows(
+        {"a"},
+        datetime(2026, 8, 10),
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["stat_time"] == date(2026, 8, 9)
+
+
 def test_batch_whitelist_accepts_database_boolean():
     """PostgreSQL boolean 白名单值不能因只识别中文“是”而漏计。"""
     table_data, stats = batch_energy_tool._build_table_data(
@@ -123,7 +168,10 @@ async def test_batch_analysis_exports_complete_v14_sheets(monkeypatch):
         if "jd_cell_pre_hour_busy" in query:
             assert "cgi = ANY(:cgis)" in query
             assert "stat_time <= :end_date" in query
-            assert params["prb_threshold"] == 50.0
+            assert set(params["cgis"]) == {"b"}
+            assert "prb_rate_ul >" not in query
+            assert "prb_rate_dl >" not in query
+            assert "prb_threshold" not in params
             return [
                 {
                     "cgi": "b",

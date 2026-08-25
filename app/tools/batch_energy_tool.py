@@ -263,7 +263,10 @@ async def _do_analyze(
                 constriction_map[cgi] = []
             if row["hours"] is not None:
                 constriction_map[cgi].append(row["hours"])
-        pre_sleep_rows = await _query_pre_sleep_rows(all_cgis, query_date)
+        pre_sleep_rows = await _query_pre_sleep_rows(
+            set(constriction_base_map),
+            query_date,
+        )
         sleep_count_map = _count_pre_sleep_days_by_cgi(pre_sleep_rows)
 
     # ── 5. 合并生成表格行 ──
@@ -428,20 +431,24 @@ async def _query_pre_sleep_rows(
         WHERE cgi = ANY(:cgis)
           AND stat_time >= :start_date
           AND stat_time <= :end_date
-          AND (prb_rate_ul > :prb_threshold
-               OR prb_rate_dl > :prb_threshold)
     """)
     rows = await fetch_rows(sql, {
         "cgis": list(cgis),
         "start_date": start_date,
         "end_date": end_date,
-        "prb_threshold": PRB_HIGH_LOAD_THRESHOLD,
     })
-    return [
-        row
-        for row in rows
-        if is_pre_sleep_hour(row.get("prb_hour"), row.get("sleep_hour"))
-    ]
+    high_pre_sleep_rows = []
+    for row in rows:
+        prb_values = [
+            parsed
+            for key in ("prb_rate_ul", "prb_rate_dl")
+            if (parsed := parse_optional_float(row.get(key))) is not None
+        ]
+        if not prb_values or max(prb_values) <= PRB_HIGH_LOAD_THRESHOLD:
+            continue
+        if is_pre_sleep_hour(row.get("prb_hour"), row.get("sleep_hour")):
+            high_pre_sleep_rows.append(row)
+    return high_pre_sleep_rows
 
 
 async def _enrich_batch_constriction_rows(

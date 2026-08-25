@@ -1086,7 +1086,7 @@ async def _query_pre_sleep_load_data(
     # 计算时间范围（包含当天）
     start_date_7d = stat_time - timedelta(days=PRE_SLEEP_LOAD_DAYS - 1)
 
-    # 并行查询：当日明细 + 7天统计（各自独立 session）
+    # 并行查询：当日明细 + 7天候选行（各自独立 session）
     detail_sql = text(f"""
         SELECT
             stat_time,
@@ -1110,36 +1110,11 @@ async def _query_pre_sleep_load_data(
     """)
 
     stat_sql = text(f"""
-        SELECT COUNT(DISTINCT stat_time) AS high_prb_days_7d
+        SELECT stat_time, prb_hour, sleep_hour, prb_rate_ul, prb_rate_dl
         FROM {DB_SCHEMA_AGENT}.jd_cell_pre_hour_busy
         WHERE cgi = :cgi
           AND stat_time >= :start_date
           AND stat_time <= :end_date
-          AND (prb_rate_ul > :prb_threshold OR prb_rate_dl > :prb_threshold)
-          AND EXISTS (
-              SELECT 1
-              FROM regexp_split_to_table(
-                  COALESCE(sleep_hour, ''), '\\s*,\\s*'
-              ) AS sleep_value
-              CROSS JOIN LATERAL (
-                  SELECT NULLIF(
-                      regexp_replace(
-                          COALESCE(prb_hour::text, ''),
-                          '[^0-9]', '', 'g'
-                      ),
-                      ''
-                  )::numeric AS prb_hour_number
-              ) AS normalized
-              WHERE btrim(COALESCE(prb_hour::text, '')) ~ '^[0-9]{{1,2}}$'
-                AND normalized.prb_hour_number BETWEEN 0 AND 23
-                AND btrim(sleep_value, ' []') IN (
-                  (((normalized.prb_hour_number + 1) % 24)::text),
-                  lpad(
-                      (((normalized.prb_hour_number + 1) % 24)::text),
-                      2, '0'
-                  )
-              )
-          )
     """)
 
     query_performance: dict[str, float] = {}
@@ -1165,13 +1140,9 @@ async def _query_pre_sleep_load_data(
             "cgi": cgi,
             "start_date": start_date_7d,
             "end_date": stat_time,
-            "prb_threshold": PRB_HIGH_LOAD_THRESHOLD,
         }),
     )
-    high_prb_days_value = parse_optional_float(
-        stat_rows[0].get("high_prb_days_7d") if stat_rows else None,
-    )
-    high_prb_days = int(high_prb_days_value or 0)
+    high_prb_days = _count_high_pre_sleep_days(stat_rows)
 
     current_sleep_hours: set[int] = set()
     for row in detail_rows:
