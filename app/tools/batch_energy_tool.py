@@ -11,6 +11,8 @@ from app.services.energy_analysis import (
     collect_site_type_cgis,
     enrich_constriction_records,
     is_pre_sleep_hour,
+    parse_hour_value,
+    parse_optional_float,
 )
 from app.services.energy_evidence import query_neighbor_relations, query_site_types
 from app.utils.export_util import export_sheets_to_excel
@@ -387,12 +389,16 @@ def _augment_summary_rows(
         cgi = str(row.get("CGI") or "")
         expansion = expansion_map.get(cgi, {})
         contraction = contraction_by_cgi.get(cgi, [])
-        hours = sorted({item["hours"] for item in contraction if item.get("hours") is not None})
+        hours = sorted({
+            parsed
+            for item in contraction
+            if (parsed := parse_hour_value(item.get("hours"))) is not None
+        })
         around_cgis = {item.get("around_cgi") for item in contraction if item.get("around_cgi")}
         increases = [
-            float(item["prb_increase"])
+            parsed
             for item in contraction
-            if item.get("prb_increase") is not None
+            if (parsed := parse_optional_float(item.get("prb_increase"))) is not None
         ]
         row.update({
             "扩展时段（含扩展时段）": expansion.get("hour_filter") or "无",
@@ -714,8 +720,7 @@ def _parse_hour_filter(raw: Any) -> list[int]:
     parsed = parse_list_field(raw)
     result: list[int] = []
     for x in parsed:
-        if isinstance(x, (int, float)):
-            result.append(int(x))
-        elif isinstance(x, str) and x.lstrip("-").isdigit():
-            result.append(int(x))
+        parsed_hour = parse_hour_value(x)
+        if parsed_hour is not None:
+            result.append(parsed_hour)
     return result

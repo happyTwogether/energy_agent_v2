@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Literal
 
 NetworkType = Literal["4G", "5G"]
@@ -48,6 +49,28 @@ def parse_boolean_flag(value: Any) -> bool | None:
 def normalize_boolean_flag(value: Any) -> bool:
     """将数据库常见布尔值归一化，避免非空文本“否”被判为真。"""
     return parse_boolean_flag(value) is True
+
+
+def parse_optional_float(value: Any) -> float | None:
+    """将数据库数值边界安全归一化；空串、脏值和非有限值保持缺失。"""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def parse_hour_value(value: Any) -> int | None:
+    """解析 0 至 23 的整点值，拒绝空串、小数和越界值。"""
+    parsed = parse_optional_float(value)
+    if parsed is None or not parsed.is_integer():
+        return None
+    hour = int(parsed)
+    return hour if 0 <= hour <= 23 else None
 
 
 def derive_expansion_result_status(record: dict[str, Any] | None) -> str:
@@ -121,10 +144,9 @@ def _hour_set(value: Any) -> set[int]:
         parts = str(value).strip("[]").split(",")
     result: set[int] = set()
     for part in parts:
-        try:
-            result.add(int(str(part).strip()))
-        except (TypeError, ValueError):
-            continue
+        parsed = parse_hour_value(part)
+        if parsed is not None:
+            result.add(parsed)
     return result
 
 
@@ -151,15 +173,15 @@ def _build_expansion_hour_row(
     sleep_by_hour: dict[int, Any],
     expandable_hours: set[int],
 ) -> dict[str, Any]:
-    percent = detail_by_hour.get(hour)
-    sleep_seconds = sleep_by_hour.get(hour)
-    low_business = None if percent is None else float(percent) >= LOW_FLOW_PCT_THRESHOLD
-    zero_sleep = None if sleep_seconds is None else float(sleep_seconds) == 0
+    percent = parse_optional_float(detail_by_hour.get(hour))
+    sleep_seconds = parse_optional_float(sleep_by_hour.get(hour))
+    low_business = None if percent is None else percent >= LOW_FLOW_PCT_THRESHOLD
+    zero_sleep = None if sleep_seconds is None else sleep_seconds == 0
     return {
         "hour": hour,
-        "low_flow_pct": None if percent is None else float(percent),
+        "low_flow_pct": percent,
         "is_low_business": low_business,
-        "avg_sleep_seconds": None if sleep_seconds is None else float(sleep_seconds),
+        "avg_sleep_seconds": sleep_seconds,
         "is_zero_sleep": zero_sleep,
         "suggestion": _expansion_suggestion(
             hour, expandable_hours, low_business, zero_sleep,
@@ -173,13 +195,14 @@ def build_expansion_hour_evidence(
 ) -> list[dict[str, Any]]:
     """构造扩展时窗的逐小时过程证据，最终结论以源结果为准。"""
     detail_by_hour = {
-        item.get("hour"): item.get("low_flow_pct")
+        hour: item.get("low_flow_pct")
         for item in record.get("hour_detail", [])
-        if item.get("hour") is not None
+        if (hour := parse_hour_value(item.get("hour"))) is not None
     }
     sleep_by_hour = {
-        row.get("hours"): row.get("avg_sleep_sum")
+        hour: row.get("avg_sleep_sum")
         for row in sleep_rows
+        if (hour := parse_hour_value(row.get("hours"))) is not None
     }
     expandable_hours = _hour_set(record.get("hour_filter"))
     expandable_hours.update(_hour_set(record.get("hour_filter_early")))
@@ -237,19 +260,17 @@ def build_expansion_record(row: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def is_pre_sleep_hour(prb_hour: int | None, sleep_hour: str | None) -> bool:
+def is_pre_sleep_hour(prb_hour: Any, sleep_hour: Any) -> bool:
     """判断 PRB 小时是否为任一休眠时间点的前一小时。"""
-    if prb_hour is None or not sleep_hour:
+    normalized_prb_hour = parse_hour_value(prb_hour)
+    if normalized_prb_hour is None or not sleep_hour:
         return False
-    try:
-        sleep_hours = [
-            int(hour.strip())
-            for hour in sleep_hour.split(",")
-            if hour.strip()
-        ]
-    except (ValueError, AttributeError):
-        return False
-    return prb_hour in {(hour - 1) % 24 for hour in sleep_hours}
+    sleep_hours = {
+        parsed
+        for token in str(sleep_hour).strip("[]").split(",")
+        if (parsed := parse_hour_value(token)) is not None
+    }
+    return normalized_prb_hour in {(hour - 1) % 24 for hour in sleep_hours}
 
 
 def collect_site_type_cgis(
@@ -287,7 +308,11 @@ def _site_type(
 
 
 def _max_available(*values: Any) -> float | None:
-    present = [float(value) for value in values if value is not None]
+    present = [
+        parsed
+        for value in values
+        if (parsed := parse_optional_float(value)) is not None
+    ]
     return max(present) if present else None
 
 
@@ -306,7 +331,7 @@ def _enrich_constriction_record(
         "5G", main_cgi, site_type_by_cell,
     )
     around_site_type = _site_type(network, around_cgi, site_type_by_cell)
-    distance = (relation or {}).get("distance")
+    distance = parse_optional_float((relation or {}).get("distance"))
     status = evaluate_neighbor_relation(
         main_site_type,
         around_site_type,

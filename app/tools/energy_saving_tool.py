@@ -20,6 +20,8 @@ from app.services.energy_analysis import (
     enrich_constriction_records,
     is_pre_sleep_hour,
     parse_boolean_flag,
+    parse_hour_value,
+    parse_optional_float,
     select_expansion_process_rows,
 )
 from app.services.energy_report import build_single_cell_energy_report
@@ -489,12 +491,14 @@ async def analyze_single_cell_energy(
 
     return result
 
-def _format_hour_interval(hour: int) -> str:
-    return f"{hour:02d}:00-{hour:02d}:59"
+def _format_hour_interval(hour: Any) -> str:
+    parsed = parse_hour_value(hour)
+    return "—" if parsed is None else f"{parsed:02d}:00-{parsed:02d}:59"
 
 
 def _format_optional_percentage(value: Any) -> str:
-    return "数据缺失" if value is None else f"{float(value):.1f}%"
+    parsed = parse_optional_float(value)
+    return "数据缺失" if parsed is None else f"{parsed:.1f}%"
 
 
 def _format_optional_boolean(value: bool | None) -> str:
@@ -510,7 +514,7 @@ def _build_expansion_process_table(rows: list[dict[str, Any]]) -> str:
         sleep_display = (
             "数据缺失"
             if sleep_seconds is None
-            else _format_sleep_duration(int(sleep_seconds))
+            else _format_sleep_duration(sleep_seconds)
         )
         table_rows.append(
             f"| {_format_hour_interval(row['hour'])} | "
@@ -569,10 +573,9 @@ def _parse_hour_values(value: Any) -> set[int]:
         parts = str(value).strip("[]").split(",")
     result: set[int] = set()
     for part in parts:
-        try:
-            result.add(int(str(part).strip()))
-        except (TypeError, ValueError):
-            continue
+        parsed = parse_hour_value(part)
+        if parsed is not None:
+            result.add(parsed)
     return result
 
 
@@ -810,7 +813,8 @@ def _format_prb(ul: Any, dl: Any) -> str:
 
 
 def _format_prb_value(value: Any) -> str:
-    return "—" if value is None else f"{float(value):.1f}%"
+    parsed = parse_optional_float(value)
+    return "—" if parsed is None else f"{parsed:.1f}%"
 
 
 def _format_date(value: Any) -> str | None:
@@ -819,14 +823,12 @@ def _format_date(value: Any) -> str | None:
 
 
 def _format_constriction_hour(hour: Any) -> str:
-    if hour is None:
-        return "—"
-    return _format_hour_interval(int(hour))
+    return _format_hour_interval(hour)
 
 
 def _format_before_time(row: dict[str, Any]) -> str:
     before_date = row.get("before_sleep_date") or "—"
-    before_hour = row.get("before_sleep_hour")
+    before_hour = parse_hour_value(row.get("before_sleep_hour"))
     return (
         f"{before_date} {before_hour}:00"
         if before_hour is not None
@@ -850,7 +852,7 @@ def _build_constriction_main_table(rows: list[dict[str, Any]]) -> str:
         f"{_format_prb_value(row.get('self_prb_rate_ul_before'))} | "
         f"{_format_prb_value(row.get('self_prb_rate_dl_before'))} | "
         f"{_format_prb_value(row.get('main_prb_before'))} | "
-        f"{row.get('self_sleep_duration') if row.get('self_sleep_duration') is not None else '—'} | "
+        f"{_format_optional_number(row.get('self_sleep_duration'))} | "
         "纳入周边影响分析 |"
         for row in unique_rows.values()
     ]
@@ -866,11 +868,18 @@ _RELATION_LABELS = {
 }
 
 
+def _format_optional_number(value: Any) -> str:
+    parsed = parse_optional_float(value)
+    if parsed is None:
+        return "—"
+    return str(int(parsed)) if parsed.is_integer() else str(parsed)
+
+
 def _build_constriction_relation_table(rows: list[dict[str, Any]]) -> str:
     table_rows = []
     for row in rows:
-        distance = row.get("distance")
-        distance_display = "—" if distance is None else f"{float(distance):.1f}米"
+        distance = parse_optional_float(row.get("distance"))
+        distance_display = "—" if distance is None else f"{distance:.1f}米"
         relation_label = _RELATION_LABELS.get(
             row.get("relation_status"),
             "不满足分析范围",
@@ -887,7 +896,8 @@ def _build_constriction_relation_table(rows: list[dict[str, Any]]) -> str:
 
 
 def _format_increase(value: Any) -> str:
-    return "—" if value is None else f"{float(value):.1f}个百分点"
+    parsed = parse_optional_float(value)
+    return "—" if parsed is None else f"{parsed:.1f}个百分点"
 
 
 def _build_constriction_load_table(rows: list[dict[str, Any]]) -> str:
@@ -985,10 +995,12 @@ def _parse_stat_time(stat_time: str | datetime | None) -> datetime | None:
         return None
 
 
-def _format_sleep_duration(seconds: int | None) -> str:
+def _format_sleep_duration(seconds: Any) -> str:
     """将休眠时长（秒）格式化为可读字符串。"""
-    if seconds is None:
+    parsed = parse_optional_float(seconds)
+    if parsed is None:
         return "数据缺失"
+    seconds = int(round(parsed))
     if seconds == 0:
         return "0秒"
     hours = seconds // 3600
@@ -1013,10 +1025,14 @@ def _count_high_pre_sleep_days(rows: list[dict[str, Any]]) -> int:
     """按日期去重统计真正休眠前一小时的高 PRB 候选行。"""
     high_dates = set()
     for row in rows:
-        prb_rate = max(
-            row.get("prb_rate_ul") or 0,
-            row.get("prb_rate_dl") or 0,
-        )
+        prb_values = [
+            parsed
+            for key in ("prb_rate_ul", "prb_rate_dl")
+            if (parsed := parse_optional_float(row.get(key))) is not None
+        ]
+        prb_rate = max(prb_values) if prb_values else None
+        if prb_rate is None:
+            continue
         if prb_rate <= PRB_HIGH_LOAD_THRESHOLD:
             continue
         if not _check_is_pre_sleep_hour(row.get("prb_hour"), row.get("sleep_hour")):
@@ -1028,11 +1044,16 @@ def _count_high_pre_sleep_days(rows: list[dict[str, Any]]) -> int:
 
 
 def _build_pre_sleep_load_table(data: list[dict[str, Any]]) -> str:
+    def percentage(value: Any) -> str:
+        parsed = parse_optional_float(value)
+        return "—" if parsed is None else f"{parsed:.2f}%"
+
     table_rows = [
         f"| {item['time']} | {item['dist_name']} | {item['prod_name']} | "
         f"{item['gnb_name']} | {item['cell_name']} | {item['cgi']} | "
-        f"{item['sleep_seconds']} | {item['prb_rate_ul']:.2f}% | "
-        f"{item['prb_rate_dl']:.2f}% | {item['prb_rate']:.2f}% | "
+        f"{item['sleep_seconds'] if item['sleep_seconds'] is not None else '—'} | "
+        f"{percentage(item.get('prb_rate_ul'))} | "
+        f"{percentage(item.get('prb_rate_dl'))} | {percentage(item.get('prb_rate'))} | "
         f"{item['is_pre_sleep_hour']} | {item['high_prb_days_7d']} |"
         for item in data
     ]
@@ -1111,7 +1132,7 @@ async def _query_pre_sleep_load_data(
               ) AS normalized
               WHERE btrim(COALESCE(prb_hour::text, '')) ~ '^[0-9]{{1,2}}$'
                 AND normalized.prb_hour_number BETWEEN 0 AND 23
-                AND btrim(sleep_value) IN (
+                AND btrim(sleep_value, ' []') IN (
                   (((normalized.prb_hour_number + 1) % 24)::text),
                   lpad(
                       (((normalized.prb_hour_number + 1) % 24)::text),
@@ -1147,9 +1168,10 @@ async def _query_pre_sleep_load_data(
             "prb_threshold": PRB_HIGH_LOAD_THRESHOLD,
         }),
     )
-    high_prb_days = int(
-        (stat_rows[0].get("high_prb_days_7d") if stat_rows else 0) or 0,
+    high_prb_days_value = parse_optional_float(
+        stat_rows[0].get("high_prb_days_7d") if stat_rows else None,
     )
+    high_prb_days = int(high_prb_days_value or 0)
 
     current_sleep_hours: set[int] = set()
     for row in detail_rows:
@@ -1159,26 +1181,34 @@ async def _query_pre_sleep_load_data(
     data: list[dict[str, Any]] = []
     for row in detail_rows:
         # 计算休眠类生效时长（浅层+深度+极致）
-        total_sleep_seconds = (
-            (row.get("ee_shallowsleeptimerru") or 0) +
-            (row.get("ee_deepsleeptimerru") or 0) +
-            (row.get("ee_supersleeptimerru") or 0)
-        )
+        sleep_values = [
+            parsed
+            for key in (
+                "ee_shallowsleeptimerru",
+                "ee_deepsleeptimerru",
+                "ee_supersleeptimerru",
+            )
+            if (parsed := parse_optional_float(row.get(key))) is not None
+        ]
+        total_sleep_seconds = sum(sleep_values) if sleep_values else None
+        if total_sleep_seconds is not None and total_sleep_seconds.is_integer():
+            total_sleep_seconds = int(total_sleep_seconds)
 
         # 计算无线利用率（取上下行较大值）
-        prb_rate_ul = row.get("prb_rate_ul") or 0
-        prb_rate_dl = row.get("prb_rate_dl") or 0
-        prb_rate = max(prb_rate_ul, prb_rate_dl)
+        prb_rate_ul = parse_optional_float(row.get("prb_rate_ul"))
+        prb_rate_dl = parse_optional_float(row.get("prb_rate_dl"))
+        prb_values = [value for value in (prb_rate_ul, prb_rate_dl) if value is not None]
+        prb_rate = max(prb_values) if prb_values else None
 
         # 判断是否休眠前一小时
         is_pre_sleep_hour = _check_is_pre_sleep_hour(
-            row.get("prb_hour"),
+            parse_hour_value(row.get("prb_hour")),
             row.get("sleep_hour")
         )
 
         # 格式化时间：stat_time + prb_hour
         stat_time_val = ensure_datetime(row.get("stat_time"))
-        prb_hour_val = row.get("prb_hour")
+        prb_hour_val = parse_hour_value(row.get("prb_hour"))
         if stat_time_val and prb_hour_val is not None:
             time_display = f"{stat_time_val.strftime('%Y-%m-%d')} {prb_hour_val:02d}:00:00"
         else:
@@ -1193,9 +1223,9 @@ async def _query_pre_sleep_load_data(
             "cgi": row.get("cgi") or cgi,
             "sleep_seconds": total_sleep_seconds,
             "sleep_display": _format_sleep_duration(total_sleep_seconds),
-            "prb_rate_ul": round(float(prb_rate_ul), 2),
-            "prb_rate_dl": round(float(prb_rate_dl), 2),
-            "prb_rate": round(prb_rate, 2),
+            "prb_rate_ul": None if prb_rate_ul is None else round(prb_rate_ul, 2),
+            "prb_rate_dl": None if prb_rate_dl is None else round(prb_rate_dl, 2),
+            "prb_rate": None if prb_rate is None else round(prb_rate, 2),
             "is_pre_sleep_hour": "是" if is_pre_sleep_hour else "否",
             "high_prb_days_7d": high_prb_days,
         })

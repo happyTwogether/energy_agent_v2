@@ -257,3 +257,20 @@ def test_export_field_orders_match_confirmed_csv_headers():
     )
     assert batch_energy_tool.ENERGY_EXPORT_COLUMN_MAPPING["distance"] == "关联小区距离（米）"
     assert batch_energy_tool.ENERGY_EXPORT_COLUMN_MAPPING["around_site_type"] == "关联小区站型"
+
+
+def test_batch_summary_ignores_dirty_prb_increase_values():
+    rows = [{"CGI": "a"}]
+
+    batch_energy_tool._augment_summary_rows(
+        rows,
+        expansion_map={},
+        constriction_rows=[
+            {"cgi": "a", "hours": "", "around_cgi": "n1", "prb_increase": ""},
+            {"cgi": "a", "hours": "1", "around_cgi": "n2", "prb_increase": "bad"},
+            {"cgi": "a", "hours": 2, "around_cgi": "n2", "prb_increase": "10.5"},
+        ],
+    )
+
+    assert rows[0]["需剔除的原节电时段"] == "1、2"
+    assert rows[0]["最大PRB抬升量"] == 10.5

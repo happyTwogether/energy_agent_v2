@@ -542,7 +542,7 @@ async def test_pre_sleep_query_aggregates_seven_days_in_sql(monkeypatch):
         assert "COUNT(DISTINCT stat_time)" in query
         assert "regexp_split_to_table" in query
         assert "sleep_value::int" not in query
-        assert "btrim(sleep_value)" in query
+        assert "btrim(sleep_value, ' []')" in query
         assert "prb_hour + 1" not in query
         assert "regexp_replace(" in query
         assert "COALESCE(prb_hour::text, '')" in query
@@ -568,6 +568,45 @@ async def test_pre_sleep_query_aggregates_seven_days_in_sql(monkeypatch):
     assert result["data"][0]["prb_rate"] == 51.0
     assert "上行PRB利用率(%)" in result["table"]
     assert "下行PRB利用率(%)" in result["table"]
+
+
+@pytest.mark.asyncio
+async def test_pre_sleep_detail_tolerates_dirty_text_metrics(monkeypatch):
+    async def fake_fetch_rows(sql, params):
+        if "ORDER BY stat_time, prb_hour" not in str(sql):
+            return [{"high_prb_days_7d": ""}]
+        return [{
+            "stat_time": date(2026, 8, 10),
+            "dist_name": "地市",
+            "prod_name": "厂家",
+            "gnb_name": "基站",
+            "cell_name": "主小区",
+            "cgi": "main",
+            "ee_shallowsleeptimerru": "",
+            "ee_deepsleeptimerru": None,
+            "ee_supersleeptimerru": "600",
+            "prb_hour": "",
+            "prb_rate_ul": "",
+            "prb_rate_dl": "51.5",
+            "sleep_hour": "bad,0,",
+        }]
+
+    monkeypatch.setattr(energy_saving_tool, "fetch_rows", fake_fetch_rows)
+
+    result = await energy_saving_tool._query_pre_sleep_load_data(
+        "main",
+        datetime(2026, 8, 10),
+    )
+
+    assert result["high_prb_days_7d"] == 0
+    assert result["current_sleep_hours"] == [0]
+    assert result["data"][0]["time"] == "-"
+    assert result["data"][0]["sleep_seconds"] == 600
+    assert result["data"][0]["prb_rate_ul"] is None
+    assert result["data"][0]["prb_rate_dl"] == 51.5
+    assert result["data"][0]["prb_rate"] == 51.5
+    assert result["data"][0]["is_pre_sleep_hour"] == "否"
+    assert "| — | 51.50% | 51.50% |" in result["table"]
 
 
 @pytest.mark.asyncio

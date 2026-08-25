@@ -12,10 +12,13 @@ from app.services.energy_analysis import (
     enrich_constriction_records,
     evaluate_neighbor_relation,
     filter_judgeable_expansion_evidence,
+    is_pre_sleep_hour,
     neighbor_policy,
     normalize_boolean_flag,
     normalize_network_type,
     parse_boolean_flag,
+    parse_hour_value,
+    parse_optional_float,
     select_expansion_process_rows,
 )
 
@@ -99,6 +102,27 @@ def test_boolean_flag_parser_preserves_unknown_values(value):
     assert parse_boolean_flag(value) is None
 
 
+@pytest.mark.parametrize("value", [None, "", "  ", "bad", "NaN", "Infinity"])
+def test_optional_float_parser_preserves_dirty_values_as_missing(value):
+    assert parse_optional_float(value) is None
+
+
+def test_optional_float_parser_accepts_finite_numeric_text():
+    assert parse_optional_float("51.25") == 51.25
+    assert parse_optional_float(0) == 0.0
+
+
+@pytest.mark.parametrize("value", [None, "", "bad", -1, 24, "1.5"])
+def test_hour_parser_rejects_missing_or_out_of_range_values(value):
+    assert parse_hour_value(value) is None
+
+
+def test_hour_parser_accepts_integer_text_and_pre_sleep_ignores_dirty_tokens():
+    assert parse_hour_value(" 23 ") == 23
+    assert is_pre_sleep_hour("23", "bad,0,") is True
+    assert is_pre_sleep_hour("23", "[0,1]") is True
+
+
 def test_expansion_record_preserves_database_boundary_and_continuous_fields():
     """防止应用重新过滤 90% 边界或丢失连续部署字段。"""
     row = {
@@ -157,6 +181,35 @@ def test_expansion_hour_evidence_keeps_source_result_as_decision():
     }
     assert evidence[1]["suggestion"] == "以综合分析结果为准"
     assert evidence[2]["suggestion"] == "未进入候选（指标不完整）"
+
+
+def test_expansion_hour_evidence_treats_empty_numeric_text_as_missing():
+    evidence = build_expansion_hour_evidence(
+        {
+            "hour_detail": [{"hour": 22, "low_flow_pct": ""}],
+            "hour_filter": None,
+        },
+        [{"hours": 22, "avg_sleep_sum": " "}],
+    )
+
+    assert evidence[0]["low_flow_pct"] is None
+    assert evidence[0]["avg_sleep_seconds"] is None
+    assert evidence[0]["suggestion"] == "未进入候选（指标不完整）"
+
+
+def test_expansion_hour_evidence_normalizes_text_hour_keys():
+    evidence = build_expansion_hour_evidence(
+        {
+            "hour_detail": [{"hour": "22", "low_flow_pct": "91.5"}],
+            "hour_filter": "22,24,bad",
+        },
+        [{"hours": "22", "avg_sleep_sum": "0"}],
+    )
+
+    assert evidence[0]["low_flow_pct"] == 91.5
+    assert evidence[0]["avg_sleep_seconds"] == 0.0
+    assert evidence[0]["suggestion"] == "可扩展"
+    assert derive_expansion_result_status({"hour_filter": "24,bad"}) == "no_candidate"
 
 
 def test_process_rows_show_only_candidates_when_candidates_exist():
@@ -277,6 +330,31 @@ def test_prb_increase_equal_ten_is_preserved_and_enriched():
             "around_prb_during": 60.0,
         },
     ]
+
+
+def test_constriction_enrichment_tolerates_empty_numeric_text():
+    result = enrich_constriction_records(
+        [{
+            "cgi": "main",
+            "around_cgi": "neighbor",
+            "site_type": "微站",
+            "around_cgi_network_type": "lte",
+            "self_prb_rate_ul_before": "",
+            "self_prb_rate_dl_before": "bad",
+            "prb_rate_ul_before": " ",
+            "prb_rate_dl_before": None,
+            "prb_rate_ul": "51.5",
+            "prb_rate_dl": "",
+        }],
+        relation_by_pair={("main", "neighbor"): {"distance": ""}},
+        site_type_by_cell={("4G", "neighbor"): "宏站"},
+    )
+
+    assert result[0]["distance"] is None
+    assert result[0]["relation_status"] == "missing"
+    assert result[0]["main_prb_before"] is None
+    assert result[0]["around_prb_before"] is None
+    assert result[0]["around_prb_during"] == 51.5
 
 
 def test_known_invalid_relations_are_removed_but_missing_evidence_is_retained():
