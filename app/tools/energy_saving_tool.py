@@ -1100,8 +1100,10 @@ async def _query_pre_sleep_load_data(
               FROM regexp_split_to_table(
                   COALESCE(sleep_hour, ''), '\\s*,\\s*'
               ) AS sleep_value
-              WHERE sleep_value ~ '^\\d+$'
-                AND prb_hour = ((sleep_value::int + 23) % 24)
+              WHERE btrim(sleep_value) IN (
+                  (((prb_hour + 1) % 24)::text),
+                  lpad((((prb_hour + 1) % 24)::text), 2, '0')
+              )
           )
     """)
 

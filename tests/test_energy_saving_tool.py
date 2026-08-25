@@ -541,6 +541,9 @@ async def test_pre_sleep_query_aggregates_seven_days_in_sql(monkeypatch):
             ]
         assert "COUNT(DISTINCT stat_time)" in query
         assert "regexp_split_to_table" in query
+        assert "sleep_value::int" not in query
+        assert "btrim(sleep_value)" in query
+        assert "::text" in query
         assert "stat_time >= :start_date" in query
         assert "stat_time <= :end_date" in query
         assert "prb_rate_ul > :prb_threshold" in query
