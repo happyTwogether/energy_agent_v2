@@ -1,16 +1,70 @@
-[2026-08-24 09:40:19] [INFO] [agent.routes] PC端聊天请求: query=5G小区：衡阳雁峰5G云数据中心D59002539193TF-H5W-2671；节电空间, cid=, user=15084863620
-INFO:     192.168.32.4:42906 - "POST /api/v1/chat/stream HTTP/1.1" 200 OK
-[2026-08-24 09:40:24] [INFO] [agent.energy_saving_tool] 单小区节电分析: cgi=, cell_name=衡阳雁峰5G云数据中心D59002539193TF-H5W-2671, target=all, stat_time=None
-[2026-08-24 09:40:24] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=latest_date elapsed_ms=3.44
-[2026-08-24 09:40:24] [INFO] [agent.cell_resolver] 小区名解析: cell_name=衡阳雁峰5G云数据中心D59002539193TF-H5W-2671, network=5G
-[2026-08-24 09:40:24] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=name_resolution elapsed_ms=82.31
-[2026-08-24 09:40:24] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=pre_sleep_load elapsed_ms=299.96
-[2026-08-24 09:40:24] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=constriction elapsed_ms=301.83
-[2026-08-24 09:40:24] [INFO] [agent.param_check_tool] 节能参数核查: date=20260823, query=cgi=460-00-2539193-71, table=jd_agent.eng_check_result
-[2026-08-24 09:40:25] [INFO] [agent.param_check_tool] 节能参数核查完成: date=20260823, query=cgi=460-00-2539193-71, total=7, unqualified=1, excluded=1
-[2026-08-24 09:40:25] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=param_check elapsed_ms=1221.44
-[2026-08-24 09:40:28] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=expansion elapsed_ms=3612.42
-[2026-08-24 09:40:53] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=runtime_data elapsed_ms=25425.89
-[2026-08-24 09:40:53] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=report_render elapsed_ms=0.11
-[2026-08-24 09:40:53] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=total elapsed_ms=29125.38
-[2026-08-24 09:40:53] [INFO] [agent.message_store] 消息存储成功: conversation_id=c7316128-7208-40cb-9eed-c709a63f0fd9, user=15084863620, source=1, tokens=4845
+[2026-08-25 01:24:24] [INFO] [agent.routes] PC端聊天请求: query=5G小区：衡阳雁峰5G云数据中心D59002539193TF-H5W-2671；节电空间, cid=c7316128-7208-40cb-9eed-c709a63f0fd9, user=15084863620
+INFO:     192.168.32.4:57542 - "POST /api/v1/chat/stream HTTP/1.1" 200 OK
+[2026-08-25 01:24:28] [INFO] [agent.energy_saving_tool] 单小区节电分析: cgi=, cell_name=衡阳雁峰5G云数据中心D59002539193TF-H5W-2671, target=all, stat_time=None
+[2026-08-25 01:24:29] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=latest_date elapsed_ms=617.02
+[2026-08-25 01:24:29] [INFO] [agent.cell_resolver] 小区名解析: cell_name=衡阳雁峰5G云数据中心D59002539193TF-H5W-2671, network=5G
+[2026-08-25 01:24:30] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=name_resolution elapsed_ms=1146.23
+[2026-08-25 01:24:30] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=constriction elapsed_ms=466.10
+[2026-08-25 01:24:31] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=pre_sleep_load elapsed_ms=1254.91
+[2026-08-25 01:24:32] [INFO] [agent.param_check_tool] 节能参数核查: date=20260823, query=cgi=460-00-2539193-71, table=jd_agent.eng_check_result
+[2026-08-25 01:25:16] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=expansion elapsed_ms=46533.76
+[2026-08-25 01:25:20] [INFO] [agent.param_check_tool] 节能参数核查完成: date=20260823, query=cgi=460-00-2539193-71, total=7, unqualified=1, excluded=1
+[2026-08-25 01:25:20] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=param_check elapsed_ms=50392.34
+[2026-08-25 01:26:23] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=runtime_data elapsed_ms=62268.31
+[2026-08-25 01:26:23] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=report_render elapsed_ms=0.12
+[2026-08-25 01:26:23] [INFO] [agent.energy_saving_tool] energy_stage_timing stage=total elapsed_ms=114426.21
+[2026-08-25 01:26:23] [INFO] [agent.message_store] 消息存储成功: conversation_id=c7316128-7208-40cb-9eed-c709a63f0fd9, user=15084863620, source=1, tokens=5315
+
+
+5G小区：衡阳雁峰5G云数据中心D59002539193TF-H5W-2671；节电空间
+衡阳雁峰5G云数据中心D59002539193TF-H5W-2671 节电分析报告
+概览结论
+
+该小区已完成节电空间分析，无扩展空间，无收缩需求，参数存在 1 项不合规。
+
+    CGI：460-00-2539193-71
+    统计日期：2026-08-23
+    分析目标：all
+    扩展结论：该小区已完成节电空间分析，当前无扩展空间，维持现有节电配置。
+    收缩结论：该小区当前无收缩空间，无需调整节电时段。
+
+休眠扩展
+
+该小区已完成节电空间分析，当前无扩展空间，维持现有节电配置。
+容量与风险说明
+
+容量风险状态暂不可用。
+扩展过程证据
+
+未获得可判定的扩展过程证据。
+扩展候选时段
+
+未获得扩展候选分析结果。
+扩展部署时段
+
+未获得连续部署分析结果。
+参数核查
+
+参数核查结果：不合规。
+参数项	当前值	建议值	影响
+nrsupersleepswitch	OFF	ON	设备(RRU/AAU)型号数据缺失，无法修改
+休眠收缩
+主小区休眠条件核查
+
+未获得主小区休眠条件证据。
+周边小区关联范围核查
+
+未获得周边小区关联范围证据。
+周边小区负荷变化
+
+未获得周边小区负荷证据。
+需收缩节电时段
+
+未获得收缩分析结果。
+休眠前本小区负荷
+
+未获得休眠前负荷证据。
+近 7 天休眠前高负荷天数：0 天。
+白名单
+
+未查询到该小区的节电白名单信息。
