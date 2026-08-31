@@ -25,9 +25,11 @@ class FakeResult:
 class FakeSession:
     def __init__(self) -> None:
         self.execute_count = 0
+        self.requested_table_names: tuple[str, ...] = ()
 
     async def execute(self, statement, params):
         self.execute_count += 1
+        self.requested_table_names = tuple(params["table_names"])
         return FakeResult()
 
 
@@ -64,19 +66,21 @@ async def test_catalog_loads_policy_tables_once(
 
 
 @pytest.mark.asyncio
-async def test_catalog_loads_and_searches_rru_inventory_tables(
+async def test_catalog_excludes_deferred_rru_inventory_tables(
     policy_path: Path,
     settings: Settings,
 ) -> None:
+    session = FakeSession()
     store = BusinessCatalogStore(policy_path=policy_path, settings=settings)
 
-    snapshot = await store.get_or_load(FakeSession())
-    candidates = store.search("查询5G AAU序列号", limit=5)
+    snapshot = await store.get_or_load(session)
 
-    assert "lte_nrm_inventoryunitrru" in snapshot.tables
-    assert "sa_nrm_inventoryunitrru" in snapshot.tables
-    assert candidates[0].table.name == "sa_nrm_inventoryunitrru"
-    assert candidates[0].table.columns["serialnumber"].label == "资产序列号"
+    assert "lte_nrm_inventoryunitrru" not in snapshot.tables
+    assert "sa_nrm_inventoryunitrru" not in snapshot.tables
+    assert "lte_detail_to_rru" not in snapshot.relationships
+    assert "nr_detail_to_rru" not in snapshot.relationships
+    assert "lte_nrm_inventoryunitrru" not in session.requested_table_names
+    assert "sa_nrm_inventoryunitrru" not in session.requested_table_names
 
 
 def test_dictionary_tables_have_all_explicit_fields(policy_path: Path) -> None:
@@ -86,8 +90,6 @@ def test_dictionary_tables_have_all_explicit_fields(policy_path: Path) -> None:
         "lte_report_day_detail": 34,
         "nr_report_day_collect": 63,
         "nr_report_day_detail": 38,
-        "lte_nrm_inventoryunitrru": 17,
-        "sa_nrm_inventoryunitrru": 21,
     }
 
     assert {
@@ -99,11 +101,8 @@ def test_dictionary_tables_have_all_explicit_fields(policy_path: Path) -> None:
         ["nr_supersleep_switch"]["description"]
         == "NR系统内极致体眠节能功能开关"
     )
-    assert (
-        policy["tables"]["sa_nrm_inventoryunitrru"]["fields"]
-        ["serialnumber"]["label"]
-        == "资产序列号"
-    )
+    assert "lte_nrm_inventoryunitrru" not in policy["tables"]
+    assert "sa_nrm_inventoryunitrru" not in policy["tables"]
 
 
 @pytest.mark.asyncio

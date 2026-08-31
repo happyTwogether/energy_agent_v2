@@ -1,5 +1,7 @@
 # 完全离线业务数据自服务工具设计
 
+> **2026-08-31 范围变更：** RRU/AAU 资产表暂不对自助查询开放，当前目录为 12 张表。详见[暂停 RRU/AAU 数据自服务设计](2026-08-31-disable-rru-catalog-design.md)。
+
 ## 背景
 
 现有 `query_metric`、`query_cell_metric` 和日报工具只能查询代码中预先登记的少量指标。业务人员还需要通过现有智能体入口，用自然语言查询已授权表的其他字段，并在可靠关系上组合最多三张表。
@@ -69,12 +71,11 @@ AgentScope 主智能体比较、诊断和回答
 
 ## 授权表目录
 
-第一批目录包含当前代码已使用的 12 张表，并增加数据字典确认的两张 RRU 资产表：
+第一批活跃目录包含当前代码已使用的 12 张表：
 
 - 日明细：`lte_report_day_detail`、`nr_report_day_detail`
 - 日汇总：`lte_report_day_collect`、`nr_report_day_collect`
 - 工参：`lte_fix_prm`、`nr_fix_prm`
-- RRU 资产：`lte_nrm_inventoryunitrru`、`sa_nrm_inventoryunitrru`
 - 节电结果：`jd_cell_expansion_day`、`jd_cell_constriction_day`
 - 过程证据：`jd_cell_detail_hour_nr`、`jd_cell_pre_hour_busy`、`jd_cell_around`
 - 参数核查：`eng_check_result`

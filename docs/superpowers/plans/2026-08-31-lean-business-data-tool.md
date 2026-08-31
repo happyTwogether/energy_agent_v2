@@ -1,5 +1,7 @@
 # 精简业务数据自服务工具 Implementation Plan
 
+> **2026-08-31 范围变更：** 本计划当时实现的 RRU/AAU 资产表已按用户最新要求从活跃目录移除；通用粒度和关系能力保留。详见[暂停 RRU/AAU 数据自服务设计](../specs/2026-08-31-disable-rru-catalog-design.md)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将已有 `query_business_data` 原型收敛为项目内单一 AgentScope 工具，显式开放字段与确定性指标，支持最多三张表的审核关系查询，并把结构化数据交给主智能体分析。
@@ -8,7 +10,7 @@
 
 **Tech Stack:** Python 3.11、AgentScope 2.0.5、Pydantic 2.11、SQLAlchemy 2.0 async、PyYAML、pytest。
 
-**执行状态（2026-08-31）：** 查询链路、确定性指标、RRU 关系、结构化返回和数据库安全边界已完成。已按用户重新提供的数据字典导入四张日报表 189 个字段和两张 RRU 表 38 个字段，并修正 RRU 序列号真实字段为 `serialnumber`。
+**执行状态（2026-08-31）：** 查询链路、确定性指标、结构化返回和数据库安全边界已完成。四张日报表 189 个字段保持开放；RRU/AAU 资产表及目录关系已按后续范围变更暂停开放。
 
 ## Global Constraints
 
@@ -25,7 +27,7 @@
 
 ## File Structure
 
-- `config/business_data_catalog.yaml`：14 张授权表、显式字段、中文名、说明、别名、单位及审核关系。
+- `config/business_data_catalog.yaml`：12 张授权表、显式字段、中文名、说明、别名、单位及审核关系。
 - `app/self_service/models.py`：增加 `CatalogMetric`、计划 `metrics` 和结构化列定义。
 - `app/self_service/metrics.py`：统一定义确定性指标、依赖字段与逐行计算。
 - `app/self_service/catalog.py`：只加载 YAML 显式字段；验证数据库类型；搜索表、字段和指标。
@@ -102,6 +104,8 @@ Expected: PASS。
 ---
 
 ### Task 3: RRU 审核关系与粒度保护
+
+> 历史实施记录：这两条目录关系已由 2026-08-31 范围变更撤下，不属于当前活跃目录。
 
 **Interfaces:**
 - Produces: `lte_detail_to_rru`、`nr_detail_to_rru` 两条 `one_to_many_latest_snapshot` 关系；新增 `rru_item` 结果粒度。

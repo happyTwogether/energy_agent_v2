@@ -284,7 +284,7 @@ async def test_service_returns_success_semantics_for_empty_result() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_catalog_match_requests_clarification_and_mentions_rru() -> None:
+async def test_no_catalog_match_requests_clarification() -> None:
     service = BusinessDataQueryService(
         catalog=EmptyCatalog(get_snapshot()),
         planner=FakePlanner(),
@@ -295,7 +295,6 @@ async def test_no_catalog_match_requests_clarification_and_mentions_rru() -> Non
 
     assert payload["success"] is False
     assert payload["clarification_required"] is True
-    assert "RRU" in payload["error"]
 
 
 @pytest.mark.asyncio

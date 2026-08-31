@@ -23,8 +23,6 @@ GRANT SELECT ON TABLE
   energy_monthreport.nr_report_day_collect,
   energy_monthreport.lte_fix_prm,
   energy_monthreport.nr_fix_prm,
-  energy_monthreport.lte_nrm_inventoryunitrru,
-  energy_monthreport.sa_nrm_inventoryunitrru,
   jd_agent.jd_cell_expansion_day,
   jd_agent.jd_cell_constriction_day,
   jd_agent.jd_cell_detail_hour_nr,
@@ -57,7 +55,7 @@ SELF_SERVICE_EXPORT_MAX_ROWS=10000
 
 授权表和关系位于 `config/business_data_catalog.yaml`。数据库新增字段不会在运行中自动开放：
 
-当前目录已按《节能平台能耗日报数据字典-20251113》显式登记四张日报表 189 个字段和两张 RRU/AAU 资产表 38 个字段。规划器只会看到问题命中的少量字段及其中文名、业务说明、类型和单位。
+当前目录已按《节能平台能耗日报数据字典-20251113》显式登记四张日报表 189 个字段。RRU/AAU 资产表当前未开放。规划器只会看到问题命中的少量字段及其中文名、业务说明、类型和单位。
 
 1. DBA 确认字段不包含敏感信息；
 2. 在目录 `fields` 中显式补充英文名、中文名、业务说明、别名和单位；数据库 comment 只用于 DBA 核对，不会自动开放字段；
@@ -84,7 +82,6 @@ SELF_SERVICE_EXPORT_MAX_ROWS=10000
 查询某小区的扩展时段、需收缩时段和周边小区距离
 逐条展示该小区需收缩时段和周边小区距离
 查询 nr_report_day_detail 的 deepsleep_hour
-查询某5G小区最近资产快照中的AAU设备序列号
 同时按逐小时和每个邻区展开
 查询会话表所有内容
 ```

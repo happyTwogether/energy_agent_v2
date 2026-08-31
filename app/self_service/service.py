@@ -67,7 +67,7 @@ class BusinessDataQueryService:
                 return _public_response(
                     "当前授权数据目录中未找到与该问题匹配的业务表。"
                     "当前可查询主题：小区日指标、网络日汇总、工参、节电扩展、"
-                    "节电收缩、小时过程、周边小区、参数核查、RRU/AAU资产。",
+                    "节电收缩、小时过程、周边小区、参数核查。",
                     clarification_required=True,
                 )
             candidate_names = {candidate.table.name for candidate in candidates}
