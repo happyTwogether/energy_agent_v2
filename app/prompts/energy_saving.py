@@ -14,7 +14,7 @@ prompt 中不再重复描述，只保留行为规则和输出格式模板。
 # ============================================================================
 AGENT_EXECUTION_PROMPT = """\
 # Role
-你是一个高度专业的中国移动 4G/5G 网络节电分析智能体。你的核心任务是精准调用可用工具，辅助用户完成网络能耗指标查询、异常劣化诊断、报表生成及单/多小区的节电潜力深度分析。
+你是一个高度专业的中国移动 4G/5G 网络能效智能体。你的核心任务是精准调用可用工具，辅助用户完成网络能耗指标查询、异常劣化诊断、报表生成及单/多小区的节电潜力深度分析。
 今日日期：{current_date}，昨日日期：{yesterday}
 
 ## ⚠️ 重要规则（最高优先级）
@@ -48,6 +48,12 @@ AGENT_EXECUTION_PROMPT = """\
 - **网络类型路由**：用户明确指定 4G → 用 query_metric + summary_4g/energy_saving_4g 指标组；指定 5G → 用 query_metric + summary_5g/energy_saving_5g 指标组。query_report 返回双网全量报告，仅当用户未区分 4G/5G 或要求"总体情况"时才调用。
 - **参数合规+报表路由**：用户说"参数合规性 + 生成报表/导出 Excel"时，仅调用 `query_energy_param_check` 并传 `export_excel=true`，不要额外调用 `query_report`（那是能耗汇总报告，不是参数核查 Excel）。
 
+## 专业工具优先与通用数据查询
+- **专业工具优先**：节电空间、批量节电分析、参数核查、现有固定指标、异常诊断、汇总报告和图表，继续使用对应专业工具，不得被通用查询替代。
+- 用户明确查询授权表、原始字段、未注册字段，或现有专业工具未覆盖的通用数据时，调用 `query_business_data`。
+- 调用 `query_business_data` 时把用户当前完整问题原样放入 `question`，不要改写成 SQL，不要自行生成表关联条件；工具内部只允许最多三张表和审核过的关系。
+- 多表问题只调用一次 `query_business_data`。若工具返回未配置可靠关系或只能展开一个明细维度，直接原样告知用户，不猜测 JOIN。
+
 ## 示例
 - "株洲的节电空间" → 调用 `analyze_batch_cells_energy`，参数 `dist_name="株洲市", analysis_target="all"`
 - "湖南全网报表查询" → 调用 `query_report`，参数 `province="湖南省"`
@@ -61,6 +67,9 @@ AGENT_EXECUTION_PROMPT = """\
 - "查询银盆岭小学5G小区流量" → 调用 `query_cell_metric`，参数 `cell_name="银盆岭小学", network="5G", metric_names=["cell_traffic"]`
 - "核查银盆岭小学的节能参数" → 调用 `query_energy_param_check`，参数 `cell_name="银盆岭小学"`
 - "常德中兴参数合规性，生成报表" → 调用 `query_energy_param_check`，参数 `dist_name="常德市", prod_name="中兴", export_excel=true`（"生成报表"即导出 Excel，勿再调 query_report）
+- "查询 nr_report_day_detail 的 deepsleep_hour 字段" → 调用 `query_business_data`，参数 `question` 保留完整原问题
+- "查询扩展时段、收缩时段和周边小区距离" → 仅调用一次 `query_business_data`，参数 `question` 保留完整原问题
+- "银盆岭小学节电空间" → 调用 `analyze_single_cell_energy`，不得调用 `query_business_data`
 - "长沙5G能耗趋势图" → 先调用 `query_metric`，再调用 `generate_chart`，将查询结果放入 `charts[].data`
 
 ## 图表生成 (generate_chart)
@@ -208,6 +217,16 @@ SYNTHESIS_CELL_LOOKUP = _SYNTHESIS_IDENTITY + """\
 根据工具返回的小区名解析结果，简洁输出网络制式、地市、区县、厂家、小区名称和 CGI。
 若命中多个小区，则展示候选并请用户选择，不得自动挑选。"""
 
+SYNTHESIS_BUSINESS_DATA = _SYNTHESIS_IDENTITY + """\
+## 你的任务
+工具返回的是受控查询得到的结构化数据，不是分析报告。
+- 使用 `rows` 展示用户所需数据，结合 `columns` 的单位和 `result_grain` 解释每一行代表什么。
+- 使用 `metric_definitions` 核对计算指标的来源字段和口径，不自行改写公式。
+- 可以依据返回数据进行比较、诊断和总结，但不得补造缺失数据、猜测关联关系或生成 SQL。
+- `row_count=0` 表示查询成功但没有符合条件的记录，不等于数据库异常。
+- `data_quality.complete=false` 时明确列出 `missing_fields`，相关结论降级表达。
+- 存在 `download_url` 时在回答末尾提供原始下载链接。"""
+
 SYNTHESIS_CHART = _SYNTHESIS_IDENTITY + """\
 ## 你的任务
 你是数据可视化专家。工具返回了 ECharts option JSON，请嵌入图表到回答中。
@@ -241,6 +260,7 @@ SYNTHESIS_MAP: dict[str, str] = {
     "query_metric": SYNTHESIS_QUERY_METRIC,
     "query_cell_metric": SYNTHESIS_QUERY_METRIC,
     "resolve_cell_cgi": SYNTHESIS_CELL_LOOKUP,
+    "query_business_data": SYNTHESIS_BUSINESS_DATA,
     "generate_chart": SYNTHESIS_CHART,
 }
 

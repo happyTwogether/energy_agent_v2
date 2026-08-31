@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.core.metrics_registry import safe_div, to_tb, to_wan_du
+from app.core.metrics_registry import average_effect_hour, safe_div, to_tb, to_wan_du
 from app.utils.sql_helpers import error_response, get_latest_date, success_response
 
 logger = get_logger("report_query_tool")
@@ -222,22 +222,30 @@ def _process_lte_data(
         "symdown_on": target_data.get("open_symdown_rate") or "0.00%",
         "symdown_effect": target_data.get("symdown_effect_ratio") or "0.00%",
         "symdown_hour": round(target_data.get("symdown_effect_hour") or 0, 1),
-        "symdown_avg_hour": safe_div(target_data.get("symdown_effect_hour"), lte_cell_total, 1),
+        "symdown_avg_hour": average_effect_hour(
+            target_data.get("symdown_effect_hour"), lte_cell_total,
+        ),
 
         "chandown_on": target_data.get("open_chandown_rate") or "0.00%",
         "chandown_effect": target_data.get("chandown_effect_ratio") or "0.00%",
         "chandown_hour": round(target_data.get("chandown_effect_hour") or 0, 1),
-        "chandown_avg_hour": safe_div(target_data.get("chandown_effect_hour"), lte_cell_total, 1),
+        "chandown_avg_hour": average_effect_hour(
+            target_data.get("chandown_effect_hour"), lte_cell_total,
+        ),
 
         "carrdown_on": target_data.get("open_carrdown_rate") or "0.00%",
         "carrdown_effect": target_data.get("carrdown_effect_ratio") or "0.00%",
         "carrdown_hour": round(target_data.get("carrdown_effect_hour") or 0, 1),
-        "carrdown_avg_hour": safe_div(target_data.get("carrdown_effect_hour"), lte_cell_total, 1),
+        "carrdown_avg_hour": average_effect_hour(
+            target_data.get("carrdown_effect_hour"), lte_cell_total,
+        ),
 
         "deepsleep_on": target_data.get("open_deepsleep_rate") or "0.00%",
         "deepsleep_effect": target_data.get("deepsleep_effect_ratio") or "0.00%",
         "deepsleep_hour": round(target_data.get("deepsleep_effect_hour") or 0, 1),
-        "deepsleep_avg_hour": safe_div(target_data.get("deepsleep_effect_hour"), lte_cell_total, 1),
+        "deepsleep_avg_hour": average_effect_hour(
+            target_data.get("deepsleep_effect_hour"), lte_cell_total,
+        ),
     }
 
     # 异常诊断
@@ -309,27 +317,37 @@ def _process_nr_data(
         "subframe_silence_on": target_data.get("open_symdown_rate") or "0.00%",
         "subframe_silence_effect": target_data.get("symdown_effect_ratio") or "0.00%",
         "subframe_silence_hour": round(target_data.get("symdown_effect_hour") or 0, 1),
-        "subframe_silence_avg_hour": safe_div(target_data.get("symdown_effect_hour"), nr_cell_total, 1),
+        "subframe_silence_avg_hour": average_effect_hour(
+            target_data.get("symdown_effect_hour"), nr_cell_total,
+        ),
 
         "channel_silence_on": target_data.get("open_chandown_rate") or "0.00%",
         "channel_silence_effect": target_data.get("chandown_effect_ratio") or "0.00%",
         "channel_silence_hour": round(target_data.get("chandown_effect_hour") or 0, 1),
-        "channel_silence_avg_hour": safe_div(target_data.get("chandown_effect_hour"), nr_cell_total, 1),
+        "channel_silence_avg_hour": average_effect_hour(
+            target_data.get("chandown_effect_hour"), nr_cell_total,
+        ),
 
         "shallow_sleep_on": target_data.get("open_carrdown_rate") or "0.00%",
         "shallow_sleep_effect": target_data.get("carrdown_effect_ratio") or "0.00%",
         "shallow_sleep_hour": round(target_data.get("carrdown_effect_hour") or 0, 1),
-        "shallow_sleep_avg_hour": safe_div(target_data.get("carrdown_effect_hour"), nr_cell_total, 1),
+        "shallow_sleep_avg_hour": average_effect_hour(
+            target_data.get("carrdown_effect_hour"), nr_cell_total,
+        ),
 
         "deep_sleep_on": target_data.get("open_deepsleep_rate") or "0.00%",
         "deep_sleep_effect": target_data.get("deepsleep_effect_ratio") or "0.00%",
         "deep_sleep_hour": round(target_data.get("deepsleep_effect_hour") or 0, 1),
-        "deep_sleep_avg_hour": safe_div(target_data.get("deepsleep_effect_hour"), nr_cell_total, 1),
+        "deep_sleep_avg_hour": average_effect_hour(
+            target_data.get("deepsleep_effect_hour"), nr_cell_total,
+        ),
 
         "extreme_sleep_on": target_data.get("open_supersleep_rate") or "0.00%",
         "extreme_sleep_effect": target_data.get("aaurru_supersleep_effect_ratio") or "0.00%",
         "extreme_sleep_hour": round(target_data.get("aaurru_supersleep_effect_hour") or 0, 1),
-        "extreme_sleep_avg_hour": safe_div(target_data.get("aaurru_supersleep_effect_hour"), nr_cell_total, 1),
+        "extreme_sleep_avg_hour": average_effect_hour(
+            target_data.get("aaurru_supersleep_effect_hour"), nr_cell_total,
+        ),
     }
 
     # 异常诊断

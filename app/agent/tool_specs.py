@@ -2,7 +2,7 @@
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from app.tools.anomaly_query_tool import (
     TOOL_DESCRIPTION as ANOMALY_DESCRIPTION,
@@ -13,6 +13,11 @@ from app.tools.batch_energy_tool import (
     TOOL_DESCRIPTION as BATCH_ENERGY_DESCRIPTION,
     TOOL_INPUT_SCHEMA as BATCH_ENERGY_SCHEMA,
     analyze_batch_cells_energy,
+)
+from app.tools.business_data_query_tool import (
+    TOOL_DESCRIPTION as BUSINESS_DATA_DESCRIPTION,
+    TOOL_INPUT_SCHEMA as BUSINESS_DATA_SCHEMA,
+    query_business_data,
 )
 from app.tools.cell_lookup_tool import (
     TOOL_DESCRIPTION as CELL_LOOKUP_DESCRIPTION,
@@ -63,6 +68,7 @@ class EnergyToolSpec:
     handler: ToolHandler
     is_read_only: bool = True
     is_concurrency_safe: bool = True
+    session_scope: Literal["default", "self_service"] = "default"
 
 
 TOOL_SPECS = (
@@ -78,6 +84,13 @@ TOOL_SPECS = (
         description=ENERGY_SAVING_DESCRIPTION,
         input_schema=ENERGY_SAVING_SCHEMA,
         handler=analyze_single_cell_energy,
+    ),
+    EnergyToolSpec(
+        name="query_business_data",
+        description=BUSINESS_DATA_DESCRIPTION,
+        input_schema=BUSINESS_DATA_SCHEMA,
+        handler=query_business_data,
+        session_scope="self_service",
     ),
     EnergyToolSpec(
         name="generate_chart",

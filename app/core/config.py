@@ -58,6 +58,17 @@ class Settings(BaseSettings):
     base_url: str = "http://10.159.55.28:9500/"  # 服务基础URL
     export_dir: str = "static/exports"  # Excel 导出文件目录
 
+    # 完全离线业务数据自服务。默认关闭并使用独立只读连接。
+    self_service_enabled: bool = False
+    self_service_database_url: SecretStr = SecretStr("")
+    self_service_query_timeout_ms: int = 10_000
+    self_service_default_limit: int = 50
+    self_service_max_limit: int = 500
+    self_service_export_max_rows: int = 10_000
+    self_service_default_days: int = 7
+    self_service_max_days: int = 90
+    self_service_catalog_candidates: int = 5
+
     # 消息存储接口配置
     message_store_url: str = "http://10.159.55.28:6039/sendMsg"
     message_store_enabled: bool = True

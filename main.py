@@ -15,7 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes import router
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.services.database import init_db
+from app.self_service import warm_business_catalog
+from app.services.database import dispose_self_service_engine, init_db
 
 logger = get_logger("main")
 
@@ -25,9 +26,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期管理。"""
     logger.info("AI Agent 微服务启动中...")
     await init_db()
+    if get_settings().self_service_enabled:
+        try:
+            await warm_business_catalog()
+        except Exception:
+            logger.exception("自助查询目录预热失败，专业工具仍可使用")
     logger.info("服务已就绪，等待请求")
-    yield
-    logger.info("AI Agent 微服务正在关闭...")
+    try:
+        yield
+    finally:
+        await dispose_self_service_engine()
+        logger.info("AI Agent 微服务正在关闭...")
 
 
 def create_app() -> FastAPI:

@@ -1,0 +1,1508 @@
+version: '1'
+tables:
+  lte_report_day_detail:
+    schema_source: db_schema
+    label: 4G小区日指标明细
+    aliases:
+    - 4G小区指标
+    - 4G日明细
+    - LTE小区明细
+    description: 4G小区每日流量、节电时长和基础属性
+    default_date_column: data_date
+    default_grain: cell_day
+    grain_keys:
+      cell_day:
+      - cgi
+      - data_date
+    fields:
+      date:
+        label: 统计日期
+        description: 统计日期
+      province:
+        label: 省份
+        description: 省份
+      dist_name:
+        label: 地市
+        description: 地市
+        aliases:
+        - 市州
+      prod_name:
+        label: 厂家
+        description: 厂家
+      freq_band:
+        label: 频段
+        description: 频段
+      site_type:
+        label: 站点类型
+        description: 站点类型
+      area:
+        label: 区域
+        description: 区域
+      cgi:
+        label: 小区号
+        description: 小区号
+        aliases:
+        - 小区标识
+        - 小区号
+      chn_num:
+        label: 通道数
+        description: 通道数
+      enbid:
+        label: 4G基站号
+        description: 4G基站号
+      dn:
+        label: DN
+        description: DN
+      rmuid:
+        label: 接口对象标识
+        description: 接口对象标识
+      is_carrier_shutdown_switch:
+        label: 载波关断是否开启
+        description: 载波关断是否开启
+      carrier_shutdown_switch:
+        label: 载波关断开关
+        description: 载波关断开关
+      is_carrier_shutdown_hour:
+        label: 载波关断是否生效
+        description: 载波关断是否生效
+      carrier_shutdown_hour:
+        label: 载波关断生效时长
+        description: 载波关断生效时长
+        unit: 小时
+      is_channel_shutdown_switch:
+        label: 通道关断是否开启
+        description: 通道关断是否开启
+      channel_shutdown_switch:
+        label: 通道关断开关
+        description: 通道关断开关
+      is_channel_shutdown_hour:
+        label: 通道关断是否生效
+        description: 通道关断是否生效
+      channel_shutdown_hour:
+        label: 通道关断生效时长
+        description: 通道关断生效时长
+        unit: 小时
+      is_symbol_shutdown_switch:
+        label: 符号关断是否开启
+        description: 符号关断是否开启
+      symbol_shutdown_switch:
+        label: 符号关断开关
+        description: 符号关断开关
+      is_symbol_shutdown_hour:
+        label: 符号关断是否生效
+        description: 符号关断是否生效
+      symbol_shutdown_hour:
+        label: 符号关断生效时长
+        description: 符号关断生效时长
+        unit: 小时
+      is_deepsleep_switch:
+        label: LTE系统内深度休眠是否开启
+        description: LTE系统内深度休眠是否开启
+      deepsleep_switch:
+        label: LTE系统内深度休眠开关
+        description: LTE系统内深度休眠开关
+      is_deepsleep_hour:
+        label: LTE系统内深度休眠是否生效
+        description: LTE系统内深度休眠是否生效
+      deepsleep_hour:
+        label: LTE系统内深度休眠生效时长
+        description: LTE系统内深度休眠生效时长
+        unit: 小时
+      upoctul_dl:
+        label: 上下行业务量
+        description: 上下行业务量
+        aliases:
+        - 流量
+        unit: GB
+      is_common_mode_station:
+        label: 是否共模基站
+        description: 是否共模基站
+      data_date:
+        label: 数据日期
+        description: 数据日期
+        aliases:
+        - 日期
+      insert_time:
+        label: 数据写入时间
+        description: 数据写入时间
+      is_low_energy:
+        label: 是否低能效小区
+        description: 是否低能效小区
+      data_source:
+        label: 数据来源
+        description: 数据来源
+  nr_report_day_detail:
+    schema_source: db_schema
+    label: 5G小区日指标明细
+    aliases:
+    - 5G小区指标
+    - 5G日明细
+    - NR小区明细
+    description: 5G小区每日流量、节电时长和基础属性
+    default_date_column: data_date
+    default_grain: cell_day
+    grain_keys:
+      cell_day:
+      - cgi
+      - data_date
+    fields:
+      date:
+        label: 统计日期
+        description: 统计日期
+      province:
+        label: 省份
+        description: 省份
+      dist_name:
+        label: 地市
+        description: 地市
+        aliases:
+        - 市州
+      prod_name:
+        label: 厂家
+        description: 厂家
+      freq_band:
+        label: 频段
+        description: 频段
+      site_type:
+        label: 站点类型
+        description: 站点类型
+      area:
+        label: 区域
+        description: 区域
+      cgi:
+        label: 小区号
+        description: 小区号
+        aliases:
+        - 小区标识
+        - 小区号
+      chn_num:
+        label: 通道数
+        description: 通道数
+      gnbid:
+        label: 5G基站号
+        description: 5G基站号
+      dn:
+        label: DN
+        description: DN
+      rmuid:
+        label: 接口对象标识
+        description: 接口对象标识
+      is_carrier_shutdown_switch:
+        label: 浅层休眠是否开启
+        description: 浅层休眠是否开启
+      carrier_shutdown_switch:
+        label: 浅层休眠开关
+        description: 浅层休眠开关
+      is_carrier_shutdown_hour:
+        label: 浅层休眠是否生效
+        description: 浅层休眠是否生效
+      carrier_shutdown_hour:
+        label: 浅层休眠生效时长
+        description: 浅层休眠生效时长
+        unit: 小时
+      is_channel_shutdown_switch:
+        label: 通道静默是否开启
+        description: 通道静默是否开启
+      channel_shutdown_switch:
+        label: 通道静默开关
+        description: 通道静默开关
+      is_channel_shutdown_hour:
+        label: 通道静默是否生效
+        description: 通道静默是否生效
+      channel_shutdown_hour:
+        label: 通道静默生效时长
+        description: 通道静默生效时长
+        unit: 小时
+      is_symbol_shutdown_switch:
+        label: 亚帧静默是否开启
+        description: 亚帧静默是否开启
+      symbol_shutdown_switch:
+        label: 亚帧静默开关
+        description: 亚帧静默开关
+      is_symbol_shutdown_hour:
+        label: 亚帧静默是否生效
+        description: 亚帧静默是否生效
+      symbol_shutdown_hour:
+        label: 亚帧静默生效时长
+        description: 亚帧静默生效时长
+        unit: 小时
+      is_deepsleep_switch:
+        label: 深度休眠开是否开启
+        description: 深度休眠开是否开启
+      deepsleep_switch:
+        label: 深度休眠开关
+        description: 深度休眠开关
+      is_deepsleep_hour:
+        label: 深度休眠是否生效
+        description: 深度休眠是否生效
+      deepsleep_hour:
+        label: 深度休眠生效时长
+        description: 深度休眠生效时长
+        aliases:
+        - deep sleep hour
+        unit: 小时
+      is_nr_supersleep_switch:
+        label: NR系统内极致体眠是否开启
+        description: NR系统内极致体眠是否开启
+      nr_supersleep_switch:
+        label: NR系统内极致体眠节能功能开关
+        description: NR系统内极致体眠节能功能开关
+      is_supersleep_hour:
+        label: AAU/RRU极致休眠是否生效
+        description: AAU/RRU极致休眠是否生效
+      supersleep_hour:
+        label: AAU/RRU极致休眠实际生效时长
+        description: AAU/RRU极致休眠实际生效时长
+        unit: 小时
+      upoctul_dl:
+        label: 上下行业务量
+        description: 上下行业务量
+        aliases:
+        - 流量
+        unit: GB
+      is_common_mode_station:
+        label: 是否共模基站
+        description: 是否共模基站
+      data_date:
+        label: 数据日期
+        description: 数据日期
+        aliases:
+        - 日期
+      insert_time:
+        label: 数据写入时间
+        description: 数据写入时间
+      is_low_energy:
+        label: 是否低能效小区
+        description: 是否低能效小区
+      data_source:
+        label: 数据来源
+        description: 数据来源
+  lte_report_day_collect:
+    schema_source: db_schema
+    label: 4G网络日汇总
+    aliases:
+    - 4G汇总
+    - LTE日汇总
+    description: 4G网络分区域和厂家的日汇总指标
+    default_date_column: data_date
+    default_grain: summary_day
+    grain_keys:
+      summary_day:
+      - data_date
+      - dist_name
+      - prod_name
+      - freq_band
+      - site_type
+      - area
+    fields:
+      date:
+        label: 统计日期
+        description: 统计日期
+      province:
+        label: 省份
+        description: 省份
+      dist_name:
+        label: 地市
+        description: 地市
+        aliases:
+        - 市州
+      prod_name:
+        label: 厂家名称
+        description: 厂家名称
+      freq_band:
+        label: 频段
+        description: 频段
+      site_type:
+        label: 站点类型
+        description: 站点类型
+      area:
+        label: 区域
+        description: 区域
+      bbu_total:
+        label: LTE总BBU数
+        description: LTE总BBU数
+      logic_station_total:
+        label: LTE逻辑站数量
+        description: LTE逻辑站数量
+        unit: 个
+      logic_read_station_total:
+        label: 可通过网管读取的LTE逻辑站数量
+        description: 可通过网管读取的LTE逻辑站数量
+        unit: 个
+      bbu_power:
+        label: LTE小区BBU总电量（千瓦时）
+        description: LTE小区BBU总电量（千瓦时）
+        unit: kWh
+      all_cell_total:
+        label: LTE总小区数
+        description: LTE总小区数
+        unit: 个
+      eightm_channel_total:
+        label: 8通道及以上小区数
+        description: 8通道及以上小区数
+        unit: 个
+      lte_station_power:
+        label: LTE基站总能耗
+        description: LTE基站总能耗
+        unit: kWh
+      lte_station_split_power:
+        label: LTE基站按分拆总能耗
+        description: LTE基站按分拆总能耗
+        unit: kWh
+      nb_station_split_power:
+        label: NB基站按分拆总能耗
+        description: NB基站按分拆总能耗
+        unit: kWh
+      gms_station_split_power:
+        label: GSM基站按分拆总能耗
+        description: GSM基站按分拆总能耗
+        unit: kWh
+      avg_energy_efficiency:
+        label: LTE小区平均能效（MB/千瓦时）
+        description: LTE小区平均能效（MB/千瓦时）
+        unit: kWh
+      low_energy_total:
+        label: 低能效LTE小区数
+        description: 低能效LTE小区数
+        unit: 个
+      low_energy_ratio:
+        label: 低能效LTE小区比例
+        description: 低能效LTE小区比例
+        unit: '%'
+      rru_power:
+        label: LTE小区RRU总电量（千瓦时）
+        description: LTE小区RRU总电量（千瓦时）
+        unit: kWh
+      carrdown_effect_total:
+        label: 载波关断生效的LTE小区数
+        description: 载波关断生效的LTE小区数
+        unit: 个
+      carrdown_effect_ratio:
+        label: 载波关断生效的小区比例
+        description: 载波关断生效的小区比例
+        unit: '%'
+      carrdown_effect_hour:
+        label: 载波关断生效的总载波小时数
+        description: 载波关断生效的总载波小时数
+        unit: 小时
+      open_carrdown_total:
+        label: 开启载波关断开关的小区数
+        description: 开启载波关断开关的小区数
+        unit: 个
+      open_carrdown_rate:
+        label: 开启载波关断开关的小区比例
+        description: 开启载波关断开关的小区比例
+        unit: '%'
+      chandown_effect_total:
+        label: 通道关断生效的LTE小区数
+        description: 通道关断生效的LTE小区数
+        unit: 个
+      eightm_chandown_effect_total:
+        label: 8通道及以上小区通道关断生效的LTE小区数
+        description: 8通道及以上小区通道关断生效的LTE小区数
+        unit: 个
+      chandown_effect_ratio:
+        label: 通道关断生效的小区比例
+        description: 通道关断生效的小区比例
+        unit: '%'
+      eightm_chandown_effect_ratio:
+        label: 8通道及以上小区通道关断生效的小区比例
+        description: 8通道及以上小区通道关断生效的小区比例
+        unit: '%'
+      chandown_effect_hour:
+        label: 通道关断生效的总通道小时数
+        description: 通道关断生效的总通道小时数
+        unit: 小时
+      eightm_chandown_effect_hour:
+        label: 8通道及以上小区通道关断生效的总通道小时数
+        description: 8通道及以上小区通道关断生效的总通道小时数
+        unit: 小时
+      open_chandown_total:
+        label: 开启通道关断开关的小区数
+        description: 开启通道关断开关的小区数
+        unit: 个
+      open_chandown_rate:
+        label: 开启通道关断开关的小区比例
+        description: 开启通道关断开关的小区比例
+        unit: '%'
+      eightm_open_chandown_total:
+        label: 8通道及以上开启通道关断开关的小区数
+        description: 8通道及以上开启通道关断开关的小区数
+        unit: 个
+      eightm_open_chandown_rate:
+        label: 8通道及以上开启通道关断开关的小区比例
+        description: 8通道及以上开启通道关断开关的小区比例
+        unit: '%'
+      symdown_effect_total:
+        label: 符号关断生效的LTE小区数
+        description: 符号关断生效的LTE小区数
+        unit: 个
+      symdown_effect_ratio:
+        label: 符号关断生效的小区比例
+        description: 符号关断生效的小区比例
+        unit: '%'
+      symdown_effect_hour:
+        label: 符号关断生效的总符号小时数
+        description: 符号关断生效的总符号小时数
+        unit: 小时
+      open_symdown_total:
+        label: 开启符号关断开关的小区数
+        description: 开启符号关断开关的小区数
+        unit: 个
+      open_symdown_rate:
+        label: 开启符号关断开关的小区比例
+        description: 开启符号关断开关的小区比例
+        unit: '%'
+      upoctul_dl:
+        label: LTE小区上下行业务量
+        description: LTE小区上下行业务量
+        aliases:
+        - 流量
+        unit: GB
+      open_deepsleep_total:
+        label: 开启LTE系统内深度休眠开关的小区数
+        description: 开启LTE系统内深度休眠开关的小区数
+        unit: 个
+      open_deepsleep_rate:
+        label: 开启LTE系统内深度休眠开关的小区比例
+        description: 开启LTE系统内深度休眠开关的小区比例
+        unit: '%'
+      deepsleep_effect_hour:
+        label: LTE系统内深度休眠生效时长总小时数
+        description: LTE系统内深度休眠生效时长总小时数
+        unit: 小时
+      deepsleep_effect_total:
+        label: LTE系统内深度休眠生效的小区数
+        description: LTE系统内深度休眠生效的小区数
+        unit: 个
+      deepsleep_effect_ratio:
+        label: LTE系统内深度休眠生效的小区比例
+        description: LTE系统内深度休眠生效的小区比例
+        unit: '%'
+      commode_station_total:
+        label: 4/5G共模站数量
+        description: 4/5G共模站数量
+        unit: 个
+      commode_station_power:
+        label: 4/5G共模站能耗
+        description: 4/5G共模站能耗
+        unit: kWh
+      lte_curmonthpower:
+        label: 节电量
+        description: 节电量
+        unit: kWh
+      lte_curmonthpower_rate:
+        label: 节电比例
+        description: 节电比例
+        unit: '%'
+      data_date:
+        label: 数据日期
+        description: 数据日期
+        aliases:
+        - 日期
+      insert_time:
+        label: 数据写入时间
+        description: 数据写入时间
+      single_station_power:
+        label: 单站能耗
+        description: 单站能耗
+        unit: kWh
+  nr_report_day_collect:
+    schema_source: db_schema
+    label: 5G网络日汇总
+    aliases:
+    - 5G汇总
+    - NR日汇总
+    description: 5G网络分区域和厂家的日汇总指标
+    default_date_column: data_date
+    default_grain: summary_day
+    grain_keys:
+      summary_day:
+      - data_date
+      - dist_name
+      - prod_name
+      - freq_band
+      - site_type
+      - area
+    fields:
+      date:
+        label: 统计日期
+        description: 统计日期
+      province:
+        label: 省份
+        description: 省份
+      dist_name:
+        label: 地市
+        description: 地市
+        aliases:
+        - 市州
+      prod_name:
+        label: 厂家名称
+        description: 厂家名称
+      freq_band:
+        label: 频段
+        description: 频段
+      site_type:
+        label: 站点类型
+        description: 站点类型
+      area:
+        label: 区域
+        description: 区域
+      sa_bbu_total:
+        label: 5GSA总BBU数
+        description: 5GSA总BBU数
+      logic_station_total:
+        label: 5G逻辑站数量
+        description: 5G逻辑站数量
+        unit: 个
+      logic_read_station_total:
+        label: 可通过网管读取的5G逻辑站数
+        description: 可通过网管读取的5G逻辑站数
+        unit: 个
+      sa_bbu_power:
+        label: 5GSA小区BBU总电量（千瓦时）
+        description: 5GSA小区BBU总电量（千瓦时）
+        unit: kWh
+      all_cell_total:
+        label: 5GSA总小区数
+        description: 5GSA总小区数
+        unit: 个
+      thirtytwo_channel_total:
+        label: 32通道5G小区数
+        description: 32通道5G小区数
+        unit: 个
+      sixtyfour_channel_total:
+        label: 64通道5G小区数
+        description: 64通道5G小区数
+        unit: 个
+      nr_sa_station_power:
+        label: 5GSA基站总能耗
+        description: 5GSA基站总能耗
+        unit: kWh
+      nr_sa_station_split_power:
+        label: 5GSA基站按分拆总能耗
+        description: 5GSA基站按分拆总能耗
+        unit: kWh
+      sa_avg_energy_efficiency:
+        label: 5GSA小区平均能效（MB/千瓦时）
+        description: 5GSA小区平均能效（MB/千瓦时）
+        unit: kWh
+      low_energy_total:
+        label: 低能效5GSA小区数
+        description: 低能效5GSA小区数
+        unit: 个
+      low_energy_ratio:
+        label: 低能效5GSA小区比例
+        description: 低能效5GSA小区比例
+        unit: '%'
+      rru_power:
+        label: 5GSA小区RRU总电量（千瓦时）
+        description: 5GSA小区RRU总电量（千瓦时）
+        unit: kWh
+      carrdown_effect_total:
+        label: 浅层休眠生效的5GSA小区数
+        description: 浅层休眠生效的5GSA小区数
+        unit: 个
+      carrdown_effect_ratio:
+        label: 浅层休眠生效的小区比例
+        description: 浅层休眠生效的小区比例
+        unit: '%'
+      carrdown_effect_hour:
+        label: 浅层休眠生效的总载波小时数
+        description: 浅层休眠生效的总载波小时数
+        unit: 小时
+      open_carrdown_total:
+        label: 开启浅层休眠开关的小区数
+        description: 开启浅层休眠开关的小区数
+        unit: 个
+      open_carrdown_rate:
+        label: 开启浅层休眠开关的小区比例
+        description: 开启浅层休眠开关的小区比例
+        unit: '%'
+      chandown_effect_total:
+        label: 通道静默生效的5GSA小区数
+        description: 通道静默生效的5GSA小区数
+        unit: 个
+      thirtytwo_chandown_effect_total:
+        label: 32通道小区通道静默生效的小区数
+        description: 32通道小区通道静默生效的小区数
+        unit: 个
+      sixtyfour_chandown_effect_total:
+        label: 64通道小区通道静默生效的小区数
+        description: 64通道小区通道静默生效的小区数
+        unit: 个
+      chandown_effect_ratio:
+        label: 通道静默生效的小区比例
+        description: 通道静默生效的小区比例
+        unit: '%'
+      thirtytwo_chandown_effect_ratio:
+        label: 32通道小区通道静默生效的小区比例
+        description: 32通道小区通道静默生效的小区比例
+        unit: '%'
+      sixtyfour_chandown_effect_ratio:
+        label: 64通道小区通道静默生效的小区比例
+        description: 64通道小区通道静默生效的小区比例
+        unit: '%'
+      chandown_effect_hour:
+        label: 通道静默生效的总通道小时数
+        description: 通道静默生效的总通道小时数
+        unit: 小时
+      thirtytwo_chandown_effect_hour:
+        label: 32通道小区通道静默生效的总通道小时数
+        description: 32通道小区通道静默生效的总通道小时数
+        unit: 小时
+      sixtyfour_chandown_effect_hour:
+        label: 64通道小区通道静默生效的总通道小时数
+        description: 64通道小区通道静默生效的总通道小时数
+        unit: 小时
+      open_chandown_total:
+        label: 开启通道静默开关的小区数
+        description: 开启通道静默开关的小区数
+        unit: 个
+      open_chandown_rate:
+        label: 开启通道静默开关的小区比例
+        description: 开启通道静默开关的小区比例
+        unit: '%'
+      thirtytwo_open_chandown_total:
+        label: 32通道开启通道静默开关的小区数
+        description: 32通道开启通道静默开关的小区数
+        unit: 个
+      thirtytwo_open_chandown_rate:
+        label: 32通道开启通道静默开关的小区比例
+        description: 32通道开启通道静默开关的小区比例
+        unit: '%'
+      sixtyfour_open_chandown_total:
+        label: 64通道开启通道静默开关的小区数
+        description: 64通道开启通道静默开关的小区数
+        unit: 个
+      sixtyfour_open_chandown_rate:
+        label: 64通道开启通道静默开关的小区比例
+        description: 64通道开启通道静默开关的小区比例
+        unit: '%'
+      symdown_effect_total:
+        label: 亚帧静默生效的小区数
+        description: 亚帧静默生效的小区数
+        unit: 个
+      symdown_effect_ratio:
+        label: 亚帧静默生效的小区比例
+        description: 亚帧静默生效的小区比例
+        unit: '%'
+      symdown_effect_hour:
+        label: 亚帧静默生效的总符号小时数
+        description: 亚帧静默生效的总符号小时数
+        unit: 小时
+      open_symdown_total:
+        label: 开启亚帧静默开关的小区数
+        description: 开启亚帧静默开关的小区数
+        unit: 个
+      open_symdown_rate:
+        label: 开启亚帧静默开关的小区比例
+        description: 开启亚帧静默开关的小区比例
+        unit: '%'
+      deepsleep_effect_total:
+        label: 深度休眠生效的小区数
+        description: 深度休眠生效的小区数
+        unit: 个
+      deepsleep_effect_ratio:
+        label: 深度休眠生效的小区比例
+        description: 深度休眠生效的小区比例
+        unit: '%'
+      deepsleep_effect_hour:
+        label: 深度休眠生效的总深度小时数
+        description: 深度休眠生效的总深度小时数
+        unit: 小时
+      open_deepsleep_total:
+        label: 开启深度休眠的小区数
+        description: 开启深度休眠的小区数
+        unit: 个
+      open_deepsleep_rate:
+        label: 开启深度休眠的小区比例
+        description: 开启深度休眠的小区比例
+        unit: '%'
+      upoctul_dl:
+        label: nr小区上下行业务量
+        description: nr小区上下行业务量
+        aliases:
+        - 流量
+        unit: GB
+      open_supersleep_total:
+        label: 开启NR系统内极致休眠节能功能开关的小区数
+        description: 开启NR系统内极致休眠节能功能开关的小区数
+        unit: 个
+      open_supersleep_rate:
+        label: 开启NR系统内极致休眠的小区比例
+        description: 开启NR系统内极致休眠的小区比例
+        unit: '%'
+      aaurru_supersleep_effect_hour:
+        label: AAU/RRU极致休眠实际生效时长总小时数
+        description: AAU/RRU极致休眠实际生效时长总小时数
+        unit: 小时
+      aaurru_supersleep_effect_total:
+        label: AAU/RRU极致休眠生效的小区数
+        description: AAU/RRU极致休眠生效的小区数
+        unit: 个
+      aaurru_supersleep_effect_ratio:
+        label: AAU/RRU极致休眠生效的小区比例
+        description: AAU/RRU极致休眠生效的小区比例
+        unit: '%'
+      commode_station_total:
+        label: 4/5G共模站数量
+        description: 4/5G共模站数量
+        unit: 个
+      commode_station_power:
+        label: 4/5G共模站能耗
+        description: 4/5G共模站能耗
+        unit: kWh
+      nr_curmonthpower:
+        label: 节电量
+        description: 节电量
+        unit: kWh
+      nr_curmonthpower_rate:
+        label: 节电比例
+        description: 节电比例
+        unit: '%'
+      data_date:
+        label: 数据日期
+        description: 数据日期
+        aliases:
+        - 日期
+      insert_time:
+        label: 数据写入时间
+        description: 数据写入时间
+      single_station_power:
+        label: 单站能耗
+        description: 单站能耗
+        unit: kWh
+  lte_fix_prm:
+    schema_source: db_schema
+    label: 4G小区工参
+    aliases:
+    - 4G工参
+    - LTE工参
+    description: 4G小区身份、位置、厂家和站型信息
+    default_date_column: data_date
+    default_grain: cell_snapshot
+    grain_keys:
+      cell_snapshot:
+      - cgi
+      - data_date
+    fields:
+      cgi:
+        label: 小区CGI
+        description: 4G小区唯一标识
+      data_date:
+        label: 快照日期
+        description: 工参数据快照日期
+      cell_name:
+        label: 小区名称
+        description: 4G小区中文名称
+      enodeb_name:
+        label: 基站名称
+        description: 4G基站中文名称
+      dist_name:
+        label: 地市
+        description: 小区所属地市
+      prod_name:
+        label: 厂家
+        description: 无线设备厂家
+      freq_band:
+        label: 频段
+        description: 小区工作频段
+      site_type:
+        label: 站型
+        description: 小区站点类型
+  nr_fix_prm:
+    schema_source: db_schema
+    label: 5G小区工参
+    aliases:
+    - 5G工参
+    - NR工参
+    description: 5G小区身份、位置、厂家和站型信息
+    default_date_column: data_date
+    default_grain: cell_snapshot
+    grain_keys:
+      cell_snapshot:
+      - cgi
+      - data_date
+    fields:
+      cgi:
+        label: 小区CGI
+        description: 5G小区唯一标识
+      data_date:
+        label: 快照日期
+        description: 工参数据快照日期
+      cell_name:
+        label: 小区名称
+        description: 5G小区中文名称
+      gnb_name:
+        label: 基站名称
+        description: 5G基站中文名称
+      dist_name:
+        label: 地市
+        description: 小区所属地市
+      prod_name:
+        label: 厂家
+        description: 无线设备厂家
+      freq_band:
+        label: 频段
+        description: 小区工作频段
+      site_type:
+        label: 站型
+        description: 小区站点类型
+  lte_nrm_inventoryunitrru:
+    schema_source: db_schema
+    label: 4G RRU资产
+    aliases:
+    - LTE RRU
+    - 4G射频设备
+    - 4G设备资产
+    description: 4G小区关联的RRU资产快照
+    default_date_column: data_date
+    default_grain: rru_item
+    grain_keys:
+      rru_item:
+      - cgi
+      - data_date
+      - serialnumber
+    fields:
+      province:
+        label: 省份
+        description: 省份
+      dist_name:
+        label: 地市
+        description: 地市
+      enbid:
+        label: 4G基站号
+        description: 4G基站号
+      enb_name:
+        label: 4G基站名称
+        description: 4G基站名称
+      omc_name:
+        label: 网管名称
+        description: 网管名称
+      dn:
+        label: DN
+        description: DN
+      rmuid:
+        label: 接口对象标识
+        description: 接口对象标识
+      serialnumber:
+        label: 资产序列号
+        description: 资产序列号
+      manufacturerdata:
+        label: 特殊信息
+        description: 特殊信息
+      vendorunitfamilytype:
+        label: 归属类型
+        description: 归属类型
+      relatedcelllist:
+        label: 关联小区列表
+        description: 关联小区列表
+      insert_time:
+        label: 插入时间
+        description: 插入时间
+      data_date:
+        label: 数据时间
+        description: 数据时间
+      date:
+        label: 数据日期
+        description: 数据日期
+      prod_name:
+        label: 厂家名称
+        description: 厂家名称
+      cgi:
+        label: 小区号
+        description: 小区号
+      txrxmode:
+        label: 发送和接收模式
+        description: 发送和接收模式
+  sa_nrm_inventoryunitrru:
+    schema_source: db_schema
+    label: 5G RRU/AAU资产
+    aliases:
+    - 5G AAU
+    - 5G RRU
+    - 5G射频设备
+    - AAU资产
+    description: 5G小区关联的RRU或AAU资产快照
+    default_date_column: data_date
+    default_grain: rru_item
+    grain_keys:
+      rru_item:
+      - cgi
+      - data_date
+      - serialnumber
+    fields:
+      province:
+        label: 省份
+        description: 省份
+      dist_name:
+        label: 地市
+        description: 地市
+      gnbid:
+        label: 5G基站号
+        description: 5G基站号
+      gnb_name:
+        label: 5G基站名称
+        description: 5G基站名称
+      ne_name:
+        label: 网元名称
+        description: 网元名称
+      dn:
+        label: DN
+        description: DN
+      omc_name:
+        label: 网管名称
+        description: 网管名称
+      rmuid:
+        label: 接口对象标识
+        description: 接口对象标识
+      id:
+        label: 标识符
+        description: 标识符
+      relatednrcelldu:
+        label: 关联小区列表
+        description: 关联小区列表
+      frequencyband:
+        label: 支持频段
+        description: 支持频段
+      serialnumber:
+        label: 资产序列号
+        description: 资产序列号
+      deepsleepswitch:
+        label: 深度休眠开关
+        description: 深度休眠开关
+      manufacturerdata:
+        label: 特殊信息
+        description: 特殊信息
+      vendorunittypenumber:
+        label: 资产单元类型版本号
+        description: 资产单元类型版本号
+      insert_time:
+        label: 插入时间
+        description: 插入时间
+      data_date:
+        label: 数据时间
+        description: 数据时间
+      date:
+        label: 数据日期
+        description: 数据日期
+      prod_name:
+        label: 厂家名称
+        description: 厂家名称
+      cgi:
+        label: 小区号
+        description: 小区号
+      txrxmode:
+        label: 发送和接收模式
+        description: 发送和接收模式
+  jd_cell_expansion_day:
+    schema_source: db_schema_agent
+    label: 节电扩展日结果
+    aliases:
+    - 扩展表
+    - 休眠扩展
+    - 扩展空间
+    - 扩展时段
+    description: 命中任一节电扩展判断维度的小区结果
+    default_date_column: stat_time
+    default_grain: cell_day
+    grain_keys:
+      cell_day:
+      - cgi
+      - stat_time
+    fields:
+      stat_time:
+        label: 统计日期
+        description: 节电扩展分析日期
+      dist_name:
+        label: 地市名称
+        description: 小区所属地市
+      county_name:
+        label: 区县名称
+        description: 小区所属区县
+      prod_name:
+        label: 厂家
+        description: 无线设备厂家
+      gnb_name:
+        label: 基站名称
+        description: 5G基站中文名称
+      cell_name:
+        label: 小区名称
+        description: 5G小区中文名称
+      cgi:
+        label: CGI
+        description: 5G小区唯一标识
+      work_band:
+        label: 频段
+        description: 小区工作频段
+      cover_type:
+        label: 覆盖类型
+        description: 小区覆盖类型
+      cover_scen:
+        label: 覆盖场景
+        description: 小区覆盖场景
+      site_type:
+        label: 站型
+        description: 主小区站点类型
+      hour_detail:
+        label: 可扩展休眠小时详情
+        description: 各小时低业务与休眠情况
+      hour_filter:
+        label: 可扩展时段
+        description: 含扩展时段口径下未休眠且可扩展的小时列表
+      hour_int:
+        label: 可扩展时间数量
+        description: 含扩展时段口径下可扩展小时数量
+        unit: 个
+      hour_filter_early:
+        label: 夜间常规可扩展时段
+        description: 仅夜间常规时段口径下可扩展小时列表
+      hour_int_early:
+        label: 夜间常规可扩展时间数量
+        description: 仅夜间常规时段口径下可扩展小时数量
+        unit: 个
+      is_whitelist:
+        label: 是否白名单
+        description: 小区是否命中节电白名单
+      jd_type:
+        label: 节电类型
+        description: 小区节电策略类型
+      reason:
+        label: 白名单原因
+        description: 命中白名单时记录的业务原因
+      deploy_hours:
+        label: 已部署时段
+        description: 含扩展时段口径下已休眠部署小时列表
+      deploy_hours_continuous:
+        label: 连续部署时段
+        description: 含扩展时段口径下连续部署时段
+      deploy_hours_early:
+        label: 夜间常规已部署时段
+        description: 仅夜间常规口径下已休眠部署小时列表
+      deploy_hours_continuous_early:
+        label: 夜间常规连续部署时段
+        description: 仅夜间常规口径下连续部署时段
+  jd_cell_constriction_day:
+    schema_source: db_schema_agent
+    label: 节电收缩日结果
+    aliases:
+    - 收缩表
+    - 休眠收缩
+    - 收缩空间
+    - 需收缩时段
+    - 需剔除时段
+    description: 命中任一节电收缩判断维度的小区结果
+    default_date_column: stat_time
+    default_grain: cell_day
+    grain_keys:
+      cell_day:
+      - cgi
+      - stat_time
+      constriction_record:
+      - cgi
+      - stat_time
+      - hours
+      - around_cgi
+    fields:
+      stat_time:
+        label: 统计日期
+        description: 节电收缩分析日期
+      dist_name:
+        label: 地市名称
+        description: 小区所属地市
+      county_name:
+        label: 区县名称
+        description: 小区所属区县
+      prod_name:
+        label: 厂家
+        description: 无线设备厂家
+      gnb_name:
+        label: 基站名称
+        description: 5G基站中文名称
+      cell_name:
+        label: 小区名称
+        description: 5G小区中文名称
+      cgi:
+        label: CGI
+        description: 主小区唯一标识
+      work_band:
+        label: 频段
+        description: 主小区工作频段
+      cover_type:
+        label: 覆盖类型
+        description: 主小区覆盖类型
+      cover_scen:
+        label: 覆盖场景
+        description: 主小区覆盖场景
+      site_type:
+        label: 主小区站型
+        description: 主小区原始站型
+      self_prb_rate_ul_before:
+        label: 主小区休眠前上行PRB利用率
+        description: 主小区休眠前一小时上行PRB利用率
+        unit: '%'
+      self_prb_rate_dl_before:
+        label: 主小区休眠前下行PRB利用率
+        description: 主小区休眠前一小时下行PRB利用率
+        unit: '%'
+      self_sleep_duration:
+        label: 主小区休眠时长
+        description: 主小区深度和极致休眠总时长
+        unit: 秒
+      hours:
+        label: 需收缩时段
+        description: 建议从原节电配置中剔除的小时
+      around_cgi_network_type:
+        label: 关联小区网络制式
+        description: 受影响关联小区的网络制式
+      around_cgi:
+        label: 关联小区CGI
+        description: 受主小区休眠影响的周边小区唯一标识
+      around_cgi_cell_name:
+        label: 关联小区名称
+        description: 受影响关联小区中文名称
+      prb_rate_ul:
+        label: 关联小区上行PRB利用率
+        description: 主小区休眠期间关联小区上行PRB利用率
+        unit: '%'
+      prb_rate_dl:
+        label: 关联小区下行PRB利用率
+        description: 主小区休眠期间关联小区下行PRB利用率
+        unit: '%'
+      prb_rate_ul_before:
+        label: 关联小区休眠前上行PRB利用率
+        description: 主小区休眠前关联小区上行PRB利用率
+        unit: '%'
+      prb_rate_dl_before:
+        label: 关联小区休眠前下行PRB利用率
+        description: 主小区休眠前关联小区下行PRB利用率
+        unit: '%'
+      prb_increase:
+        label: 关联小区PRB抬升量
+        description: 主小区休眠后关联小区PRB利用率变化
+        unit: '%'
+      before_sleep_hour:
+        label: 休眠前小时
+        description: 与需收缩时段对应的前一小时
+      before_sleep_date:
+        label: 休眠前日期
+        description: 休眠前负荷数据日期
+      distance:
+        label: 关联小区距离
+        description: 主小区与关联小区的直线距离
+        unit: 米
+      around_site_type:
+        label: 关联小区站型
+        description: 关联小区的站点类型
+  jd_cell_detail_hour_nr:
+    schema_source: db_schema_agent
+    label: 5G小区小时业务与休眠明细
+    aliases:
+    - 小时业务
+    - 小时休眠
+    - 低业务占比
+    description: 5G小区小时业务量、低业务占比和休眠时长过程数据
+    default_date_column: stat_time
+    default_grain: cell_day
+    grain_keys:
+      cell_day:
+      - cgi
+      - stat_time
+      hour:
+      - cgi
+      - stat_time
+      - hours
+    fields:
+      cgi:
+        label: CGI
+        description: 5G小区唯一标识
+      stat_time:
+        label: 统计日期
+        description: 小时过程数据所属日期
+      hours:
+        label: 小时
+        description: 一天中的小时时点
+      avg_low_flow_pct:
+        label: 低业务占比
+        description: 观察窗口内该小时低业务样本占比
+        unit: '%'
+      sleep_duration:
+        label: 平均休眠时长
+        description: 该小时平均休眠生效时长
+        unit: 秒
+  jd_cell_pre_hour_busy:
+    schema_source: db_schema_agent
+    label: 休眠生效前小时负荷
+    aliases:
+    - 休眠前负荷
+    - 休眠前高负荷
+    description: 小区休眠生效前候选小时的负荷过程数据
+    default_date_column: stat_time
+    default_grain: cell_day
+    grain_keys:
+      cell_day:
+      - cgi
+      - stat_time
+      hour:
+      - cgi
+      - stat_time
+      - prb_hour
+    fields:
+      cgi:
+        label: CGI
+        description: 5G小区唯一标识
+      stat_time:
+        label: 统计日期
+        description: 休眠前负荷数据所属日期
+      prb_hour:
+        label: 负荷小时
+        description: 休眠生效前的小时
+      prb_rate_ul:
+        label: 上行PRB利用率
+        description: 休眠生效前上行PRB利用率
+        unit: '%'
+      prb_rate_dl:
+        label: 下行PRB利用率
+        description: 休眠生效前下行PRB利用率
+        unit: '%'
+  jd_cell_around:
+    schema_source: db_schema_agent
+    label: 200米周边关联小区
+    aliases:
+    - 周边小区
+    - 关联小区
+    - 200米邻区
+    - 周边小区距离
+    description: 主小区与200米范围内关联小区的距离和站型信息
+    default_grain: neighbor
+    grain_keys:
+      neighbor:
+      - cgi
+      - around_cgi
+    fields:
+      cgi:
+        label: 主小区CGI
+        description: 发起关联的小区唯一标识
+      around_cgi:
+        label: 关联小区CGI
+        description: 200米范围内关联小区唯一标识
+      distance:
+        label: 关联距离
+        description: 主小区与关联小区的直线距离
+        unit: 米
+      around_site_type:
+        label: 关联小区站型
+        description: 关联小区的站点类型
+  eng_check_result:
+    schema_source: db_schema_rule
+    label: 节能参数核查结果
+    aliases:
+    - 参数核查
+    - 参数合规
+    - 节能参数
+    description: 小区节能参数当前值、建议值和合规结论
+    default_date_column: check_time
+    default_grain: parameter_item
+    grain_keys:
+      parameter_item:
+      - cgi
+      - check_time
+      - saving_para_name
+    fields:
+      cgi:
+        label: CGI
+        description: 参数核查对象的小区唯一标识
+      check_time:
+        label: 核查时间
+        description: 参数核查执行时间
+      chn_field_name:
+        label: 参数中文名称
+        description: 被核查参数的中文名称
+      saving_para_name:
+        label: 参数英文名称
+        description: 被核查参数的英文名称
+      saving_para_value:
+        label: 现网配置值
+        description: 参数当前配置值
+      recommend_value:
+        label: 建议值
+        description: 参数指导配置值
+      saving_switch_state:
+        label: 核查结果
+        description: 参数是否符合指导值
+      objective_reason:
+        label: 客观原因
+        description: 无法调整时的客观原因
+      subjective_reason:
+        label: 主观原因
+        description: 无法调整时的主观原因
+relationships:
+  expansion_to_constriction:
+    left: jd_cell_expansion_day
+    right: jd_cell_constriction_day
+    cardinality: one_to_many
+    keys:
+    - - cgi
+      - cgi
+    - - stat_time
+      - stat_time
+    allowed_grains:
+    - cell_day
+    - constriction_record
+    detail_grain: constriction_record
+  constriction_to_around:
+    left: jd_cell_constriction_day
+    right: jd_cell_around
+    cardinality: many_to_one
+    keys:
+    - - cgi
+      - cgi
+    - - around_cgi
+      - around_cgi
+    allowed_grains:
+    - cell_day
+    - constriction_record
+    - neighbor
+    detail_grain: neighbor
+  expansion_to_hour_detail:
+    left: jd_cell_expansion_day
+    right: jd_cell_detail_hour_nr
+    cardinality: one_to_many
+    keys:
+    - - cgi
+      - cgi
+    - - stat_time
+      - stat_time
+    allowed_grains:
+    - cell_day
+    - hour
+    detail_grain: hour
+  expansion_to_pre_sleep:
+    left: jd_cell_expansion_day
+    right: jd_cell_pre_hour_busy
+    cardinality: one_to_many_window
+    keys:
+    - - cgi
+      - cgi
+    date_window:
+      left_column: stat_time
+      right_column: stat_time
+      days_before: 6
+      days_after: 0
+    allowed_grains:
+    - cell_day
+    - hour
+    detail_grain: hour
+  constriction_to_pre_sleep:
+    left: jd_cell_constriction_day
+    right: jd_cell_pre_hour_busy
+    cardinality: one_to_many_window
+    keys:
+    - - cgi
+      - cgi
+    date_window:
+      left_column: stat_time
+      right_column: stat_time
+      days_before: 6
+      days_after: 0
+    allowed_grains:
+    - cell_day
+    - hour
+    detail_grain: hour
+  expansion_to_nr_prm:
+    left: jd_cell_expansion_day
+    right: nr_fix_prm
+    cardinality: many_to_one_latest_snapshot
+    keys:
+    - - cgi
+      - cgi
+    snapshot_column: data_date
+    allowed_grains:
+    - cell_day
+  constriction_to_nr_prm:
+    left: jd_cell_constriction_day
+    right: nr_fix_prm
+    cardinality: many_to_one_latest_snapshot
+    keys:
+    - - cgi
+      - cgi
+    snapshot_column: data_date
+    allowed_grains:
+    - cell_day
+    - constriction_record
+  expansion_to_param_check:
+    left: jd_cell_expansion_day
+    right: eng_check_result
+    cardinality: one_to_many_same_day
+    keys:
+    - - cgi
+      - cgi
+    same_day:
+      left_column: stat_time
+      right_column: check_time
+    allowed_grains:
+    - cell_day
+    - parameter_item
+    detail_grain: parameter_item
+  constriction_to_param_check:
+    left: jd_cell_constriction_day
+    right: eng_check_result
+    cardinality: one_to_many_same_day
+    keys:
+    - - cgi
+      - cgi
+    same_day:
+      left_column: stat_time
+      right_column: check_time
+    allowed_grains:
+    - cell_day
+    - constriction_record
+    - parameter_item
+    detail_grain: parameter_item
+  lte_detail_to_prm:
+    left: lte_report_day_detail
+    right: lte_fix_prm
+    cardinality: many_to_one
+    keys:
+    - - cgi
+      - cgi
+    - - data_date
+      - data_date
+    allowed_grains:
+    - cell_day
+  nr_detail_to_prm:
+    left: nr_report_day_detail
+    right: nr_fix_prm
+    cardinality: many_to_one
+    keys:
+    - - cgi
+      - cgi
+    - - data_date
+      - data_date
+    allowed_grains:
+    - cell_day
+  lte_detail_to_rru:
+    left: lte_report_day_detail
+    right: lte_nrm_inventoryunitrru
+    cardinality: one_to_many_latest_snapshot
+    keys:
+    - - cgi
+      - cgi
+    snapshot_column: data_date
+    allowed_grains:
+    - cell_day
+    - rru_item
+    detail_grain: rru_item
+  nr_detail_to_rru:
+    left: nr_report_day_detail
+    right: sa_nrm_inventoryunitrru
+    cardinality: one_to_many_latest_snapshot
+    keys:
+    - - cgi
+      - cgi
+    snapshot_column: data_date
+    allowed_grains:
+    - cell_day
+    - rru_item
+    detail_grain: rru_item

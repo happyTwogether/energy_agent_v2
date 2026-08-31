@@ -8,6 +8,7 @@ from agentscope.message import ToolResultState
 from agentscope.permission import PermissionBehavior, PermissionContext
 
 try:
+    from app.agent.errors import AgentConfigurationError
     from app.agent.tool_specs import EnergyToolSpec
     from app.agent.toolkit import EnergyFunctionTool, build_toolkit
 except ModuleNotFoundError:
@@ -155,6 +156,51 @@ class AgentToolkitTest(unittest.IsolatedAsyncioTestCase):
                 for item in actual
             ),
         )
+
+    async def test_business_data_tool_uses_self_service_session(self) -> None:
+        default_sessions: list[object] = []
+        reader_sessions: list[object] = []
+
+        class SessionContext:
+            def __init__(self, target: list[object]) -> None:
+                self._target = target
+
+            async def __aenter__(self) -> object:
+                session = object()
+                self._target.append(session)
+                return session
+
+            async def __aexit__(self, exc_type, exc, traceback) -> bool:
+                return False
+
+        toolkit = build_toolkit(
+            session_factory=lambda: SessionContext(default_sessions),
+            self_service_session_factory=lambda: SessionContext(reader_sessions),
+        )
+        tool = await toolkit.get_tool("query_business_data")
+
+        self.assertIsNotNone(tool)
+        await tool.call(question="查询5G小区流量")
+
+        self.assertEqual([], default_sessions)
+        self.assertEqual(1, len(reader_sessions))
+
+    async def test_missing_reader_configuration_is_returned_explicitly(self) -> None:
+        def missing_reader_session():
+            raise AgentConfigurationError(
+                "缺少运行时配置 SELF_SERVICE_DATABASE_URL",
+            )
+
+        toolkit = build_toolkit(
+            self_service_session_factory=missing_reader_session,
+        )
+        tool = await toolkit.get_tool("query_business_data")
+
+        chunk = await tool.call(question="查询原始字段")
+
+        self.assertEqual(ToolResultState.ERROR, chunk.state)
+        self.assertIn("SELF_SERVICE_DATABASE_URL", chunk.content[0].text)
+        self.assertEqual("", chunk.metadata["direct_answer"])
 
 
 if __name__ == "__main__":

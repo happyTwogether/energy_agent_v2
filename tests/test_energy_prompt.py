@@ -47,3 +47,24 @@ def test_batch_prompt_mentions_corrected_v14_statistics():
     assert "仅扩展为“扩展明细”" in prompt
     assert "仅收缩为“收缩明细”" in prompt
     assert "全量为“小区汇总、扩展明细、收缩明细”" in prompt
+
+
+def test_execution_prompt_routes_generic_fields_without_stealing_specialists():
+    prompt = energy_saving.AGENT_EXECUTION_PROMPT
+
+    assert "query_business_data" in prompt
+    assert "专业工具优先" in prompt
+    assert "查询 nr_report_day_detail 的 deepsleep_hour 字段" in prompt
+    assert "rsrp_avg" not in prompt
+    assert "查询扩展时段、收缩时段和周边小区距离" in prompt
+    assert "银盆岭小学节电空间" in prompt
+    assert "不要改写成 SQL" in prompt
+
+
+def test_business_data_synthesis_uses_structured_rows_for_agent_diagnosis():
+    prompt = energy_saving.SYNTHESIS_BUSINESS_DATA
+
+    assert "rows" in prompt
+    assert "metric_definitions" in prompt
+    assert "比较、诊断" in prompt
+    assert "原样返回 `report_content`" not in prompt

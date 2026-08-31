@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.agent.errors import AgentConfigurationError
 from app.core.config import DB_MAX_OVERFLOW, DB_POOL_SIZE, MAX_HISTORY_MESSAGES, get_settings
 from app.core.logging import get_logger
 
@@ -18,6 +19,8 @@ logger = get_logger("database")
 
 _engine = None
 _async_session_factory = None
+_self_service_engine: AsyncEngine | None = None
+_self_service_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 def get_engine() -> AsyncEngine:
@@ -45,6 +48,42 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
             expire_on_commit=False,
         )
     return _async_session_factory
+
+
+def get_self_service_session_factory() -> async_sessionmaker[AsyncSession]:
+    """获取业务数据自服务的独立只读会话工厂。"""
+    global _self_service_engine, _self_service_session_factory
+    if _self_service_session_factory is not None:
+        return _self_service_session_factory
+
+    settings = get_settings()
+    url = settings.self_service_database_url.get_secret_value().strip()
+    if not settings.self_service_enabled or not url:
+        raise AgentConfigurationError("缺少运行时配置 SELF_SERVICE_DATABASE_URL")
+    _self_service_engine = create_async_engine(
+        url,
+        echo=False,
+        pool_size=DB_POOL_SIZE,
+        max_overflow=DB_MAX_OVERFLOW,
+        connect_args={
+            "server_settings": {"default_transaction_read_only": "on"},
+        },
+    )
+    _self_service_session_factory = async_sessionmaker(
+        bind=_self_service_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    return _self_service_session_factory
+
+
+async def dispose_self_service_engine() -> None:
+    """关闭自助查询引擎并清除进程级缓存。"""
+    global _self_service_engine, _self_service_session_factory
+    if _self_service_engine is not None:
+        await _self_service_engine.dispose()
+    _self_service_engine = None
+    _self_service_session_factory = None
 
 
 class Base(DeclarativeBase):

@@ -12,10 +12,13 @@ from agentscope.permission import (
 from agentscope.tool import ToolBase, ToolChunk, Toolkit
 
 from app.agent.tool_specs import EnergyToolSpec, TOOL_SPECS
-from app.agent.errors import PUBLIC_TOOL_ERROR
+from app.agent.errors import AgentConfigurationError, PUBLIC_TOOL_ERROR
 from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
-from app.services.database import get_session_factory
+from app.services.database import (
+    get_self_service_session_factory,
+    get_session_factory,
+)
 
 SessionFactory = Callable[[], AsyncContextManager[Any]]
 logger = get_logger("agent_toolkit")
@@ -43,6 +46,19 @@ class EnergyFunctionTool(ToolBase):
         try:
             async with self._session_factory() as db:
                 payload = await self._spec.handler(db=db, **kwargs)
+        except AgentConfigurationError:
+            logger.warning("业务工具运行配置缺失: tool=%s", self.name)
+            public_message = (
+                "通用数据查询未启用：缺少运行时配置 SELF_SERVICE_DATABASE_URL"
+                if self._spec.session_scope == "self_service"
+                else PUBLIC_TOOL_ERROR
+            )
+            payload = {
+                "success": False,
+                "error": public_message,
+            }
+            if self._spec.session_scope != "self_service":
+                payload["report_content"] = public_message
         except Exception:
             logger.exception("业务工具执行异常: tool=%s", self.name)
             payload = {
@@ -93,14 +109,22 @@ def extract_direct_answer(payload: dict[str, Any]) -> str | None:
 
 def build_toolkit(
     session_factory: SessionFactory | None = None,
+    self_service_session_factory: SessionFactory | None = None,
 ) -> Toolkit:
-    """构建包含全部 9 个能效工具的 AgentScope Toolkit。"""
+    """构建包含 9 个专业工具和 1 个通用数据工具的 Toolkit。"""
     runtime_session_factory = session_factory or _new_session
+    runtime_self_service_factory = (
+        self_service_session_factory or _new_self_service_session
+    )
     return Toolkit(
         tools=[
             EnergyFunctionTool(
                 spec=spec,
-                session_factory=runtime_session_factory,
+                session_factory=(
+                    runtime_self_service_factory
+                    if spec.session_scope == "self_service"
+                    else runtime_session_factory
+                ),
             )
             for spec in TOOL_SPECS
         ],
@@ -110,3 +134,8 @@ def build_toolkit(
 def _new_session() -> AsyncContextManager[Any]:
     """延迟获取 SQLAlchemy sessionmaker，避免构建 schema 时初始化引擎。"""
     return get_session_factory()()
+
+
+def _new_self_service_session() -> AsyncContextManager[Any]:
+    """延迟获取自助查询只读 sessionmaker。"""
+    return get_self_service_session_factory()()

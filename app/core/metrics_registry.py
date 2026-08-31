@@ -48,6 +48,14 @@ def safe_div(a: float | None, b: float | None, decimals: int = 2) -> float:
         return 0.0
 
 
+def average_effect_hour(
+    total_effect_hour: float | None,
+    cell_total: float | None,
+) -> float:
+    """按日报口径计算单小区平均节电生效时长。"""
+    return safe_div(total_effect_hour, cell_total, 1)
+
+
 def safe_div_row(row: dict, col_a: str, col_b: str, decimals: int = 2) -> float:
     try:
         bval = float(row.get(col_b) or 0)

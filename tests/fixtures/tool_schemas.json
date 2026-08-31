@@ -87,6 +87,21 @@
   {
     "type": "function",
     "function": {
+      "name": "query_business_data",
+      "description": "使用自然语言查询授权业务表中的任意字段。适用于现有专业工具未覆盖的通用数据查询；支持最多3张授权表按审核关系筛选、排序、分组和基础聚合，不接受SQL。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "question": {"type": "string", "description": "用户当前完整的数据查询问题，不要改写成SQL"},
+          "export_excel": {"type": "boolean", "description": "是否导出Excel", "default": false}
+        },
+        "required": ["question"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "query_cell_metric",
       "description": "通过 CGI 或小区中文名查询单个小区的节能指标明细数据。",
       "parameters": {
