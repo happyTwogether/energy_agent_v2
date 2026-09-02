@@ -45,6 +45,25 @@ Toolkit 最终只注册以下 8 个工具：
 
 确定性指标注册是唯一计算口径。日报与数据自服务必须复用同一计算函数，不再保留 `REPORT_METRICS`、`CELL_METRICS` 和 `ALL_METRICS` 旧注册表。
 
+### 数据库字段与计算指标分层
+
+`query_business_data` 同时提供两种数据能力，统一的是工具入口，不是把计算指标改成数据库现成字段：
+
+1. **物理字段**：直接来自授权表，例如 `deepsleep_hour`、`deepsleep_switch`、`all_cell_total` 和 `open_deepsleep_rate`。
+2. **确定性计算指标**：先查询已登记的来源字段，再调用代码中经测试的固定公式计算。大模型只能选择指标 ID，不能生成、修改或组合公式。
+
+已有计算公式必须保留并迁入唯一注册，包括但不限于：
+
+| 指标示例 | 来源字段 | 固定公式 |
+|---|---|---|
+| 5G BBU 能耗（万度） | `sa_bbu_power` | `sa_bbu_power ÷ 10000` |
+| 5G 上下行业务量（TB） | `upoctul_dl` | `upoctul_dl ÷ 1024` |
+| 5G 基站可读率 | `logic_read_station_total`、`logic_station_total` | `logic_read_station_total ÷ logic_station_total × 100%` |
+| 5G 高耗电小区占比 | `thirtytwo_channel_total`、`sixtyfour_channel_total`、`all_cell_total` | `(thirtytwo_channel_total + sixtyfour_channel_total) ÷ all_cell_total × 100%` |
+| 5G 深度休眠平均时长 | `deepsleep_effect_hour`、`all_cell_total` | `deepsleep_effect_hour ÷ all_cell_total` |
+
+每个计算指标定义必须包含指标 ID、中文名、别名、来源表、来源字段、单位、粒度、计算器和分组聚合口径。用户问到计算指标时，查询层自动补齐来源字段，返回结果同时提供指标名、值、单位和口径说明，不必把内部来源字段全部展示给业务用户。
+
 ### 分组、排序和 Top N
 
 `query_business_data` 继续用结构化计划表达 `group_by`、`aggregations`、`order_by` 和 `limit`。迁移后必须支持：
