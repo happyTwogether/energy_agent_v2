@@ -24,11 +24,6 @@ from app.tools.cell_lookup_tool import (
     TOOL_INPUT_SCHEMA as CELL_LOOKUP_SCHEMA,
     resolve_cell_cgi,
 )
-from app.tools.cell_metric_query_tool import (
-    TOOL_DESCRIPTION as CELL_METRIC_DESCRIPTION,
-    TOOL_INPUT_SCHEMA as CELL_METRIC_SCHEMA,
-    query_cell_metric,
-)
 from app.tools.chart_tool import (
     TOOL_DESCRIPTION as CHART_DESCRIPTION,
     TOOL_INPUT_SCHEMA as CHART_SCHEMA,
@@ -43,11 +38,6 @@ from app.tools.energy_saving_tool import (
     TOOL_DESCRIPTION as ENERGY_SAVING_DESCRIPTION,
     TOOL_INPUT_SCHEMA as ENERGY_SAVING_SCHEMA,
     analyze_single_cell_energy,
-)
-from app.tools.metric_query_tool import (
-    TOOL_DESCRIPTION as METRIC_DESCRIPTION,
-    TOOL_INPUT_SCHEMA as METRIC_SCHEMA,
-    query_metric,
 )
 from app.tools.report_query_tool import (
     TOOL_DESCRIPTION as REPORT_DESCRIPTION,
@@ -106,24 +96,10 @@ TOOL_SPECS = (
         is_read_only=False,
     ),
     EnergyToolSpec(
-        name="query_cell_metric",
-        description=CELL_METRIC_DESCRIPTION,
-        input_schema=CELL_METRIC_SCHEMA,
-        handler=query_cell_metric,
-        is_read_only=False,
-    ),
-    EnergyToolSpec(
         name="query_energy_param_check",
         description=ENERGY_PARAM_DESCRIPTION,
         input_schema=ENERGY_PARAM_SCHEMA,
         handler=query_energy_param_check,
-        is_read_only=False,
-    ),
-    EnergyToolSpec(
-        name="query_metric",
-        description=METRIC_DESCRIPTION,
-        input_schema=METRIC_SCHEMA,
-        handler=query_metric,
         is_read_only=False,
     ),
     EnergyToolSpec(

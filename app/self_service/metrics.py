@@ -3,6 +3,8 @@
 from collections.abc import Callable
 from typing import Any
 
+from sqlalchemy import func
+
 from app.core.metrics_registry import (
     average_effect_hour,
     safe_div,
@@ -81,6 +83,7 @@ def _metric(
     calculator: str,
     unit: str,
     *aliases: str,
+    source_aggregations: tuple[str, ...] | None = None,
 ) -> CatalogMetric:
     return CatalogMetric(
         id=metric_id,
@@ -89,6 +92,9 @@ def _metric(
         aliases=aliases,
         source_table=source_table,
         source_fields=source_fields,
+        source_aggregations=(
+            source_aggregations or tuple("sum" for _ in source_fields)
+        ),
         calculator=calculator,
         unit=unit,
         grain="summary_day",
@@ -104,6 +110,8 @@ METRIC_REGISTRY = {
         _metric("nr_rru_energy_wan", "5G RRU/AAU能耗", "5G RRU或AAU能耗由kWh换算为万度", "nr_report_day_collect", ("rru_power",), "to_wan_du", "万度"),
         _metric("lte_station_energy_wan", "4G基站总能耗", "4G基站总能耗由kWh换算为万度", "lte_report_day_collect", ("lte_station_power",), "to_wan_du", "万度"),
         _metric("nr_station_energy_wan", "5G基站总能耗", "5G基站总能耗由kWh换算为万度", "nr_report_day_collect", ("nr_sa_station_power",), "to_wan_du", "万度"),
+        _metric("lte_month_energy_saving_wan", "4G月节电量", "4G当月节电量由kWh换算为万度", "lte_report_day_collect", ("lte_curmonthpower",), "to_wan_du", "万度"),
+        _metric("nr_month_energy_saving_wan", "5G月节电量", "5G当月节电量由kWh换算为万度", "nr_report_day_collect", ("nr_curmonthpower",), "to_wan_du", "万度"),
         _metric("lte_traffic_tb", "4G上下行业务量", "4G上下行业务量由GB换算为TB", "lte_report_day_collect", ("upoctul_dl",), "to_tb", "TB"),
         _metric("nr_traffic_tb", "5G上下行业务量", "5G上下行业务量由GB换算为TB", "nr_report_day_collect", ("upoctul_dl",), "to_tb", "TB"),
         _metric("lte_readable_ratio", "4G基站可读率", "可读4G逻辑站数占全部4G逻辑站数的比例", "lte_report_day_collect", ("logic_read_station_total", "logic_station_total"), "lte_readable_ratio", "%", "4G在线率"),
@@ -135,3 +143,73 @@ def calculate_metric(metric: CatalogMetric, row: dict[str, Any]) -> float:
     if len(metric.source_fields) == 1:
         calculator_row["value"] = row.get(metric.source_fields[0])
     return round(CALCULATORS[metric.calculator](calculator_row), 4)
+
+
+def build_metric_sql_expression(
+    metric: CatalogMetric,
+    source_columns: dict[str, Any],
+    aggregate: bool,
+) -> Any:
+    """使用与 Python 计算器相同的注册口径构造排序表达式。"""
+    values = {
+        field_name: _aggregate_source(column, aggregation, aggregate)
+        for field_name, aggregation, column in zip(
+            metric.source_fields,
+            metric.source_aggregations,
+            (source_columns[name] for name in metric.source_fields),
+            strict=True,
+        )
+    }
+    if metric.calculator == "to_wan_du":
+        return values[metric.source_fields[0]] / 10_000
+    if metric.calculator == "to_tb":
+        return values[metric.source_fields[0]] / 1_024
+    if metric.calculator in {"lte_readable_ratio", "nr_readable_ratio"}:
+        return _sql_ratio(
+            values["logic_read_station_total"],
+            values["logic_station_total"],
+        )
+    if metric.calculator == "lte_high_power_ratio":
+        return _sql_ratio(
+            values["eightm_channel_total"],
+            values["all_cell_total"],
+        )
+    if metric.calculator == "nr_high_power_ratio":
+        return _sql_ratio(
+            values["thirtytwo_channel_total"] + values["sixtyfour_channel_total"],
+            values["all_cell_total"],
+        )
+    if metric.calculator == "low_efficiency_ratio":
+        return _sql_ratio(values["low_energy_total"], values["all_cell_total"])
+    if metric.calculator == "commode_ratio":
+        return _sql_ratio(
+            values["commode_station_total"],
+            values["logic_station_total"],
+        )
+    if metric.calculator.endswith("_average_hour"):
+        numerator = next(
+            values[name]
+            for name in metric.source_fields
+            if name != "all_cell_total"
+        )
+        return func.coalesce(
+            numerator / func.nullif(values["all_cell_total"], 0),
+            0,
+        )
+    raise ValueError(f"未支持的指标计算器：{metric.calculator}")
+
+
+def _aggregate_source(expression: Any, aggregation: str, aggregate: bool) -> Any:
+    if not aggregate:
+        return expression
+    functions = {
+        "sum": func.sum,
+        "avg": func.avg,
+        "min": func.min,
+        "max": func.max,
+    }
+    return functions[aggregation](expression)
+
+
+def _sql_ratio(numerator: Any, denominator: Any) -> Any:
+    return func.coalesce(numerator / func.nullif(denominator, 0), 0) * 100

@@ -57,7 +57,7 @@
               "properties": {
                 "title": {"type": "string", "description": "图表标题"},
                 "chart_type": {"type": "string", "enum": ["line", "area", "bar", "stacked_bar", "pie", "scatter", "radar"]},
-                "data": {"type": "object", "description": "query_metric 等工具的完整返回结果"}
+                "data": {"type": "object", "description": "数据查询工具的完整返回结果，包含 rows 和 columns"}
               },
               "required": ["title", "data"]
             }
@@ -88,7 +88,7 @@
     "type": "function",
     "function": {
       "name": "query_business_data",
-      "description": "使用自然语言查询授权业务表中的任意字段。适用于现有专业工具未覆盖的通用数据查询；支持最多3张授权表按审核关系筛选、排序、分组和基础聚合，不接受SQL。",
+      "description": "唯一通用数据查询入口。使用自然语言查询授权物理字段和确定性计算指标；支持最多3张授权表按审核关系筛选、分组、排序、Top N和导出，不接受SQL。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -96,30 +96,6 @@
           "export_excel": {"type": "boolean", "description": "是否导出Excel", "default": false}
         },
         "required": ["question"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "query_cell_metric",
-      "description": "通过 CGI 或小区中文名查询单个小区的节能指标明细数据。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "cgi": {"type": "string", "description": "小区 CGI，格式 460-00-基站号-小区号；与 cell_name 同时传入时优先"},
-          "cell_name": {"type": "string", "description": "小区中文名或其连续片段，未提供 CGI 时使用包含匹配"},
-          "network": {"type": "string", "enum": ["4G", "5G"], "description": "网络制式，用中文名查询时可用于过滤候选"},
-          "metric_names": {
-            "type": "array",
-            "items": {"type": "string", "enum": ["cell_carrier_shutdown_hour", "cell_channel_shutdown_hour", "cell_deepsleep_hour", "cell_supersleep_hour", "cell_symbol_shutdown_hour", "cell_traffic"]},
-            "description": "小区级指标名列表。常用: cell_traffic,cell_carrier_shutdown_hour,cell_channel_shutdown_hour,cell_symbol_shutdown_hour,cell_deepsleep_hour,cell_supersleep_hour"
-          },
-          "date_start": {"type": "string", "description": "开始日期 (YYYY-MM-DD)"},
-          "date_end": {"type": "string", "description": "结束日期 (YYYY-MM-DD)"},
-          "export_excel": {"type": "boolean", "description": "是否导出 Excel", "default": false}
-        },
-        "required": ["metric_names"]
       }
     }
   },
@@ -139,50 +115,6 @@
           "export_excel": {"type": "boolean", "description": "是否导出 Excel", "default": false}
         },
         "required": []
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "query_metric",
-      "description": "查询汇总级能耗指标。支持聚合（group_by）、排序（order_by）、Top N（limit）。传 metric_names 指定指标名或指标组。",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "metric_names": {
-            "type": "array",
-            "items": {"type": "string", "enum": ["avg_energy_efficiency", "bbu_energy", "carrier_shutdown_hour", "cell_total", "channel_shutdown_hour", "channel_shutdown_on_rate", "deepsleep_hour", "deepsleep_on_rate", "energy_saving_rate", "low_energy_cell_count", "month_energy_saving", "rru_energy", "single_station_power", "station_energy", "station_online", "station_online_ratio", "station_total", "supersleep_hour", "symbol_shutdown_hour", "symbol_shutdown_on_rate", "traffic", "summary_4g", "summary_5g", "energy_saving_4g", "energy_saving_5g"]},
-            "description": "指标名或指标组。指标组: summary_4g,summary_5g,energy_saving_4g,energy_saving_5g"
-          },
-          "network": {"type": "string", "enum": ["4G", "5G"], "description": "网络类型。用户未指定时根据上下文推断，4G 选 4G，5G 选 5G，两者都需要时分两次调用"},
-          "dist_name": {"type": "string", "description": "地市名称"},
-          "prod_name": {"type": "string", "description": "设备厂家"},
-          "freq_band": {"type": "string", "description": "频段"},
-          "site_type": {"type": "string", "description": "站型"},
-          "area": {"type": "string", "description": "区域"},
-          "date_start": {"type": "string", "description": "开始日期 (YYYY-MM-DD)"},
-          "date_end": {"type": "string", "description": "结束日期 (YYYY-MM-DD)"},
-          "group_by": {
-            "type": "array",
-            "items": {"type": "string", "enum": ["dist_name", "prod_name", "freq_band", "site_type", "area", "data_date"]},
-            "description": "聚合维度列表。传一个或多个: dist_name/prod_name/freq_band/site_type/area/data_date。不传则返回明细"
-          },
-          "order_by": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "field": {"type": "string", "description": "排序字段：指标名或维度名"},
-                "direction": {"type": "string", "enum": ["asc", "desc"]}
-              }
-            },
-            "description": "排序规则。field 传指标名或 group_by 中的维度名"
-          },
-          "limit": {"type": "integer", "description": "返回 TOP N 条。用户说 TOP N 时设置"},
-          "export_excel": {"type": "boolean", "description": "是否导出 Excel", "default": false}
-        },
-        "required": ["metric_names", "network"]
       }
     }
   },

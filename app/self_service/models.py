@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+AggregateFunction = Literal["count", "sum", "avg", "min", "max"]
+
 
 class FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -85,17 +87,23 @@ class CatalogMetric(FrozenModel):
     aliases: tuple[str, ...] = ()
     source_table: str
     source_fields: tuple[str, ...]
+    source_aggregations: tuple[AggregateFunction, ...]
     calculator: str
     unit: str = ""
     data_type: str = "numeric"
     grain: str
+
+    @model_validator(mode="after")
+    def require_one_aggregation_per_source(self) -> "CatalogMetric":
+        if len(self.source_fields) != len(self.source_aggregations):
+            raise ValueError("指标来源字段与聚合口径必须一一对应")
+        return self
 
 
 FilterOperator = Literal[
     "eq", "ne", "gt", "gte", "lt", "lte", "contains", "starts_with",
     "in", "between", "is_null", "is_not_null",
 ]
-AggregateFunction = Literal["count", "sum", "avg", "min", "max"]
 ResultGrain = Literal[
     "cell_day", "summary_day", "cell_snapshot", "constriction_record",
     "hour", "neighbor", "parameter_item",
@@ -127,12 +135,14 @@ class QueryOrder(BaseModel):
     model_config = ConfigDict(extra="forbid")
     field: QueryFieldRef | None = None
     aggregation_alias: str | None = None
+    metric_id: str | None = None
     direction: Literal["asc", "desc"] = "asc"
 
     @model_validator(mode="after")
     def require_one_order_source(self) -> "QueryOrder":
-        if (self.field is None) == (self.aggregation_alias is None):
-            raise ValueError("排序字段和聚合别名必须且只能提供一个")
+        sources = (self.field, self.aggregation_alias, self.metric_id)
+        if sum(source is not None for source in sources) != 1:
+            raise ValueError("排序字段、聚合别名和指标必须且只能提供一个")
         return self
 
 

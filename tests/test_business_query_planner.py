@@ -13,7 +13,7 @@ from app.self_service.models import (
     QueryFieldRef,
     QueryFilter,
 )
-from app.self_service.planner import BusinessQueryPlanner
+from app.self_service.planner import BusinessQueryPlanner, build_planner_messages
 
 
 def test_query_plan_rejects_unknown_operator() -> None:
@@ -212,3 +212,38 @@ def test_planner_prompt_exposes_only_matched_registered_metrics() -> None:
     assert "5G基站可读率" in prompt
     assert "logic_read_station_total" in prompt
     assert "指标只能放入 metrics" in prompt
+
+
+def test_planner_prompt_allows_registered_metric_grouping_and_sorting() -> None:
+    summary = CatalogTable(
+        schema_name="public",
+        name="nr_report_day_collect",
+        label="5G网络日汇总",
+        description="5G网络日汇总",
+        default_date_column="data_date",
+        default_grain="summary_day",
+        grain_keys={"summary_day": ("data_date",)},
+        columns={
+            name: CatalogColumn(name=name, label=name, data_type="numeric")
+            for name in [
+                "data_date",
+                "dist_name",
+                "logic_station_total",
+                "logic_read_station_total",
+            ]
+        },
+    )
+    candidate_item = CatalogCandidate(
+        table=summary,
+        score=1.0,
+        matched_metrics=("nr_readable_ratio",),
+    )
+
+    prompt = str(build_planner_messages(
+        "按地市查5G基站可读率前5名",
+        [candidate_item],
+        [],
+    ))
+
+    assert "计算指标可以用于分组结果的排序" in prompt
+    assert "不能把计算指标用于过滤" in prompt

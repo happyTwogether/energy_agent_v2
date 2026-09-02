@@ -55,6 +55,22 @@ def test_nr_station_energy_converts_kwh_to_ten_thousand_kwh() -> None:
     assert metric.unit == "万度"
 
 
+def test_month_energy_saving_uses_registered_network_source_fields() -> None:
+    lte_metric = get_metric("lte_month_energy_saving_wan")
+    nr_metric = get_metric("nr_month_energy_saving_wan")
+
+    assert calculate_metric(lte_metric, {"lte_curmonthpower": 12_500}) == 1.25
+    assert calculate_metric(nr_metric, {"nr_curmonthpower": 25_000}) == 2.5
+    assert lte_metric.source_aggregations == ("sum",)
+    assert nr_metric.source_aggregations == ("sum",)
+
+
+def test_ratio_metric_registers_sum_for_each_grouped_source() -> None:
+    metric = get_metric("nr_readable_ratio")
+
+    assert metric.source_aggregations == ("sum", "sum")
+
+
 def test_average_sleep_hour_matches_existing_daily_report_precision() -> None:
     row = {"deepsleep_effect_hour": 1, "all_cell_total": 3}
 

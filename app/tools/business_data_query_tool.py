@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.self_service.service import get_business_data_query_service
 
 TOOL_DESCRIPTION = (
-    "使用自然语言查询授权业务表中的任意字段。适用于现有专业工具未覆盖的通用数据查询；"
-    "支持最多3张授权表按审核关系筛选、排序、分组和基础聚合，不接受SQL。"
+    "唯一通用数据查询入口。使用自然语言查询授权物理字段和确定性计算指标；"
+    "支持最多3张授权表按审核关系筛选、分组、排序、Top N和导出，不接受SQL。"
 )
 TOOL_INPUT_SCHEMA = {
     "type": "object",

@@ -111,7 +111,7 @@ def build_toolkit(
     session_factory: SessionFactory | None = None,
     self_service_session_factory: SessionFactory | None = None,
 ) -> Toolkit:
-    """构建包含 9 个专业工具和 1 个通用数据工具的 Toolkit。"""
+    """构建包含 1 个数据查询工具和 7 个专业工具的 Toolkit。"""
     runtime_session_factory = session_factory or _new_session
     runtime_self_service_factory = (
         self_service_session_factory or _new_self_service_session

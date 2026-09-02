@@ -40,6 +40,7 @@ def get_nr_summary_snapshot():
             name: CatalogColumn(name=name, label=name, data_type=data_type)
             for name, data_type in {
                 "data_date": "date",
+                "dist_name": "text",
                 "logic_station_total": "numeric",
                 "logic_read_station_total": "numeric",
                 "thirtytwo_channel_total": "numeric",
@@ -82,6 +83,99 @@ def test_metric_plan_rejects_unknown_metric() -> None:
 
     with pytest.raises(BusinessQueryValidationError, match="未授权指标"):
         validate_query_plan(plan, snapshot, Settings(_env_file=None))
+
+
+def test_grouped_metric_aggregates_sources_and_orders_top_n_by_formula() -> None:
+    snapshot = get_nr_summary_snapshot()
+    dimension = QueryFieldRef(
+        table="nr_report_day_collect",
+        field="dist_name",
+    )
+    plan = BusinessQueryPlan(
+        base_table="nr_report_day_collect",
+        tables=["nr_report_day_collect"],
+        select=[dimension],
+        group_by=[dimension],
+        metrics=["nr_readable_ratio"],
+        order_by=[QueryOrder(
+            metric_id="nr_readable_ratio",
+            direction="desc",
+        )],
+        limit=5,
+    )
+
+    validated = validate_query_plan(plan, snapshot, Settings(_env_file=None))
+    sql = str(build_business_statement(validated, snapshot).compile(
+        dialect=postgresql.dialect(),
+    ))
+
+    assert "sum(public.nr_report_day_collect.logic_read_station_total)" in sql
+    assert "sum(public.nr_report_day_collect.logic_station_total)" in sql
+    assert "AS nr_readable_ratio" in sql
+    assert "ORDER BY nr_readable_ratio DESC" in sql
+    assert "LIMIT" in sql
+
+
+def test_grouped_metric_can_use_dimension_from_authorized_join() -> None:
+    snapshot = get_nr_summary_snapshot()
+    region_table = CatalogTable(
+        schema_name="public",
+        name="region_dimension",
+        label="地市分区维表",
+        description="地市与分区的授权映射",
+        default_grain="summary_day",
+        grain_keys={"summary_day": ("dist_name",)},
+        columns={
+            "dist_name": CatalogColumn(
+                name="dist_name",
+                label="地市",
+                data_type="text",
+            ),
+            "region": CatalogColumn(
+                name="region",
+                label="分区",
+                data_type="text",
+            ),
+        },
+    )
+    relationship = CatalogRelationship(
+        name="summary_to_region",
+        left_table="nr_report_day_collect",
+        right_table="region_dimension",
+        cardinality="many_to_one",
+        keys=(("dist_name", "dist_name"),),
+        allowed_grains=("summary_day",),
+    )
+    snapshot = snapshot.model_copy(update={
+        "tables": {**snapshot.tables, region_table.name: region_table},
+        "relationships": {
+            **snapshot.relationships,
+            relationship.name: relationship,
+        },
+    })
+    dimension = QueryFieldRef(table="region_dimension", field="region")
+    plan = BusinessQueryPlan(
+        base_table="nr_report_day_collect",
+        tables=["nr_report_day_collect", "region_dimension"],
+        relationships=["summary_to_region"],
+        select=[dimension],
+        group_by=[dimension],
+        metrics=["nr_readable_ratio"],
+        order_by=[QueryOrder(
+            metric_id="nr_readable_ratio",
+            direction="desc",
+        )],
+    )
+
+    validated = validate_query_plan(plan, snapshot, Settings(_env_file=None))
+    sql = str(build_business_statement(validated, snapshot).compile(
+        dialect=postgresql.dialect(),
+    ))
+
+    assert "sum(base_filtered.logic_read_station_total)" in sql
+    assert "sum(base_filtered.logic_station_total)" in sql
+    assert "GROUP BY public.region_dimension.region" in sql
+    assert "ORDER BY nr_readable_ratio DESC" in sql
 
 
 def test_aggregation_aliases_must_be_unique() -> None:

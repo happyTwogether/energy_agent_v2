@@ -13,7 +13,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.sql import Select
 
 from app.core.config import Settings
-from app.self_service.metrics import METRIC_REGISTRY
+from app.self_service.metrics import METRIC_REGISTRY, build_metric_sql_expression
 from app.self_service.models import (
     BusinessQueryPlan,
     CatalogColumn,
@@ -137,10 +137,6 @@ def _validated_query_fields(
     snapshot: CatalogSnapshot,
     result_grain: str,
 ) -> tuple[QueryFieldRef, ...]:
-    if plan.metrics and (plan.group_by or plan.aggregations):
-        raise BusinessQueryValidationError(
-            "计算指标第一阶段不能与分组或聚合同时使用",
-        )
     query_fields = list(plan.select)
     seen = {(item.table, item.field) for item in query_fields}
     for metric_id in plan.metrics:
@@ -274,13 +270,16 @@ def _validate_references(
     )
     if has_unknown_alias:
         raise BusinessQueryValidationError("排序使用了未知聚合别名")
+    metric_orders = [item.metric_id for item in plan.order_by if item.metric_id]
+    if any(metric_id not in plan.metrics for metric_id in metric_orders):
+        raise BusinessQueryValidationError("排序指标必须同时出现在 metrics 中")
 
 
 def _validate_multi_table_aggregation(
     plan: BusinessQueryPlan,
     path: ResolvedRelationshipPath,
 ) -> None:
-    if not plan.aggregations:
+    if not plan.aggregations and not plan.group_by:
         return
     grouped = {(item.table, item.field) for item in plan.group_by}
     selected = {(item.table, item.field) for item in plan.select}
@@ -308,6 +307,12 @@ def _validate_multi_table_aggregation(
             )
     if any(item.table in preaggregated_tables for item in plan.group_by):
         raise BusinessQueryValidationError("一对多子表字段不能直接作为汇总分组")
+    for metric_id in plan.metrics:
+        metric = METRIC_REGISTRY[metric_id]
+        if metric.source_table in preaggregated_tables:
+            raise BusinessQueryValidationError(
+                "一对多子表的计算指标不能直接在主表粒度汇总",
+            )
 
 
 def _operator_allowed(column_info: CatalogColumn, operator: str) -> bool:
@@ -558,12 +563,17 @@ def _single_table_statement(
         for keys in table_info.grain_keys.values()
     )
     selected = []
+    grouped_sources = _aggregated_metric_sources(validated)
     for item in validated.query_fields:
         expression = source.c[item.field]
-        if storage_is_finer and not validated.plan.aggregations and item.field not in grain_keys:
+        aggregation = grouped_sources.get((item.table, item.field))
+        if aggregation:
+            expression = _aggregate(expression, aggregation)
+        elif storage_is_finer and not validated.plan.aggregations and item.field not in grain_keys:
             expression = _array_agg_distinct(expression)
         selected.append(expression.label(_column_key(item)))
     selected.extend(_aggregation_expression(item, sources) for item in validated.plan.aggregations)
+    selected.extend(_ordered_metric_expressions(validated, sources))
     statement = select(*selected).select_from(source).where(*where_expressions)
     if storage_is_finer and not validated.plan.aggregations:
         statement = statement.group_by(*[source.c[key] for key in grain_keys])
@@ -667,10 +677,14 @@ def _controlled_multi_table_statement(
         })
     selected: list[Any] = []
     extra_group_by: list[Any] = []
+    aggregated_sources = _aggregated_metric_sources(validated)
     for item in validated.query_fields:
         key = _column_key(item)
         expression = expressions[key]
-        if external_detail and not validated.plan.aggregations:
+        aggregation = aggregated_sources.get((item.table, item.field))
+        if aggregation:
+            selected.append(_aggregate(expression, aggregation).label(key))
+        elif external_detail and not validated.plan.aggregations:
             if item.table == base_name and item.field in base_keys:
                 selected.append(expression)
             elif item.table == result_owner and item.field in owner_keys:
@@ -702,6 +716,7 @@ def _controlled_multi_table_statement(
         _aggregation_expression(item, sources)
         for item in validated.plan.aggregations
     )
+    selected.extend(_ordered_metric_expressions(validated, sources))
     statement = select(*selected).select_from(final_from).where(*direct_filters)
     if external_detail and not validated.plan.aggregations and result_owner:
         statement = statement.group_by(
@@ -887,6 +902,63 @@ def _aggregation_expression(
     return functions[item.function](field).label(item.alias)
 
 
+def _aggregated_metric_sources(
+    validated: ValidatedBusinessQuery,
+) -> dict[tuple[str, str], str]:
+    if not (validated.plan.group_by or validated.plan.aggregations):
+        return {}
+    result: dict[tuple[str, str], str] = {}
+    for metric_id in validated.plan.metrics:
+        metric = METRIC_REGISTRY[metric_id]
+        for field_name, aggregation in zip(
+            metric.source_fields,
+            metric.source_aggregations,
+            strict=True,
+        ):
+            key = (metric.source_table, field_name)
+            existing = result.get(key)
+            if existing and existing != aggregation:
+                raise BusinessQueryValidationError("指标来源字段的聚合口径冲突")
+            result[key] = aggregation
+    return result
+
+
+def _aggregate(expression: Any, aggregation: str) -> Any:
+    functions = {
+        "sum": func.sum,
+        "avg": func.avg,
+        "min": func.min,
+        "max": func.max,
+    }
+    return functions[aggregation](expression)
+
+
+def _ordered_metric_expressions(
+    validated: ValidatedBusinessQuery,
+    sources: dict[str, Any],
+) -> list[Any]:
+    metric_ids = {
+        item.metric_id
+        for item in validated.plan.order_by
+        if item.metric_id
+    }
+    return [
+        build_metric_sql_expression(
+            metric,
+            {
+                field_name: sources[metric.source_table].c[field_name]
+                for field_name in metric.source_fields
+            },
+            aggregate=bool(
+                validated.plan.group_by or validated.plan.aggregations
+            ),
+        ).label(metric.id)
+        for metric_id in validated.plan.metrics
+        if metric_id in metric_ids
+        for metric in [METRIC_REGISTRY[metric_id]]
+    ]
+
+
 def _array_agg_distinct(expression: Any) -> Any:
     return func.array_agg(distinct(expression)).filter(expression.is_not(None))
 
@@ -900,7 +972,7 @@ def _apply_order_and_limit(
         expression = (
             column(_column_key(item.field))
             if item.field
-            else column(item.aggregation_alias)
+            else column(item.aggregation_alias or item.metric_id)
         )
         statement = statement.order_by(
             expression.desc() if item.direction == "desc" else expression.asc(),

@@ -9,22 +9,23 @@ from agentscope.permission import PermissionBehavior, PermissionContext
 
 try:
     from app.agent.errors import AgentConfigurationError
-    from app.agent.tool_specs import EnergyToolSpec
+    from app.agent.tool_specs import EnergyToolSpec, TOOL_SPECS
     from app.agent.toolkit import EnergyFunctionTool, build_toolkit
 except ModuleNotFoundError:
     EnergyToolSpec = None
+    TOOL_SPECS = ()
     EnergyFunctionTool = None
     build_toolkit = None
 
 
 def load_schema_fixture() -> list[dict]:
-    """读取迁移前固化的 9 个 OpenAI function schema。"""
+    """读取固化的 8 个 OpenAI function schema。"""
     fixture = Path(__file__).parent / "fixtures" / "tool_schemas.json"
     return json.loads(fixture.read_text(encoding="utf-8"))
 
 
 class AgentToolkitTest(unittest.IsolatedAsyncioTestCase):
-    """验证工具调用边界与 legacy schema 完全一致。"""
+    """验证工具调用边界与当前 schema 完全一致。"""
 
     def setUp(self) -> None:
         self.assertIsNotNone(EnergyToolSpec, "AgentScope 工具目录尚未实现")
@@ -155,6 +156,30 @@ class AgentToolkitTest(unittest.IsolatedAsyncioTestCase):
                 "db" not in item["function"]["parameters"]["properties"]
                 for item in actual
             ),
+        )
+
+    async def test_toolkit_has_one_generic_data_query_entry(self) -> None:
+        expected_names = {
+            "analyze_batch_cells_energy",
+            "analyze_single_cell_energy",
+            "generate_chart",
+            "query_anomaly",
+            "query_business_data",
+            "query_energy_param_check",
+            "query_report",
+            "resolve_cell_cgi",
+        }
+        schemas = await build_toolkit().get_tool_schemas()  # type: ignore[misc]
+        actual_names = {
+            item["function"]["name"]
+            for item in schemas
+        }
+
+        self.assertEqual(expected_names, actual_names)
+        self.assertEqual(8, len(TOOL_SPECS))
+        self.assertEqual(
+            {"query_business_data"},
+            {name for name in actual_names if "data" in name or "metric" in name},
         )
 
     async def test_business_data_tool_uses_self_service_session(self) -> None:

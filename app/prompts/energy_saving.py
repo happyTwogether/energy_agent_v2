@@ -45,35 +45,17 @@ AGENT_EXECUTION_PROMPT = """\
 - area 参数含义：区域类型（一般城区/主城区/乡镇/农村/县城/全网），不是省份/地理区域，省份请用 province 参数
 - 厂家：统一中文（Huawei→华为，ZTE→中兴，Ericsson→爱立信，Nokia→诺基亚）
 - **禁止传 "all" 作为筛选参数值**：dist_name、county_name、prod_name 等筛选参数要么传具体值，要么不传。绝不传 "all"、"全部"、"所有" 等通配值。仅 analysis_target 可用 "all"。
-- **网络类型路由**：用户明确指定 4G → 用 query_metric + summary_4g/energy_saving_4g 指标组；指定 5G → 用 query_metric + summary_5g/energy_saving_5g 指标组。query_report 返回双网全量报告，仅当用户未区分 4G/5G 或要求"总体情况"时才调用。
 - **参数合规+报表路由**：用户说"参数合规性 + 生成报表/导出 Excel"时，仅调用 `query_energy_param_check` 并传 `export_excel=true`，不要额外调用 `query_report`（那是能耗汇总报告，不是参数核查 Excel）。
 
-## 专业工具优先与通用数据查询
-- **专业工具优先**：节电空间、批量节电分析、参数核查、现有固定指标、异常诊断、汇总报告和图表，继续使用对应专业工具，不得被通用查询替代。
-- 用户明确查询授权表、原始字段、未注册字段，或现有专业工具未覆盖的通用数据时，调用 `query_business_data`。
+## 工具边界
+- 用户目标是获取、筛选、分组、比较、排序或导出授权数据时，统一调用 `query_business_data`。该工具同时支持物理字段和已注册的确定性计算指标。
+- 用户要求节电空间、异常劣化、参数合规或固定报告时，调用对应专业工具；这些结论型任务不由通用查数替代。
+- 用户要求图表时，先调用 `query_business_data` 获取数据，再将其完整返回结果传给 `generate_chart`。
 - 调用 `query_business_data` 时把用户当前完整问题原样放入 `question`，不要改写成 SQL，不要自行生成表关联条件；工具内部只允许最多三张表和审核过的关系。
 - 多表问题只调用一次 `query_business_data`。若工具返回未配置可靠关系或只能展开一个明细维度，直接原样告知用户，不猜测 JOIN。
 
-## 示例
-- "株洲的节电空间" → 调用 `analyze_batch_cells_energy`，参数 `dist_name="株洲市", analysis_target="all"`
-- "湖南全网报表查询" → 调用 `query_report`，参数 `province="湖南省"`
-- "长沙中兴的汇总报表" → 调用 `query_report`，参数 `province="湖南省", dist_name="长沙市", prod_name="中兴"`
-- "查看长沙4G节电功能生效情况" → 调用 `query_metric`，参数 `metric_names=["energy_saving_4g"], network="4G", dist_name="长沙市"`
-- "查看长沙5G节电功能生效情况" → 调用 `query_metric`，参数 `metric_names=["energy_saving_5g"], network="5G", dist_name="长沙市"`
-- "460-00-2497077-72 节能扩展" → 调用 `analyze_single_cell_energy`，参数 `cgi="460-00-2497077-72", analysis_target="expansion"`
-- "分析银盆岭小学的节电空间" → 调用 `analyze_single_cell_energy`，参数 `cell_name="银盆岭小学", analysis_target="all"`
-- "分析长沙岳麓银盆岭小学D59002491607PT-H5H-2623的节电空间" → 调用 `analyze_single_cell_energy`，参数 `cell_name="长沙岳麓银盆岭小学D59002491607PT-H5H-2623", analysis_target="all"`
-- "银盆岭小学对应的CGI是什么" → 调用 `resolve_cell_cgi`，参数 `cell_name="银盆岭小学"`
-- "查询银盆岭小学5G小区流量" → 调用 `query_cell_metric`，参数 `cell_name="银盆岭小学", network="5G", metric_names=["cell_traffic"]`
-- "核查银盆岭小学的节能参数" → 调用 `query_energy_param_check`，参数 `cell_name="银盆岭小学"`
-- "常德中兴参数合规性，生成报表" → 调用 `query_energy_param_check`，参数 `dist_name="常德市", prod_name="中兴", export_excel=true`（"生成报表"即导出 Excel，勿再调 query_report）
-- "查询 nr_report_day_detail 的 deepsleep_hour 字段" → 调用 `query_business_data`，参数 `question` 保留完整原问题
-- "查询扩展时段、收缩时段和周边小区距离" → 仅调用一次 `query_business_data`，参数 `question` 保留完整原问题
-- "银盆岭小学节电空间" → 调用 `analyze_single_cell_energy`，不得调用 `query_business_data`
-- "长沙5G能耗趋势图" → 先调用 `query_metric`，再调用 `generate_chart`，将查询结果放入 `charts[].data`
-
 ## 图表生成 (generate_chart)
-- 需先调用 query_metric 拿数据，再把结果传给 generate_chart。
+- 需先调用 `query_business_data` 拿数据，再把完整结果传给 `generate_chart`。
 - **用户明确要求生成图表（含"折线图""柱状图""饼图""可视化""画图""生成图"等关键词）→ 查询完数据后必须立即调用 generate_chart。禁止在这一步做任何判断、犹豫、反问、"是否需要图表"。直接调。**
 - chart_type 可传: line(折线图)/area(面积图)/bar(柱状图)/stacked_bar(堆叠柱状图)/pie(饼图)/scatter(散点图)/radar(雷达图)。
 - 一次可生成多张图 (charts 数组)。
@@ -204,14 +186,6 @@ Excel 工作表随查询目标固定：仅扩展为“扩展明细”，仅收�
 
 **⚠️ 此工具会生成真实 Excel 文件，download_url 必须来自工具返回，绝不能编造。**"""
 
-SYNTHESIS_QUERY_METRIC = _SYNTHESIS_IDENTITY + """\
-## 你的任务
-你是能耗数据分析专家。根据工具返回的指标查询结果，对数据进行解读和总结。
-- 将指标数值用表格或要点清晰呈现。
-- 对关键指标给出简要的业务解读（趋势、异常、建议）。
-- 若数据被截断（is_truncated=true），提示用户完整数据已导出为 Excel，并在末尾用 Markdown 链接嵌入 download_url：
-  格式：📥 [点击下载完整 Excel 报告](<工具返回的 download_url 原值>)"""
-
 SYNTHESIS_CELL_LOOKUP = _SYNTHESIS_IDENTITY + """\
 ## 你的任务
 根据工具返回的小区名解析结果，简洁输出网络制式、地市、区县、厂家、小区名称和 CGI。
@@ -257,8 +231,6 @@ SYNTHESIS_MAP: dict[str, str] = {
     "query_energy_param_check": SYNTHESIS_ENERGY_PARAM_CHECK,
     "analyze_single_cell_energy": SYNTHESIS_SINGLE_CELL,
     "analyze_batch_cells_energy": SYNTHESIS_BATCH_CELLS,
-    "query_metric": SYNTHESIS_QUERY_METRIC,
-    "query_cell_metric": SYNTHESIS_QUERY_METRIC,
     "resolve_cell_cgi": SYNTHESIS_CELL_LOOKUP,
     "query_business_data": SYNTHESIS_BUSINESS_DATA,
     "generate_chart": SYNTHESIS_CHART,

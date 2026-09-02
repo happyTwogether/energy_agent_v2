@@ -421,3 +421,35 @@ async def test_service_calculates_registered_metric_and_hides_source_fields() ->
         "all_cell_total",
     ]
     assert all("channel_total" not in key for key in payload["rows"][0])
+
+
+def test_grouped_metric_uses_aggregated_sources_without_exposing_them() -> None:
+    snapshot = get_nr_summary_snapshot()
+    dimension = QueryFieldRef(
+        table="nr_report_day_collect",
+        field="dist_name",
+    )
+    plan = BusinessQueryPlan(
+        base_table="nr_report_day_collect",
+        tables=["nr_report_day_collect"],
+        select=[dimension],
+        group_by=[dimension],
+        metrics=["nr_readable_ratio"],
+    )
+    validated = validate_query_plan(plan, snapshot, Settings(_env_file=None))
+    columns = _output_columns(validated, snapshot)
+
+    from app.self_service.service import _output_rows
+
+    rows = _output_rows(
+        [{
+            "nr_report_day_collect__dist_name": "长沙市",
+            "nr_report_day_collect__logic_read_station_total": 180,
+            "nr_report_day_collect__logic_station_total": 240,
+        }],
+        columns,
+        validated,
+    )
+
+    assert rows == [{"dist_name": "长沙市", "5G基站可读率": 75.0}]
+    assert all("station_total" not in key for key in rows[0])

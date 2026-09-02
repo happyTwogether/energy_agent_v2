@@ -1,6 +1,7 @@
 """图表生成工具 — 接收数据，构建 ECharts option JSON，零渲染依赖。"""
 
 import json
+from decimal import Decimal
 from typing import Any
 
 from app.core.logging import get_logger
@@ -10,9 +11,23 @@ logger = get_logger("chart_tool")
 _COLORS = ["#5470c6", "#91cc75", "#fac858", "#ee6666", "#73c0de", "#3ba272", "#fc8452", "#9a60b4"]
 
 
+_DIMENSION_KEYS = {
+    "date",
+    "data_date",
+    "dist_name",
+    "prod_name",
+    "freq_band",
+    "site_type",
+    "area",
+    "cgi",
+    "cell_name",
+    "network",
+}
+
+
 def _extract_val(row: dict, col: str) -> float:
     v = row.get(col, 0)
-    if isinstance(v, (int, float)):
+    if isinstance(v, (int, float, Decimal)):
         return float(v)
     if isinstance(v, dict):
         return float(v.get("value", 0))
@@ -20,14 +35,12 @@ def _extract_val(row: dict, col: str) -> float:
 
 
 def _extract_metric_cols(rows: list[dict]) -> list[str]:
-    skip = {"date", "data_date", "dist_name", "prod_name", "freq_band",
-            "site_type", "area", "cgi", "cell_name", "network"}
     result = []
     for k in rows[0]:
-        if k in skip:
+        if k in _DIMENSION_KEYS:
             continue
         v = rows[0][k]
-        if isinstance(v, (int, float)):
+        if isinstance(v, (int, float, Decimal)):
             result.append(k)
         elif isinstance(v, dict) and isinstance(v.get("value"), (int, float)):
             result.append(k)
@@ -210,7 +223,7 @@ TOOL_INPUT_SCHEMA = {
                             "type": "string",
                             "enum": ["line", "area", "bar", "stacked_bar", "pie", "scatter", "radar"],
                         },
-                        "data": {"type": "object", "description": "query_metric 等工具的完整返回结果"},
+                        "data": {"type": "object", "description": "数据查询工具的完整返回结果，包含 rows 和 columns"},
                     },
                     "required": ["title", "data"],
                 },
@@ -230,7 +243,7 @@ async def generate_chart(
         title = spec.get("title", f"图表{i+1}")
         chart_type = spec.get("chart_type", "bar")
         data = spec.get("data", {})
-        rows = data.get("rows", []) if isinstance(data, dict) else []
+        rows = _normalize_query_rows(data) if isinstance(data, dict) else []
 
         if not rows:
             results.append({"option_json": "", "title": title, "success": False, "error": "数据为空"})
@@ -257,3 +270,38 @@ async def generate_chart(
             })
 
     return {"success": True, "charts": results}
+
+
+def _normalize_query_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = data.get("rows", [])
+    columns = data.get("columns", [])
+    if not rows or not columns:
+        return rows
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        output: dict[str, Any] = {}
+        for column_info in columns:
+            column_id = str(column_info.get("id", ""))
+            label = str(column_info.get("label", column_id))
+            field_name = column_id.rsplit(".", 1)[-1]
+            output_key = field_name if field_name in _DIMENSION_KEYS else label
+            output[output_key] = _column_value(
+                row,
+                label,
+                column_id,
+                field_name,
+            )
+        normalized.append(output)
+    return normalized
+
+
+def _column_value(
+    row: dict[str, Any],
+    label: str,
+    column_id: str,
+    field_name: str,
+) -> Any:
+    for key in (label, column_id, field_name):
+        if key in row:
+            return row[key]
+    return None
