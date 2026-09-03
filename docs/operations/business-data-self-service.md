@@ -96,3 +96,18 @@ SELF_SERVICE_EXPORT_MAX_ROWS=10000
 ```
 
 前四题取数阶段只允许调用 `query_business_data`，第三题随后调用 `generate_chart`，第五题调用 `analyze_single_cell_energy`。双明细轴、未授权表和无白名单关系必须在执行 SQL 前被拒绝。
+
+## 内网模型路由回归
+
+运行中的生产容器可以直接使用当前内网模型配置验证首轮工具选择，不需要安装 pytest：
+
+```bash
+docker exec -e RUN_AGENT_ROUTING_EVAL=1 energy \
+  python -m unittest tests.live.test_agent_routing -v
+```
+
+在源码开发环境也可执行 `RUN_AGENT_ROUTING_EVAL=1 PYTHONPATH=. .venv/bin/pytest tests/live/test_agent_routing.py -v`。
+
+评测读取 `tests/fixtures/agent_routing_cases.json`，将生产执行提示词和八个真实工具 Schema 发给 `LLM_BASE_URL` 配置的内网模型。它只检查模型返回的工具名和关键参数，不执行工具，也不访问业务数据库。
+
+失败信息会显示案例名称、用户问题、实际工具和预期工具。新增真实问法时应先归类用户的最终目标，再加入评测集；不要把每条问法复制到生产提示词。若模型服务需要额外请求参数，可通过 `LLM_ROUTING_EXTRA_BODY_JSON` 注入 JSON object。

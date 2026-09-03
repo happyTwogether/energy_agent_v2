@@ -256,10 +256,9 @@ def _generate_report(
 
 
 TOOL_DESCRIPTION = (
-    "查询节能参数核查结果，分析不合规配置，并可将不合规清单导出为 Excel 报表。\n"
-    "适用：参数合规性核查、生成参数核查报表 / Excel 下载。\n"
-    "注意：用户说'参数合规 + 生成报表/导出 Excel'时，用本工具并传 export_excel=true，"
-    "不要调用 query_report（那是能耗汇总报告）。"
+    "按固定规则核查节能参数并可导出不合规清单。"
+    "适用：判断参数是否合规、生成参数核查报告或Excel。"
+    "不适用：仅查询参数当前值，或生成4G/5G能耗汇总报告。"
 )
 TOOL_INPUT_SCHEMA = {
         "type": "object",

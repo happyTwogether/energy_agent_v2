@@ -209,7 +209,11 @@ _CHART_BUILDERS = {
 }
 
 
-TOOL_DESCRIPTION = "根据查询数据生成 ECharts 图表 option JSON。传查询结果和图表类型，返回完整 ECharts option，前端渲染。"
+TOOL_DESCRIPTION = (
+    "把已经查询得到的结构化数据转换为ECharts option JSON。"
+    "适用：用户明确要求折线图、柱状图等可视化，且已有数据查询结果。"
+    "不适用：直接查询数据库、补充数据或生成业务诊断结论。"
+)
 TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {

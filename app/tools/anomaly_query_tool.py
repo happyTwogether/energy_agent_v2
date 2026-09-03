@@ -229,7 +229,11 @@ async def _fetch_network_data(
     return target_data, baseline_data
 
 
-TOOL_DESCRIPTION = "诊断核心指标劣化情况。对比目标日期与过去7天基线，找出劣化超过10%的指标。"
+TOOL_DESCRIPTION = (
+    "按固定基线和阈值诊断核心指标劣化。"
+    "适用：判断目标日期相对过去7天是否存在超过10%的指标劣化。"
+    "不适用：仅查询指标值、趋势或让模型自由选择异常阈值。"
+)
 TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {

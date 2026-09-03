@@ -32,6 +32,31 @@ class AgentToolkitTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(EnergyFunctionTool, "AgentScope 工具适配器尚未实现")
         self.assertIsNotNone(build_toolkit, "AgentScope Toolkit 尚未实现")
 
+    def test_tool_descriptions_separate_data_lookup_from_business_diagnosis(
+        self,
+    ) -> None:
+        descriptions = {spec.name: spec.description for spec in TOOL_SPECS}
+
+        self.assertIn(
+            "适用：仅查询字段值或指标值",
+            descriptions["query_business_data"],
+        )
+        self.assertIn(
+            "不适用：直接生成节电空间、扩展收缩决策",
+            descriptions["query_business_data"],
+        )
+        self.assertIn(
+            "适用：判断单个5G小区是否有节电空间",
+            descriptions["analyze_single_cell_energy"],
+        )
+        self.assertIn(
+            "不适用：仅查询字段值、指标值、表记录、明细或趋势",
+            descriptions["analyze_single_cell_energy"],
+        )
+        for tool_name, description in descriptions.items():
+            self.assertIn("适用：", description, tool_name)
+            self.assertIn("不适用：", description, tool_name)
+
     async def test_tool_call_uses_a_fresh_session_and_preserves_direct_answer(
         self,
     ) -> None:

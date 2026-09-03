@@ -16,7 +16,11 @@ from app.utils.sql_helpers import error_response
 logger = get_logger("cell_lookup_tool")
 
 
-TOOL_DESCRIPTION = "通过小区中文名或连续名称片段查找 4G/5G 小区 CGI。"
+TOOL_DESCRIPTION = (
+    "通过小区中文名或连续名称片段解析4G/5G小区CGI。"
+    "适用：用户只要求查找小区名称对应的CGI或小区标识。"
+    "不适用：查询小区指标、明细或执行节电诊断。"
+)
 TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {

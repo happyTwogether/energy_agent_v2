@@ -61,7 +61,8 @@ class AgentPromptMiddlewareTest(unittest.IsolatedAsyncioTestCase):
             "base",
         )
 
-        self.assertIn("4G/5G 网络能耗报表分析专家", prompt)
+        self.assertIn("Python 按固定口径生成的能耗报告", prompt)
+        self.assertIn("直接原样返回", prompt)
 
     async def test_execution_prompt_uses_native_function_calling(self) -> None:
         agent = SimpleNamespace(state=AgentState(context=[]))

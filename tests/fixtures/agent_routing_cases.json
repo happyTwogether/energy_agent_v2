@@ -1,0 +1,69 @@
+[
+  {
+    "name": "production_single_cell_fields",
+    "question": "查询5G小区460-00-2539193-71在2026年8月24日的深度休眠时长和深度休眠开关",
+    "expected_tool": "query_business_data",
+    "expected_arguments": {
+      "question": "查询5G小区460-00-2539193-71在2026年8月24日的深度休眠时长和深度休眠开关"
+    }
+  },
+  {
+    "name": "single_cell_metric_rephrased",
+    "question": "帮我看一下460-00-2539193-71在2026-08-24的深度休眠时长是多少",
+    "expected_tool": "query_business_data"
+  },
+  {
+    "name": "raw_expansion_constriction_fields",
+    "question": "查看小区460-00-2539193-71的扩展时段、需收缩时段和周边小区距离",
+    "expected_tool": "query_business_data"
+  },
+  {
+    "name": "single_cell_energy_decision",
+    "question": "分析小区460-00-2539193-71在2026年8月24日有没有节电空间",
+    "expected_tool": "analyze_single_cell_energy",
+    "expected_arguments": {
+      "cgi": "460-00-2539193-71",
+      "stat_time": "2026-08-24",
+      "analysis_target": "all"
+    }
+  },
+  {
+    "name": "single_cell_expansion_decision",
+    "question": "判断小区460-00-2539193-71是否还能延长休眠时段",
+    "expected_tool": "analyze_single_cell_energy",
+    "expected_arguments": {
+      "cgi": "460-00-2539193-71",
+      "analysis_target": "expansion"
+    }
+  },
+  {
+    "name": "batch_energy_decision",
+    "question": "批量分析衡阳市全部5G小区的节电空间",
+    "expected_tool": "analyze_batch_cells_energy"
+  },
+  {
+    "name": "anomaly_decision",
+    "question": "诊断长沙市2026年8月24日核心指标有没有明显劣化",
+    "expected_tool": "query_anomaly"
+  },
+  {
+    "name": "parameter_compliance",
+    "question": "核查长沙市5G节能参数是否合规",
+    "expected_tool": "query_energy_param_check"
+  },
+  {
+    "name": "fixed_energy_report",
+    "question": "生成长沙市2026年8月24日的4G和5G网络能耗汇总报告",
+    "expected_tool": "query_report"
+  },
+  {
+    "name": "cell_name_to_cgi",
+    "question": "衡阳雁峰5G云数据中心D59002539193TF-H5W-2671对应的CGI是什么",
+    "expected_tool": "resolve_cell_cgi"
+  },
+  {
+    "name": "chart_requires_data_first",
+    "question": "查询长沙市5G网络最近7天的能耗趋势并生成折线图",
+    "expected_tool": "query_business_data"
+  }
+]

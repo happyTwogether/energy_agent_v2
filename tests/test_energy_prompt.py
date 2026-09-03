@@ -53,12 +53,16 @@ def test_execution_prompt_has_stable_data_and_specialist_boundaries():
     prompt = energy_saving.AGENT_EXECUTION_PROMPT
 
     assert "query_business_data" in prompt
-    assert "获取、筛选、分组、比较、排序或导出" in prompt
-    assert "节电空间、异常劣化、参数合规或固定报告" in prompt
+    assert "即使只涉及一个小区" in prompt
+    assert "字段值、指标值、表记录、明细、统计、趋势、排名或对比" in prompt
+    assert "只有用户要求判断、诊断、原因或建议时" in prompt
+    assert "仅查询扩展或收缩表中的字段、时段、距离" in prompt
     assert "先调用 `query_business_data` 获取数据" in prompt
     assert "不要改写成 SQL" in prompt
     assert "query_metric" not in prompt
     assert "query_cell_metric" not in prompt
+    assert "分析节电空间或查指标时，直接调用对应业务工具" not in prompt
+    assert "按中文名查询单小区指标" not in prompt
 
 
 def test_business_data_synthesis_uses_structured_rows_for_agent_diagnosis():
@@ -68,3 +72,22 @@ def test_business_data_synthesis_uses_structured_rows_for_agent_diagnosis():
     assert "metric_definitions" in prompt
     assert "比较、诊断" in prompt
     assert "原样返回 `report_content`" not in prompt
+
+
+def test_synthesis_prompts_keep_deterministic_reports_and_data_results_separate():
+    """防止总结模型重写确定性报告或泄露查询辅助字段。"""
+    assert "report_content" not in energy_saving._SYNTHESIS_IDENTITY
+
+    for prompt in (
+        energy_saving.SYNTHESIS_QUERY_REPORT,
+        energy_saving.SYNTHESIS_ENERGY_PARAM_CHECK,
+        energy_saving.SYNTHESIS_BATCH_CELLS,
+    ):
+        assert "非空 `report_content`" in prompt
+        assert "直接原样返回" in prompt
+
+    data_prompt = energy_saving.SYNTHESIS_BUSINESS_DATA
+    assert "只回答用户问题要求的字段或指标" in data_prompt
+    assert "不要展示未被用户要求的辅助来源字段" in data_prompt
+    assert "`success=false`" in data_prompt
+    assert "`row_count=0`" in data_prompt

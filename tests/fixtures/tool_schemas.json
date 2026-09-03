@@ -3,7 +3,7 @@
     "type": "function",
     "function": {
       "name": "analyze_batch_cells_energy",
-      "description": "批量诊断5G小区节电情况。支持全省、地市、区县、厂家级别查询，可全量分析或仅分析扩展或收缩维度。",
+      "description": "批量生成5G小区节电诊断及导出结果。适用：按省、市、区县或厂家批量判断节电空间、扩展或收缩。不适用：仅查询、统计、比较或导出原始字段和指标值。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -25,7 +25,7 @@
     "type": "function",
     "function": {
       "name": "analyze_single_cell_energy",
-      "description": "通过 CGI 或小区中文名分析单个5G小区的节电详情，包含休眠扩展、休眠收缩、负荷状态和休眠生效前负荷偏高。",
+      "description": "生成单个5G小区的确定性节电诊断报告。适用：判断单个5G小区是否有节电空间、能否扩展、是否需要收缩、休眠是否影响周边负荷或休眠前负荷，并给出业务建议。不适用：仅查询字段值、指标值、表记录、明细或趋势。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -46,7 +46,7 @@
     "type": "function",
     "function": {
       "name": "generate_chart",
-      "description": "根据查询数据生成 ECharts 图表 option JSON。传查询结果和图表类型，返回完整 ECharts option，前端渲染。",
+      "description": "把已经查询得到的结构化数据转换为ECharts option JSON。适用：用户明确要求折线图、柱状图等可视化，且已有数据查询结果。不适用：直接查询数据库、补充数据或生成业务诊断结论。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -71,7 +71,7 @@
     "type": "function",
     "function": {
       "name": "query_anomaly",
-      "description": "诊断核心指标劣化情况。对比目标日期与过去7天基线，找出劣化超过10%的指标。",
+      "description": "按固定基线和阈值诊断核心指标劣化。适用：判断目标日期相对过去7天是否存在超过10%的指标劣化。不适用：仅查询指标值、趋势或让模型自由选择异常阈值。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -88,7 +88,7 @@
     "type": "function",
     "function": {
       "name": "query_business_data",
-      "description": "唯一通用数据查询入口。使用自然语言查询授权物理字段和确定性计算指标；支持最多3张授权表按审核关系筛选、分组、排序、Top N和导出，不接受SQL。",
+      "description": "唯一通用数据查询入口，使用自然语言读取授权物理字段和确定性计算指标。适用：仅查询字段值或指标值，以及单/多小区明细、多表记录、统计、趋势、分组、比较、排序、Top N和导出；最多使用3张有审核关系的表，不接受SQL。不适用：直接生成节电空间、扩展收缩决策、异常诊断、参数合规结论或固定报告。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -103,7 +103,7 @@
     "type": "function",
     "function": {
       "name": "query_energy_param_check",
-      "description": "查询节能参数核查结果，分析不合规配置，并可将不合规清单导出为 Excel 报表。\n适用：参数合规性核查、生成参数核查报表 / Excel 下载。\n注意：用户说'参数合规 + 生成报表/导出 Excel'时，用本工具并传 export_excel=true，不要调用 query_report（那是能耗汇总报告）。",
+      "description": "按固定规则核查节能参数并可导出不合规清单。适用：判断参数是否合规、生成参数核查报告或Excel。不适用：仅查询参数当前值，或生成4G/5G能耗汇总报告。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -122,7 +122,7 @@
     "type": "function",
     "function": {
       "name": "query_report",
-      "description": "生成 4G/5G 网络节耗电分析报告。查询指定时间段汇总数据，前推7天获取基线，对比生成 Markdown 报告。\n未指定日期时自动查询数据库最新数据日期。",
+      "description": "按固定口径生成4G/5G网络能耗Markdown报告，并使用前7天基线对比。适用：用户明确要求完整能耗汇总报告。不适用：仅查询字段、指标、明细或参数合规报告。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -143,7 +143,7 @@
     "type": "function",
     "function": {
       "name": "resolve_cell_cgi",
-      "description": "通过小区中文名或连续名称片段查找 4G/5G 小区 CGI。",
+      "description": "通过小区中文名或连续名称片段解析4G/5G小区CGI。适用：用户只要求查找小区名称对应的CGI或小区标识。不适用：查询小区指标、明细或执行节电诊断。",
       "parameters": {
         "type": "object",
         "properties": {

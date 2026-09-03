@@ -141,7 +141,12 @@ CONSTRICTION_FIELD_LABELS = (
 )
 
 
-TOOL_DESCRIPTION = "通过 CGI 或小区中文名分析单个5G小区的节电详情，包含休眠扩展、休眠收缩、负荷状态和休眠生效前负荷偏高。"
+TOOL_DESCRIPTION = (
+    "生成单个5G小区的确定性节电诊断报告。"
+    "适用：判断单个5G小区是否有节电空间、能否扩展、是否需要收缩、"
+    "休眠是否影响周边负荷或休眠前负荷，并给出业务建议。"
+    "不适用：仅查询字段值、指标值、表记录、明细或趋势。"
+)
 TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {

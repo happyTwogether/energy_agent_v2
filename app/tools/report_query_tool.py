@@ -632,7 +632,11 @@ def _generate_report_markdown(
 
     return "\n".join(lines)
 
-TOOL_DESCRIPTION = "生成 4G/5G 网络节耗电分析报告。查询指定时间段汇总数据，前推7天获取基线，对比生成 Markdown 报告。\n未指定日期时自动查询数据库最新数据日期。"
+TOOL_DESCRIPTION = (
+    "按固定口径生成4G/5G网络能耗Markdown报告，并使用前7天基线对比。"
+    "适用：用户明确要求完整能耗汇总报告。"
+    "不适用：仅查询字段、指标、明细或参数合规报告。"
+)
 TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {

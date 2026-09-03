@@ -107,7 +107,11 @@ ENERGY_EXPORT_COLUMN_MAPPING = {
 }
 
 
-TOOL_DESCRIPTION = "批量诊断5G小区节电情况。支持全省、地市、区县、厂家级别查询，可全量分析或仅分析扩展或收缩维度。"
+TOOL_DESCRIPTION = (
+    "批量生成5G小区节电诊断及导出结果。"
+    "适用：按省、市、区县或厂家批量判断节电空间、扩展或收缩。"
+    "不适用：仅查询、统计、比较或导出原始字段和指标值。"
+)
 TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {
