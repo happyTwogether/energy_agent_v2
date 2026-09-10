@@ -145,6 +145,54 @@ async def test_search_matches_alias_and_english_field_fragment(
 
 
 @pytest.mark.asyncio
+async def test_search_recalls_each_requested_field_from_long_multi_field_question(
+    policy_path: Path,
+    settings: Settings,
+) -> None:
+    store = BusinessCatalogStore(policy_path=policy_path, settings=settings)
+    await store.get_or_load(FakeSession())
+
+    candidates = store.search(
+        "查询5G小区460-00-2539193-71在2026年8月24日的"
+        "深度休眠时长和深度休眠开关",
+        limit=5,
+    )
+
+    nr_detail = next(
+        item for item in candidates
+        if item.table.name == "nr_report_day_detail"
+    )
+    assert nr_detail.matched_columns == (
+        "deepsleep_hour",
+        "deepsleep_switch",
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_splits_single_character_chinese_conjunction(
+    policy_path: Path,
+    settings: Settings,
+) -> None:
+    store = BusinessCatalogStore(policy_path=policy_path, settings=settings)
+    await store.get_or_load(FakeSession())
+
+    candidates = store.search(
+        "查询5G小区460-00-2539193-71在2026年8月24日的"
+        "深度休眠时长及深度休眠开关",
+        limit=5,
+    )
+
+    nr_detail = next(
+        item for item in candidates
+        if item.table.name == "nr_report_day_detail"
+    )
+    assert nr_detail.matched_columns == (
+        "deepsleep_hour",
+        "deepsleep_switch",
+    )
+
+
+@pytest.mark.asyncio
 async def test_search_recalls_each_intent_in_three_table_question(
     policy_path: Path,
     settings: Settings,

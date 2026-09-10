@@ -10,6 +10,7 @@ from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.self_service import get_business_catalog_store
 from app.self_service.catalog import BusinessCatalogStore
+from app.self_service.direct_planner import build_direct_lookup_plan
 from app.self_service.metrics import calculate_metric, get_metric
 from app.self_service.planner import (
     BusinessQueryPlanner,
@@ -78,7 +79,10 @@ class BusinessDataQueryService:
                 and relationship.right_table in candidate_names
             ]
             planner_started = perf_counter()
-            plan = await self._planner.plan(question, candidates, relationships)
+            plan = build_direct_lookup_plan(question, candidates)
+            planning_mode = "direct" if plan is not None else "model"
+            if plan is None:
+                plan = await self._planner.plan(question, candidates, relationships)
             planner_ms = _elapsed_ms(planner_started)
             if "limit" not in plan.model_fields_set:
                 plan = plan.model_copy(update={
@@ -127,13 +131,14 @@ class BusinessDataQueryService:
             render_ms = _elapsed_ms(render_started)
             logger.info(
                 "自助查询完成: tables=%s relationships=%s grain=%s columns=%s "
-                "rows=%d catalog_ms=%.1f planner_ms=%.1f validation_ms=%.1f "
+                "rows=%d planning_mode=%s catalog_ms=%.1f planner_ms=%.1f validation_ms=%.1f "
                 "database_ms=%.1f render_ms=%.1f",
                 validated.table_names,
                 validated.relationship_names,
                 validated.result_grain,
                 validated.column_names,
                 len(result.rows),
+                planning_mode,
                 catalog_ms,
                 planner_ms,
                 validation_ms,

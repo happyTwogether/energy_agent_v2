@@ -247,3 +247,20 @@ def test_planner_prompt_allows_registered_metric_grouping_and_sorting() -> None:
 
     assert "计算指标可以用于分组结果的排序" in prompt
     assert "不能把计算指标用于过滤" in prompt
+
+
+def test_planner_prompt_does_not_treat_retrieval_subset_as_physical_schema() -> None:
+    candidate_item = candidate(
+        "nr_report_day_detail",
+        "5G小区日指标明细",
+        ["cgi", "data_date", "deepsleep_switch"],
+    )
+
+    prompt = str(build_planner_messages(
+        "查询深度休眠时长和深度休眠开关",
+        [candidate_item],
+        [],
+    ))
+
+    assert "候选字段只是检索子集" in prompt
+    assert "不得声称物理表不存在该字段" in prompt

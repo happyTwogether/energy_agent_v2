@@ -25,6 +25,12 @@ from app.self_service.models import (
 
 logger = get_logger("business_catalog")
 
+_QUERY_PHRASE_SEPARATOR = re.compile(
+    r"(?:、|，|,|；|;|以及|并且|同时|和|与|(?<!涉)及|\band\b)",
+    flags=re.IGNORECASE,
+)
+_MATCH_THRESHOLD = 0.24
+
 CATALOG_METADATA_SQL = text("""
 WITH requested(schema_name, table_name) AS (
     SELECT * FROM unnest(
@@ -55,6 +61,36 @@ def normalize_search_text(value: str) -> str:
     return re.sub(r"[\s_\-/]+", "", normalized)
 
 
+def split_search_phrases(query: str) -> tuple[str, ...]:
+    """按并列表达拆分指标，保留每个指标独立参与目录匹配。"""
+    phrases = tuple(
+        part.strip()
+        for part in _QUERY_PHRASE_SEPARATOR.split(query)
+        if part.strip()
+    )
+    return phrases or (query,)
+
+
+def _field_search_phrases(query: str) -> tuple[str, ...]:
+    """移除首个指标前的查询条件上下文，避免小区号和日期干扰字段匹配。"""
+    phrases = split_search_phrases(query)
+    first_tail = phrases[0].rsplit("的", maxsplit=1)[-1].strip()
+    if len(first_tail) < 2:
+        return phrases
+    return (first_tail, *phrases[1:])
+
+
+def _local_sequence_ratio(query: str, value: str) -> float:
+    """用字符二元组覆盖率匹配局部短语，避免逐窗口编辑距离开销。"""
+    direct = SequenceMatcher(None, query, value).ratio()
+    if min(len(query), len(value)) < 2:
+        return direct
+    query_pairs = {query[index:index + 2] for index in range(len(query) - 1)}
+    value_pairs = {value[index:index + 2] for index in range(len(value) - 1)}
+    local_coverage = len(query_pairs & value_pairs) / len(value_pairs)
+    return max(direct, local_coverage)
+
+
 def candidate_score(query: str, values: Sequence[str]) -> float:
     normalized_query = normalize_search_text(query)
     scores: list[float] = []
@@ -67,9 +103,33 @@ def candidate_score(query: str, values: Sequence[str]) -> float:
         elif normalized_value in normalized_query or normalized_query in normalized_value:
             scores.append(0.85)
         else:
-            ratio = SequenceMatcher(None, normalized_query, normalized_value).ratio()
+            ratio = _local_sequence_ratio(normalized_query, normalized_value)
             scores.append(ratio * 0.6)
     return max(scores, default=0.0)
+
+
+def _matched_items_by_phrase(
+    phrases: Sequence[str],
+    items: Sequence[tuple[str, Sequence[str]]],
+) -> tuple[tuple[str, ...], float]:
+    """每个并列短语保留一个最佳目录项，再按原问题顺序去重。"""
+    matched: list[str] = []
+    best_score = 0.0
+    for phrase in phrases:
+        ranked = sorted(
+            (
+                (candidate_score(phrase, values), index, name)
+                for index, (name, values) in enumerate(items)
+            ),
+            key=lambda item: (-item[0], item[1]),
+        )
+        if not ranked:
+            continue
+        score, _, name = ranked[0]
+        best_score = max(best_score, score)
+        if score >= _MATCH_THRESHOLD and name not in matched:
+            matched.append(name)
+    return tuple(matched), best_score
 
 
 class BusinessCatalogStore:
@@ -100,6 +160,8 @@ class BusinessCatalogStore:
 
     def search(self, question: str, limit: int) -> list[CatalogCandidate]:
         snapshot = self.snapshot()
+        phrases = split_search_phrases(question)
+        field_phrases = _field_search_phrases(question)
         candidates: list[tuple[int, CatalogCandidate]] = []
         for index, table_info in enumerate(snapshot.tables.values()):
             table_values = [
@@ -108,42 +170,35 @@ class BusinessCatalogStore:
                 table_info.description,
                 *table_info.aliases,
             ]
-            table_score = candidate_score(question, table_values)
-            column_scores = [
+            table_score = max(
+                candidate_score(question, table_values),
+                *(candidate_score(phrase, table_values) for phrase in phrases),
+            )
+            column_items = [
                 (
-                    candidate_score(
-                        question,
-                        [column.name, column.label, column.description, *column.aliases],
-                    ),
                     column.name,
+                    [column.name, column.label, column.description, *column.aliases],
                 )
                 for column in table_info.columns.values()
             ]
-            metric_scores = [
+            metric_items = [
                 (
-                    candidate_score(
-                        question,
-                        [metric.id, metric.label, metric.description, *metric.aliases],
-                    ),
                     metric.id,
+                    [metric.id, metric.label, metric.description, *metric.aliases],
                 )
                 for metric in METRIC_REGISTRY.values()
                 if metric.source_table == table_info.name
             ]
-            matched = tuple(
-                name
-                for score, name in sorted(column_scores, reverse=True)[:5]
-                if score >= 0.24
+            matched, best_column = _matched_items_by_phrase(
+                field_phrases,
+                column_items,
             )
-            best_column = max((score for score, _ in column_scores), default=0.0)
-            matched_metrics = tuple(
-                name
-                for score, name in sorted(metric_scores, reverse=True)[:5]
-                if score >= 0.24
+            matched_metrics, best_metric = _matched_items_by_phrase(
+                field_phrases,
+                metric_items,
             )
-            best_metric = max((score for score, _ in metric_scores), default=0.0)
             score = max(table_score, best_column * 0.95, best_metric)
-            if score >= 0.24:
+            if score >= _MATCH_THRESHOLD:
                 candidates.append((index, CatalogCandidate(
                     table=table_info,
                     score=score,

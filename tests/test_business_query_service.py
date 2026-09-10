@@ -249,6 +249,74 @@ async def test_real_catalog_exposes_all_three_intents_to_planner() -> None:
 
 
 @pytest.mark.asyncio
+async def test_simple_cell_day_field_lookup_skips_model_planner() -> None:
+    class UnexpectedPlanner:
+        calls = 0
+
+        async def plan(self, question, candidates, relationships):
+            self.calls += 1
+            raise AssertionError("简单字段查询不应调用规划模型")
+
+    captured = {}
+
+    async def capturing_executor(db, validated, snapshot, settings):
+        captured["tables"] = validated.table_names
+        captured["fields"] = validated.column_names
+        captured["filters"] = {
+            item.field.field: item.value
+            for item in validated.filters
+        }
+        return BusinessQueryResult(
+            rows=[{
+                "nr_report_day_detail__deepsleep_hour": Decimal("3.87"),
+                "nr_report_day_detail__deepsleep_switch": "ON",
+            }],
+            column_order=(
+                "nr_report_day_detail__deepsleep_hour",
+                "nr_report_day_detail__deepsleep_switch",
+            ),
+            selected_tables=validated.table_names,
+            relationship_ids=validated.relationship_names,
+            result_grain=validated.result_grain,
+            applied_defaults=validated.applied_defaults,
+            database_ms=2.5,
+        )
+
+    planner = UnexpectedPlanner()
+    service = BusinessDataQueryService(
+        catalog=BusinessCatalogStore(settings=Settings(_env_file=None)),
+        planner=planner,
+        executor=capturing_executor,
+        settings=Settings(_env_file=None),
+    )
+
+    payload = await service.query(
+        db=FakeSession(),
+        question=(
+            "查询5G小区460-00-2539193-71在2026年8月24日的"
+            "深度休眠时长和深度休眠开关"
+        ),
+    )
+
+    assert planner.calls == 0
+    assert captured == {
+        "tables": ("nr_report_day_detail",),
+        "fields": (
+            "nr_report_day_detail.deepsleep_hour",
+            "nr_report_day_detail.deepsleep_switch",
+        ),
+        "filters": {
+            "cgi": "460-00-2539193-71",
+            "data_date": date(2026, 8, 24),
+        },
+    }
+    assert payload["rows"] == [{
+        "深度休眠生效时长": Decimal("3.87"),
+        "深度休眠开关": "ON",
+    }]
+
+
+@pytest.mark.asyncio
 async def test_service_returns_success_semantics_for_empty_result() -> None:
     snapshot = get_snapshot()
     planner = FakePlanner()

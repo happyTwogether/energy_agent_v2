@@ -71,6 +71,7 @@ def test_business_data_synthesis_uses_structured_rows_for_agent_diagnosis():
     assert "rows" in prompt
     assert "metric_definitions" in prompt
     assert "比较、诊断" in prompt
+    assert "不得声称数据库没有该字段" in prompt
     assert "原样返回 `report_content`" not in prompt
 
 

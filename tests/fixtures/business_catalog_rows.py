@@ -40,6 +40,13 @@ BUSINESS_CATALOG_ROWS = [
     {
         "schema_name": "public",
         "table_name": "nr_report_day_detail",
+        "column_name": "deepsleep_switch",
+        "data_type": "character varying",
+        "description": "深度休眠开关",
+    },
+    {
+        "schema_name": "public",
+        "table_name": "nr_report_day_detail",
         "column_name": "deepsleep_hour",
         "data_type": "numeric",
         "description": "深度休眠时长",

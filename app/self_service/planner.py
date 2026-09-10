@@ -99,6 +99,8 @@ def build_planner_messages(
         "计算指标可以用于分组结果的排序，此时 order_by 使用 metric_id。"
         "用户没有明确要求逐条或逐小时等明细时，result_grain 留空。"
         "一次只能选择一种明细粒度。CGI 使用 eq；名称允许 contains。"
+        "候选字段只是检索子集，不是物理表的完整 Schema；"
+        "未识别到目标字段时应请求用户换一种说法，不得声称物理表不存在该字段。"
         "没有日期时不要虚构日期。存在歧义时填写 clarification，不执行猜测。"
     )
     return [
