@@ -235,10 +235,10 @@ class AgentToolkitTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], default_sessions)
         self.assertEqual(1, len(reader_sessions))
 
-    async def test_missing_reader_configuration_is_returned_explicitly(self) -> None:
+    async def test_disabled_self_service_is_returned_explicitly(self) -> None:
         def missing_reader_session():
             raise AgentConfigurationError(
-                "缺少运行时配置 SELF_SERVICE_DATABASE_URL",
+                "通用数据查询未启用：请设置 SELF_SERVICE_ENABLED=true",
             )
 
         toolkit = build_toolkit(
@@ -249,7 +249,7 @@ class AgentToolkitTest(unittest.IsolatedAsyncioTestCase):
         chunk = await tool.call(question="查询原始字段")
 
         self.assertEqual(ToolResultState.ERROR, chunk.state)
-        self.assertIn("SELF_SERVICE_DATABASE_URL", chunk.content[0].text)
+        self.assertIn("SELF_SERVICE_ENABLED=true", chunk.content[0].text)
         self.assertEqual("", chunk.metadata["direct_answer"])
 
 

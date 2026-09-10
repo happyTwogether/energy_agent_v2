@@ -49,7 +49,7 @@ class EnergyFunctionTool(ToolBase):
         except AgentConfigurationError:
             logger.warning("业务工具运行配置缺失: tool=%s", self.name)
             public_message = (
-                "通用数据查询未启用：缺少运行时配置 SELF_SERVICE_DATABASE_URL"
+                "通用数据查询未启用：请设置 SELF_SERVICE_ENABLED=true"
                 if self._spec.session_scope == "self_service"
                 else PUBLIC_TOOL_ERROR
             )

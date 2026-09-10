@@ -58,9 +58,8 @@ class Settings(BaseSettings):
     base_url: str = "http://10.159.55.28:9500/"  # 服务基础URL
     export_dir: str = "static/exports"  # Excel 导出文件目录
 
-    # 完全离线业务数据自服务。默认关闭并使用独立只读连接。
+    # 完全离线业务数据自服务。默认关闭，复用 DB_* 创建独立只读连接。
     self_service_enabled: bool = False
-    self_service_database_url: SecretStr = SecretStr("")
     self_service_query_timeout_ms: int = 10_000
     self_service_default_limit: int = 50
     self_service_max_limit: int = 500

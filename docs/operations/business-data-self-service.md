@@ -4,7 +4,7 @@
 
 业务人员仍从智能体自然语言入口提问。Toolkit 只暴露一个通用数据入口 `query_business_data`：无论单小区字段、网络汇总指标、分组 Top N 还是 Excel 导出，都由该工具受控执行。节电空间、异常诊断、参数核查和固定报告仍由专业工具负责。
 
-应用启动时使用独立只读账号读取授权表的字段元数据并缓存；请求期间内部模型只生成结构化计划，不生成 SQL。程序校验表、字段、白名单关系和结果粒度后，用 SQLAlchemy 构造一条参数化业务查询。
+应用启动时复用 `DB_*` 配置创建独立的只读连接，读取授权表的字段元数据并缓存；请求期间内部模型只生成结构化计划，不生成 SQL。程序校验表、字段、白名单关系和结果粒度后，用 SQLAlchemy 构造一条参数化业务查询。
 
 查询最多使用 3 张授权表、2 条白名单关系，并最多展开一种一对多明细。自由 SQL 始终禁用。
 
@@ -14,39 +14,14 @@
 - 计算指标来自 `app/self_service/metrics.py`，注册表固定来源字段、单位、粒度、Python 公式和分组聚合口径。大模型只选指标 ID，不生成公式。
 - 比例和平均时长在分组查询中按“聚合分子 ÷ 聚合分母”计算，不对每行比例再求平均。
 
-## 创建最小权限账号
+## 数据库连接
 
-以下 SQL 使用 `.env.example` 中的 Schema：`energy_monthreport`、`jd_agent`、`energysavingrules`。若部署环境的 `DB_SCHEMA`、`DB_SCHEMA_AGENT`、`DB_SCHEMA_RULE` 配置不同，DBA 必须先替换为实际值并逐表核对。
+数据自服务复用现有 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD` 和 `DB_NAME`。密码由程序统一进行 URL 编码，不需要在 `.env` 中手工拼接数据库 URL。自服务使用独立连接池，并在 PostgreSQL 连接层强制 `default_transaction_read_only=on`。
 
-```sql
-\prompt 'energy_agent_reader password: ' reader_password
-CREATE ROLE energy_agent_reader LOGIN PASSWORD :'reader_password';
-GRANT CONNECT ON DATABASE agent_db TO energy_agent_reader;
-GRANT USAGE ON SCHEMA energy_monthreport, jd_agent, energysavingrules
-TO energy_agent_reader;
-GRANT SELECT ON TABLE
-  energy_monthreport.lte_report_day_detail,
-  energy_monthreport.nr_report_day_detail,
-  energy_monthreport.lte_report_day_collect,
-  energy_monthreport.nr_report_day_collect,
-  energy_monthreport.lte_fix_prm,
-  energy_monthreport.nr_fix_prm,
-  jd_agent.jd_cell_expansion_day,
-  jd_agent.jd_cell_constriction_day,
-  jd_agent.jd_cell_detail_hour_nr,
-  jd_agent.jd_cell_pre_hour_busy,
-  jd_agent.jd_cell_around,
-  energysavingrules.eng_check_result
-TO energy_agent_reader;
-ALTER ROLE energy_agent_reader SET default_transaction_read_only = on;
-ALTER ROLE energy_agent_reader SET statement_timeout = '10s';
-```
-
-密码不得写入仓库、镜像或日志。通过部署环境注入：
+通过部署环境启用：
 
 ```dotenv
 SELF_SERVICE_ENABLED=true
-SELF_SERVICE_DATABASE_URL=postgresql+asyncpg://energy_agent_reader:实际密码@数据库地址:5432/agent_db
 SELF_SERVICE_QUERY_TIMEOUT_MS=10000
 SELF_SERVICE_DEFAULT_LIMIT=50
 SELF_SERVICE_MAX_LIMIT=500

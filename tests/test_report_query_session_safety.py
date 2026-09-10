@@ -5,8 +5,6 @@ from datetime import datetime
 from unittest.mock import AsyncMock, patch
 import unittest
 
-from pydantic import SecretStr
-
 from app.agent.errors import AgentConfigurationError
 from app.core.config import Settings
 from app.services import database
@@ -39,15 +37,17 @@ class ReportQuerySessionSafetyTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["success"])
         self.assertEqual(1, max_active_calls)
 
-    async def test_self_service_session_factory_uses_isolated_secret_url(self) -> None:
+    async def test_self_service_session_factory_reuses_encoded_main_database_url(self) -> None:
         fake_engine = object()
         fake_factory = object()
         settings = Settings(
             _env_file=None,
             self_service_enabled=True,
-            self_service_database_url=SecretStr(
-                "postgresql+asyncpg://reader:secret@db/agent_db",
-            ),
+            db_host="db.internal",
+            db_port=5433,
+            db_user="reader",
+            db_password="secret@word",
+            db_name="smartcore",
         )
         database._self_service_engine = None
         database._self_service_session_factory = None
@@ -71,7 +71,7 @@ class ReportQuerySessionSafetyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(fake_factory, first)
         self.assertIs(first, second)
         create_engine.assert_called_once_with(
-            "postgresql+asyncpg://reader:secret@db/agent_db",
+            "postgresql+asyncpg://reader:secret%40word@db.internal:5433/smartcore",
             echo=False,
             pool_size=10,
             max_overflow=20,
@@ -80,11 +80,10 @@ class ReportQuerySessionSafetyTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    async def test_self_service_session_factory_rejects_missing_url(self) -> None:
+    async def test_self_service_session_factory_rejects_disabled_feature(self) -> None:
         settings = Settings(
             _env_file=None,
-            self_service_enabled=True,
-            self_service_database_url=SecretStr(""),
+            self_service_enabled=False,
         )
         database._self_service_engine = None
         database._self_service_session_factory = None
@@ -92,7 +91,7 @@ class ReportQuerySessionSafetyTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(database, "get_settings", return_value=settings):
             with self.assertRaisesRegex(
                 AgentConfigurationError,
-                "SELF_SERVICE_DATABASE_URL",
+                "SELF_SERVICE_ENABLED",
             ):
                 database.get_self_service_session_factory()
 

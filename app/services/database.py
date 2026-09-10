@@ -57,11 +57,12 @@ def get_self_service_session_factory() -> async_sessionmaker[AsyncSession]:
         return _self_service_session_factory
 
     settings = get_settings()
-    url = settings.self_service_database_url.get_secret_value().strip()
-    if not settings.self_service_enabled or not url:
-        raise AgentConfigurationError("缺少运行时配置 SELF_SERVICE_DATABASE_URL")
+    if not settings.self_service_enabled:
+        raise AgentConfigurationError(
+            "通用数据查询未启用：请设置 SELF_SERVICE_ENABLED=true",
+        )
     _self_service_engine = create_async_engine(
-        url,
+        settings.database_url,
         echo=False,
         pool_size=DB_POOL_SIZE,
         max_overflow=DB_MAX_OVERFLOW,
