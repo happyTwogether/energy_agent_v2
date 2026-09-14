@@ -1,5 +1,6 @@
 import asyncio
 from datetime import date, datetime, timedelta
+import time
 from typing import Any
 
 from sqlalchemy import text
@@ -24,6 +25,21 @@ from app.utils.sql_helpers import (
 )
 
 logger = get_logger("batch_energy_tool")
+
+
+def _record_batch_stage_timing(
+    stage: str,
+    started_at: float,
+    **counts: int,
+) -> None:
+    elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
+    count_text = " ".join(f"{key}={value}" for key, value in counts.items())
+    logger.info(
+        "batch_stage_timing stage=%s elapsed_ms=%.2f%s",
+        stage,
+        elapsed_ms,
+        f" {count_text}" if count_text else "",
+    )
 
 _settings = get_settings()
 DB_SCHEMA_AGENT = _settings.db_schema_agent
@@ -138,6 +154,7 @@ async def analyze_batch_cells_energy(
     analysis_target: str = TARGET_ALL,
 ) -> dict[str, Any]:
     """批量诊断5G小区节电情况。"""
+    total_started_at = time.perf_counter()
     logger.info(
         "批量节电诊断: target=%s dist=%s county=%s prod=%s time=%s",
         analysis_target, dist_name, county_name, prod_name, stat_time,
@@ -153,6 +170,8 @@ async def analyze_batch_cells_energy(
     except Exception as exc:
         logger.exception("批量节电诊断失败")
         return error_response("批量分析失败，请稍后重试")
+    finally:
+        _record_batch_stage_timing("total", total_started_at)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -172,7 +191,13 @@ async def _do_analyze(
     # ── 1. 解析查询日期（始终先查 DB 最新日期，用户日期超出时自动兜底）──
     need_expansion = analysis_target in (TARGET_ALL, TARGET_EXPANSION)
     need_constriction = analysis_target in (TARGET_ALL, TARGET_CONSTRICTION)
+    latest_date_started_at = time.perf_counter()
     db_latest_date = await _resolve_latest_date(analysis_target)
+    _record_batch_stage_timing(
+        "latest_date",
+        latest_date_started_at,
+        rows=int(db_latest_date is not None),
+    )
     if not db_latest_date:
         return error_response("暂无节电分析数据。")
 
@@ -238,9 +263,16 @@ async def _do_analyze(
         query_tasks.append(fetch_rows(constriction_sql, bind_params))
         query_names.append("constriction")
 
+    result_query_started_at = time.perf_counter()
     gathered = await asyncio.gather(*query_tasks)
     query_results = dict(zip(query_names, gathered))
     expansion_rows = query_results.get("expansion", [])
+    _record_batch_stage_timing(
+        "result_query",
+        result_query_started_at,
+        expansion_rows=len(expansion_rows),
+        constriction_rows=len(query_results.get("constriction", [])),
+    )
 
     # ── 4. 构建数据映射 ──
     all_cgis: set[str] = set()
@@ -274,6 +306,7 @@ async def _do_analyze(
         sleep_count_map = _count_pre_sleep_days_by_cgi(pre_sleep_rows)
 
     # ── 5. 合并生成表格行 ──
+    merge_started_at = time.perf_counter()
     query_desc = _build_query_desc(dist_name, county_name, prod_name)
     if not all_cgis:
         return error_response(f"未查询到符合条件的数据（{query_desc}）。")
@@ -311,10 +344,23 @@ async def _do_analyze(
             "扩展明细": _project_export_rows(expansion_rows, EXPANSION_EXPORT_FIELDS),
             "收缩明细": _project_export_rows(constriction_rows, CONSTRICTION_EXPORT_FIELDS),
         }
+    _record_batch_stage_timing(
+        "merge",
+        merge_started_at,
+        cells=len(table_data),
+        export_rows=sum(len(rows) for rows in export_sheets.values()),
+    )
+    excel_started_at = time.perf_counter()
     download_url = export_sheets_to_excel(
         export_sheets,
         prefix="batch_analysis",
         column_mapping=ENERGY_EXPORT_COLUMN_MAPPING,
+    )
+    _record_batch_stage_timing(
+        "excel",
+        excel_started_at,
+        sheets=sum(bool(rows) for rows in export_sheets.values()),
+        rows=sum(len(rows) for rows in export_sheets.values()),
     )
 
     # ── 7. 生成 report_content ──
@@ -424,7 +470,14 @@ async def _query_pre_sleep_rows(
     query_date: datetime,
 ) -> list[dict[str, Any]]:
     """集合查询目标小区近七日高 PRB 行，并保留真实休眠前小时。"""
+    started_at = time.perf_counter()
     if not cgis:
+        _record_batch_stage_timing(
+            "pre_sleep_query",
+            started_at,
+            requested_cgis=0,
+            rows=0,
+        )
         return []
     end_date = query_date.date()
     start_date = end_date - timedelta(days=6)
@@ -452,6 +505,13 @@ async def _query_pre_sleep_rows(
             continue
         if is_pre_sleep_hour(row.get("prb_hour"), row.get("sleep_hour")):
             high_pre_sleep_rows.append(row)
+    _record_batch_stage_timing(
+        "pre_sleep_query",
+        started_at,
+        requested_cgis=len(cgis),
+        source_rows=len(rows),
+        matched_rows=len(high_pre_sleep_rows),
+    )
     return high_pre_sleep_rows
 
 
@@ -463,9 +523,23 @@ async def _enrich_batch_constriction_rows(
         for row in rows
         if row.get("cgi") and row.get("around_cgi")
     }
+    neighbor_started_at = time.perf_counter()
     relation_by_pair = await query_neighbor_relations(relation_pairs, fetch_rows)
+    _record_batch_stage_timing(
+        "neighbor_query",
+        neighbor_started_at,
+        requested_pairs=len(relation_pairs),
+        rows=len(relation_by_pair),
+    )
     nr_cgis, lte_cgis = collect_site_type_cgis(rows, relation_by_pair)
+    site_type_started_at = time.perf_counter()
     site_type_by_cell = await query_site_types(nr_cgis, lte_cgis, fetch_rows)
+    _record_batch_stage_timing(
+        "site_type_query",
+        site_type_started_at,
+        requested_cgis=len(nr_cgis) + len(lte_cgis),
+        rows=len(site_type_by_cell),
+    )
     return enrich_constriction_records(
         rows,
         relation_by_pair,

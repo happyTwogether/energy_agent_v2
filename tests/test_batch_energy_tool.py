@@ -1,6 +1,7 @@
 """批量节电统计口径测试。"""
 
 from datetime import date, datetime
+import logging
 
 import pytest
 
@@ -114,7 +115,7 @@ def test_batch_whitelist_accepts_database_boolean():
 
 
 @pytest.mark.asyncio
-async def test_batch_analysis_exports_complete_v14_sheets(monkeypatch):
+async def test_batch_analysis_exports_complete_v14_sheets(monkeypatch, caplog):
     """正常小区保留在汇总，三类原始证据写入同一工作簿。"""
     captured_sheets = {}
 
@@ -204,6 +205,7 @@ async def test_batch_analysis_exports_complete_v14_sheets(monkeypatch):
         fake_export_sheets,
     )
 
+    caplog.set_level(logging.INFO, logger="agent.batch_energy_tool")
     result = await batch_energy_tool._do_analyze(
         dist_name=None,
         county_name=None,
@@ -227,6 +229,34 @@ async def test_batch_analysis_exports_complete_v14_sheets(monkeypatch):
     assert captured_sheets["收缩明细"][0]["around_site_type"] == "宏站"
     assert "main_site_type" not in captured_sheets["收缩明细"][0]
     assert list(captured_sheets) == ["小区汇总", "扩展明细", "收缩明细"]
+    messages = "\n".join(caplog.messages)
+    for stage in (
+        "latest_date",
+        "result_query",
+        "neighbor_query",
+        "site_type_query",
+        "pre_sleep_query",
+        "merge",
+        "excel",
+    ):
+        assert f"batch_stage_timing stage={stage} elapsed_ms=" in messages
+
+
+@pytest.mark.asyncio
+async def test_batch_tool_logs_total_timing(monkeypatch, caplog):
+    async def fake_analyze(**kwargs):
+        return {"success": True}
+
+    monkeypatch.setattr(batch_energy_tool, "_do_analyze", fake_analyze)
+    caplog.set_level(logging.INFO, logger="agent.batch_energy_tool")
+
+    result = await batch_energy_tool.analyze_batch_cells_energy(db=object())
+
+    assert result == {"success": True}
+    assert any(
+        "batch_stage_timing stage=total elapsed_ms=" in message
+        for message in caplog.messages
+    )
 
 
 @pytest.mark.asyncio
