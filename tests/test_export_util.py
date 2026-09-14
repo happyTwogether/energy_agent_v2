@@ -36,6 +36,37 @@ def test_export_sheets_creates_named_worksheets(tmp_path, monkeypatch):
     assert url is not None
 
 
+def test_export_sheets_streams_rows_without_pandas_dataframe(tmp_path, monkeypatch):
+    """批量多表导出不得再构造高开销的 pandas DataFrame。"""
+    monkeypatch.setattr(export_util, "EXPORT_DIR", str(tmp_path))
+
+    def fail_dataframe(*args, **kwargs):
+        raise AssertionError("multi-sheet export must stream rows directly")
+
+    monkeypatch.setattr(export_util.pd, "DataFrame", fail_dataframe)
+
+    url = export_util.export_sheets_to_excel(
+        {
+            "小区汇总": [
+                {"cgi": "a"},
+                {"cgi": "b", "cell_name": "测试小区"},
+            ],
+        },
+        prefix="batch_analysis",
+    )
+
+    workbook_path = next(tmp_path.glob("*.xlsx"))
+    workbook = openpyxl.load_workbook(workbook_path, read_only=True)
+    worksheet = workbook["小区汇总"]
+    assert url is not None
+    assert worksheet["A1"].value == "CGI"
+    assert worksheet["B1"].value == "小区名称"
+    assert worksheet["A2"].value == "a"
+    assert worksheet["B2"].value is None
+    assert worksheet["A3"].value == "b"
+    assert worksheet["B3"].value == "测试小区"
+
+
 def test_v14_fields_have_stable_chinese_column_names():
     mapping = export_util.DEFAULT_COLUMN_MAPPING
 

@@ -67,6 +67,7 @@ TARGET_CONSTRICTION = "constriction"
 
 # ── 筛选参数通配值（应跳过 WHERE 过滤）──
 _FILTER_ALL = frozenset({"all", "全部", "所有"})
+_SUPPORTED_PROVINCES = frozenset({"湖南", "湖南省", "全省", "全网", "all", "全部", "所有"})
 
 # ── 高负荷 枚举值 ──
 _MAP_HIGHLOAD: dict[str, str] = {
@@ -131,6 +132,7 @@ TOOL_DESCRIPTION = (
 TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {
+            "province": {"type": "string", "description": "省份名称，当前仅支持湖南省"},
             "dist_name": {"type": "string", "description": "地市名称"},
             "county_name": {"type": "string", "description": "区县名称"},
             "prod_name": {"type": "string", "description": "厂家名称"},
@@ -147,6 +149,7 @@ TOOL_INPUT_SCHEMA = {
 
 async def analyze_batch_cells_energy(
     db: AsyncSession,
+    province: str | None = None,
     dist_name: str | None = None,
     county_name: str | None = None,
     prod_name: str | None = None,
@@ -156,10 +159,12 @@ async def analyze_batch_cells_energy(
     """批量诊断5G小区节电情况。"""
     total_started_at = time.perf_counter()
     logger.info(
-        "批量节电诊断: target=%s dist=%s county=%s prod=%s time=%s",
-        analysis_target, dist_name, county_name, prod_name, stat_time,
+        "批量节电诊断: target=%s province=%s dist=%s county=%s prod=%s time=%s",
+        analysis_target, province, dist_name, county_name, prod_name, stat_time,
     )
     try:
+        if province and province.strip().lower() not in _SUPPORTED_PROVINCES:
+            return error_response("当前批量节电分析仅支持湖南省。")
         return await _do_analyze(
             dist_name=dist_name,
             county_name=county_name,

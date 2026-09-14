@@ -7,6 +7,7 @@
       "parameters": {
         "type": "object",
         "properties": {
+          "province": {"type": "string", "description": "省份名称，当前仅支持湖南省"},
           "dist_name": {"type": "string", "description": "地市名称"},
           "county_name": {"type": "string", "description": "区县名称"},
           "prod_name": {"type": "string", "description": "厂家名称"},

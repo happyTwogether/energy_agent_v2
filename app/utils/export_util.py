@@ -8,11 +8,14 @@
 import json
 import os
 import uuid
-from copy import copy
 from datetime import datetime
 from typing import Any
 
 import pandas as pd
+from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 
 from app.core.config import get_settings, MAX_RETURN_ITEMS
 from app.core.logging import get_logger
@@ -160,23 +163,34 @@ def export_sheets_to_excel(
 
     try:
         filename, file_path = _new_export_file(prefix)
+        workbook = Workbook(write_only=True)
+        effective_mapping = _effective_column_mapping(column_mapping)
 
-        with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
-            for sheet_name, rows in non_empty_sheets.items():
-                dataframe = pd.DataFrame(rows)
-                dataframe = _rename_export_columns(dataframe, column_mapping)
-                dataframe.to_excel(
-                    writer,
-                    sheet_name=sheet_name[:31],
-                    index=False,
+        for sheet_name, rows in non_empty_sheets.items():
+            columns = _collect_export_columns(rows)
+            worksheet = workbook.create_sheet(title=sheet_name[:31])
+            worksheet.freeze_panes = "A2"
+            worksheet.auto_filter.ref = (
+                f"A1:{get_column_letter(len(columns))}{len(rows) + 1}"
+            )
+
+            header_cells = []
+            for column in columns:
+                cell = WriteOnlyCell(
+                    worksheet,
+                    value=effective_mapping.get(column, column),
                 )
-                worksheet = writer.sheets[sheet_name[:31]]
-                worksheet.freeze_panes = "A2"
-                worksheet.auto_filter.ref = worksheet.dimensions
-                for cell in worksheet[1]:
-                    header_font = copy(cell.font)
-                    header_font.bold = True
-                    cell.font = header_font
+                cell.font = Font(bold=True)
+                header_cells.append(cell)
+            worksheet.append(header_cells)
+
+            for row in rows:
+                worksheet.append([
+                    _serialize_export_value(row.get(column))
+                    for column in columns
+                ])
+
+        workbook.save(file_path)
 
         logger.info(
             "多工作表 Excel 导出成功: %s, 工作表数: %s",
@@ -189,6 +203,28 @@ def export_sheets_to_excel(
         return None
 
 
+def _collect_export_columns(rows: list[dict]) -> list[str]:
+    """按首次出现顺序收集字段，兼容后续行才出现的列。"""
+    columns: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for column in row:
+            if column not in seen:
+                seen.add(column)
+                columns.append(column)
+    return columns
+
+
+def _effective_column_mapping(
+    column_mapping: dict[str, str] | None,
+) -> dict[str, str]:
+    if column_mapping == {}:
+        return {}
+    if column_mapping:
+        return {**DEFAULT_COLUMN_MAPPING, **column_mapping}
+    return DEFAULT_COLUMN_MAPPING
+
+
 def _rename_export_columns(
     dataframe: pd.DataFrame,
     column_mapping: dict[str, str] | None,
@@ -198,9 +234,7 @@ def _rename_export_columns(
         dataframe[column] = dataframe[column].map(_serialize_export_value)
     if column_mapping == {}:
         return dataframe
-    effective_mapping = DEFAULT_COLUMN_MAPPING
-    if column_mapping:
-        effective_mapping = {**DEFAULT_COLUMN_MAPPING, **column_mapping}
+    effective_mapping = _effective_column_mapping(column_mapping)
     existing_mapping = {
         key: value
         for key, value in effective_mapping.items()

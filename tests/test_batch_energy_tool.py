@@ -8,6 +8,45 @@ import pytest
 from app.tools import batch_energy_tool
 
 
+@pytest.mark.asyncio
+async def test_batch_tool_accepts_hunan_province_without_retry(monkeypatch):
+    """省级批量请求应一次进入分析流程，不能因 province 参数报错后重试。"""
+    received = {}
+
+    async def fake_analyze(**kwargs):
+        received.update(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(batch_energy_tool, "_do_analyze", fake_analyze)
+
+    result = await batch_energy_tool.analyze_batch_cells_energy(
+        db=object(),
+        province="湖南省",
+    )
+
+    assert result == {"success": True}
+    assert received["analysis_target"] == "all"
+
+
+@pytest.mark.asyncio
+async def test_batch_tool_rejects_unsupported_province_before_query(monkeypatch):
+    """当前数据范围只有湖南省，其他省份应返回明确提示且不执行查询。"""
+    async def fail_if_called(**kwargs):
+        raise AssertionError("unsupported province must not reach database analysis")
+
+    monkeypatch.setattr(batch_energy_tool, "_do_analyze", fail_if_called)
+
+    result = await batch_energy_tool.analyze_batch_cells_energy(
+        db=object(),
+        province="广东省",
+    )
+
+    assert result == {
+        "success": False,
+        "error": "当前批量节电分析仅支持湖南省。",
+    }
+
+
 def test_batch_total_is_counted_before_issue_filtering():
     table_data = [
         {"CGI": "a", "节能扩展：容量与风险说明": "非高负荷"},
