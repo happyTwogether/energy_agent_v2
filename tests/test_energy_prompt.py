@@ -63,6 +63,11 @@ def test_execution_prompt_has_stable_data_and_specialist_boundaries():
     assert "query_cell_metric" not in prompt
     assert "分析节电空间或查指标时，直接调用对应业务工具" not in prompt
     assert "按中文名查询单小区指标" not in prompt
+    assert "expansion_level=conservative" in prompt
+    assert "expansion_level" in prompt
+    assert "中等扩展/400M/低于400M" in prompt
+    assert "激进扩展/500M/低于500M" in prompt
+    assert "复用对话中已经明确的小区、日期或批量区域条件" in prompt
 
 
 def test_business_data_synthesis_uses_structured_rows_for_agent_diagnosis():

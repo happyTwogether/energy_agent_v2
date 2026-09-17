@@ -26,6 +26,7 @@ async def test_batch_tool_accepts_hunan_province_without_retry(monkeypatch):
 
     assert result == {"success": True}
     assert received["analysis_target"] == "all"
+    assert received["expansion_level"] == "conservative"
 
 
 @pytest.mark.asyncio
@@ -45,6 +46,98 @@ async def test_batch_tool_rejects_unsupported_province_before_query(monkeypatch)
         "success": False,
         "error": "当前批量节电分析仅支持湖南省。",
     }
+
+
+@pytest.mark.asyncio
+async def test_batch_tool_rejects_unknown_expansion_level():
+    result = await batch_energy_tool.analyze_batch_cells_energy(
+        db=object(),
+        expansion_level="custom",
+    )
+
+    assert result["success"] is False
+    assert "不支持的扩展档位" in result["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expansion_level", "expected_table"),
+    [
+        ("conservative", "jd_cell_expansion_day"),
+        ("moderate", "jd_cell_expansion_day_400"),
+        ("aggressive", "jd_cell_expansion_day_500"),
+    ],
+)
+async def test_batch_latest_date_routes_to_selected_expansion_table(
+    monkeypatch,
+    expansion_level,
+    expected_table,
+):
+    queries: list[str] = []
+
+    async def fake_fetch_rows(sql, params):
+        queries.append(str(sql))
+        return [{"max_date": datetime(2026, 8, 10)}]
+
+    monkeypatch.setattr(batch_energy_tool, "fetch_rows", fake_fetch_rows)
+
+    latest = await batch_energy_tool._resolve_latest_date(
+        "expansion",
+        expansion_level,
+    )
+
+    assert latest == datetime(2026, 8, 10)
+    assert f"FROM jd_agent.{expected_table}" in queries[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expansion_level", "expected_table", "expected_prefix"),
+    [
+        ("moderate", "jd_cell_expansion_day_400", "batch_analysis_400m"),
+        ("aggressive", "jd_cell_expansion_day_500", "batch_analysis_500m"),
+    ],
+)
+async def test_batch_analysis_uses_selected_expansion_table_and_export_prefix(
+    monkeypatch,
+    expansion_level,
+    expected_table,
+    expected_prefix,
+):
+    queries: list[str] = []
+    prefixes: list[str] = []
+
+    async def fake_latest_date(analysis_target, selected_level):
+        assert analysis_target == "expansion"
+        assert selected_level == expansion_level
+        return datetime(2026, 8, 10)
+
+    async def fake_fetch_rows(sql, params):
+        queries.append(str(sql))
+        return [{"cgi": "a", "stat_time": date(2026, 8, 10)}]
+
+    def fake_export(sheets, prefix, column_mapping=None):
+        prefixes.append(prefix)
+        return "/downloads/batch.xlsx"
+
+    monkeypatch.setattr(batch_energy_tool, "_resolve_latest_date", fake_latest_date)
+    monkeypatch.setattr(batch_energy_tool, "fetch_rows", fake_fetch_rows)
+    monkeypatch.setattr(batch_energy_tool, "export_sheets_to_excel", fake_export)
+
+    result = await batch_energy_tool._do_analyze(
+        dist_name=None,
+        county_name=None,
+        prod_name=None,
+        stat_time=None,
+        analysis_target="expansion",
+        expansion_level=expansion_level,
+    )
+
+    assert f"FROM jd_agent.{expected_table}" in queries[0]
+    assert result["expansion_level"] == expansion_level
+    assert result["expansion_level_label"] in result["report_content"]
+    assert "还可选择" not in result["report_content"]
+    assert prefixes == [expected_prefix]
 
 
 def test_batch_total_is_counted_before_issue_filtering():
@@ -157,8 +250,9 @@ def test_batch_whitelist_accepts_database_boolean():
 async def test_batch_analysis_exports_complete_v14_sheets(monkeypatch, caplog):
     """正常小区保留在汇总，三类原始证据写入同一工作簿。"""
     captured_sheets = {}
+    captured_prefix = []
 
-    async def fake_latest_date(need_constriction):
+    async def fake_latest_date(analysis_target, expansion_level):
         return datetime(2026, 8, 10)
 
     async def fake_fetch_rows(sql, params):
@@ -234,6 +328,7 @@ async def test_batch_analysis_exports_complete_v14_sheets(monkeypatch, caplog):
 
     def fake_export_sheets(sheets, prefix, column_mapping=None):
         captured_sheets.update(sheets)
+        captured_prefix.append(prefix)
         return "/downloads/batch.xlsx"
 
     monkeypatch.setattr(batch_energy_tool, "_resolve_latest_date", fake_latest_date)
@@ -256,6 +351,11 @@ async def test_batch_analysis_exports_complete_v14_sheets(monkeypatch, caplog):
     assert result["stats"]["total"] == 2
     assert result["stats"]["problem_total"] == 1
     assert result["stats"]["param_noncompliant"] == 1
+    assert result["expansion_level"] == "conservative"
+    assert result["expansion_threshold_mbps"] == 300
+    assert "保守扩展" in result["report_content"]
+    assert "中等扩展（400M）" in result["report_content"]
+    assert captured_prefix == ["batch_analysis_300m"]
     assert len(captured_sheets["小区汇总"]) == 2
     summary_b = next(row for row in captured_sheets["小区汇总"] if row["CGI"] == "b")
     assert summary_b["扩展时段（含扩展时段）"] == "22"
@@ -315,7 +415,7 @@ async def test_single_dimension_batch_exports_only_its_detail_sheet(
     captured_sheets = {}
     queries: list[str] = []
 
-    async def fake_latest_date(target):
+    async def fake_latest_date(target, expansion_level):
         assert target == analysis_target
         return datetime(2026, 8, 10)
 

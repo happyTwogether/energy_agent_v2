@@ -100,7 +100,10 @@ def candidate_score(query: str, values: Sequence[str]) -> float:
             continue
         if normalized_query == normalized_value:
             scores.append(1.0)
-        elif normalized_value in normalized_query or normalized_query in normalized_value:
+        elif normalized_value in normalized_query:
+            coverage = len(normalized_value) / len(normalized_query)
+            scores.append(min(0.99, 0.85 + coverage * 0.14))
+        elif normalized_query in normalized_value:
             scores.append(0.85)
         else:
             ratio = _local_sequence_ratio(normalized_query, normalized_value)

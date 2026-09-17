@@ -79,6 +79,24 @@ BUSINESS_CATALOG_ROWS = [
         "data_type": "character varying",
         "description": "含已休眠连续部署时段",
     },
+    *[
+        {
+            "schema_name": "jd_agent",
+            "table_name": table_name,
+            "column_name": column_name,
+            "data_type": data_type,
+            "description": column_name,
+        }
+        for table_name in (
+            "jd_cell_expansion_day_400",
+            "jd_cell_expansion_day_500",
+        )
+        for column_name, data_type in (
+            ("cgi", "character varying"),
+            ("stat_time", "date"),
+            ("deploy_hours_continuous", "character varying"),
+        )
+    ],
     {
         "schema_name": "jd_agent",
         "table_name": "jd_cell_constriction_day",

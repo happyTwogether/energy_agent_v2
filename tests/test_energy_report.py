@@ -46,6 +46,28 @@ def test_report_hides_expansion_tables_when_result_is_unavailable():
     assert "0小时" not in report
 
 
+def test_report_displays_selected_level_and_only_prompts_from_conservative():
+    conservative = build_single_cell_energy_report({
+        "analysis_target": "expansion",
+        "expansion_result_status": "no_candidate",
+        "expansion_level": "conservative",
+        "expansion_criteria": "保守扩展（连续不少于15天，低于300M的概率不低于90%）",
+        "whitelist_status": "unknown",
+    })
+    moderate = build_single_cell_energy_report({
+        "analysis_target": "expansion",
+        "expansion_result_status": "no_candidate",
+        "expansion_level": "moderate",
+        "expansion_criteria": "中等扩展（连续不少于15天，低于400M的概率不低于90%）",
+        "whitelist_status": "unknown",
+    })
+
+    assert "扩展策略：保守扩展" in conservative
+    assert "中等扩展（400M）或激进扩展（500M）" in conservative
+    assert "扩展策略：中等扩展" in moderate
+    assert "还可选择" not in moderate
+
+
 def test_report_marks_indeterminate_param_check_as_unavailable():
     """防止未返回合规结论的成功请求被错误标记为不合规。"""
     report = build_single_cell_energy_report({

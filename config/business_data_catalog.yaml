@@ -851,20 +851,23 @@ tables:
         description: 小区站点类型
   jd_cell_expansion_day:
     schema_source: db_schema_agent
-    label: 节电扩展日结果
+    label: 保守节电扩展日结果（300M）
     aliases:
     - 扩展表
+    - 保守扩展
+    - 300M扩展
+    - 300M扩展表
     - 休眠扩展
     - 扩展空间
     - 扩展时段
-    description: 命中任一节电扩展判断维度的小区结果
+    description: 连续不少于15天且低于300M概率不低于90%的保守节电扩展结果
     default_date_column: stat_time
     default_grain: cell_day
     grain_keys:
       cell_day:
       - cgi
       - stat_time
-    fields:
+    fields: &expansion_fields
       stat_time:
         label: 统计日期
         description: 节电扩展分析日期
@@ -936,6 +939,40 @@ tables:
       deploy_hours_continuous_early:
         label: 夜间常规连续部署时段
         description: 仅夜间常规口径下连续部署时段
+  jd_cell_expansion_day_400:
+    schema_source: db_schema_agent
+    label: 中等节电扩展日结果（400M）
+    aliases:
+    - 中等扩展
+    - 400M扩展
+    - 400M扩展表
+    - 中等休眠扩展
+    - 中等扩展时段
+    description: 连续不少于15天且低于400M概率不低于90%的中等节电扩展结果
+    default_date_column: stat_time
+    default_grain: cell_day
+    grain_keys:
+      cell_day:
+      - cgi
+      - stat_time
+    fields: *expansion_fields
+  jd_cell_expansion_day_500:
+    schema_source: db_schema_agent
+    label: 激进节电扩展日结果（500M）
+    aliases:
+    - 激进扩展
+    - 500M扩展
+    - 500M扩展表
+    - 激进休眠扩展
+    - 激进扩展时段
+    description: 连续不少于15天且低于500M概率不低于90%的激进节电扩展结果
+    default_date_column: stat_time
+    default_grain: cell_day
+    grain_keys:
+      cell_day:
+      - cgi
+      - stat_time
+    fields: *expansion_fields
   jd_cell_constriction_day:
     schema_source: db_schema_agent
     label: 节电收缩日结果
@@ -1286,6 +1323,138 @@ relationships:
     - constriction_record
   expansion_to_param_check:
     left: jd_cell_expansion_day
+    right: eng_check_result
+    cardinality: one_to_many_same_day
+    keys:
+    - - cgi
+      - cgi
+    same_day:
+      left_column: stat_time
+      right_column: check_time
+    allowed_grains:
+    - cell_day
+    - parameter_item
+    detail_grain: parameter_item
+  expansion_400_to_constriction:
+    left: jd_cell_expansion_day_400
+    right: jd_cell_constriction_day
+    cardinality: one_to_many
+    keys:
+    - - cgi
+      - cgi
+    - - stat_time
+      - stat_time
+    allowed_grains:
+    - cell_day
+    - constriction_record
+    detail_grain: constriction_record
+  expansion_400_to_hour_detail:
+    left: jd_cell_expansion_day_400
+    right: jd_cell_detail_hour_nr
+    cardinality: one_to_many
+    keys:
+    - - cgi
+      - cgi
+    - - stat_time
+      - stat_time
+    allowed_grains:
+    - cell_day
+    - hour
+    detail_grain: hour
+  expansion_400_to_pre_sleep:
+    left: jd_cell_expansion_day_400
+    right: jd_cell_pre_hour_busy
+    cardinality: one_to_many_window
+    keys:
+    - - cgi
+      - cgi
+    date_window:
+      left_column: stat_time
+      right_column: stat_time
+      days_before: 6
+      days_after: 0
+    allowed_grains:
+    - cell_day
+    - hour
+    detail_grain: hour
+  expansion_400_to_nr_prm:
+    left: jd_cell_expansion_day_400
+    right: nr_fix_prm
+    cardinality: many_to_one_latest_snapshot
+    keys:
+    - - cgi
+      - cgi
+    snapshot_column: data_date
+    allowed_grains:
+    - cell_day
+  expansion_400_to_param_check:
+    left: jd_cell_expansion_day_400
+    right: eng_check_result
+    cardinality: one_to_many_same_day
+    keys:
+    - - cgi
+      - cgi
+    same_day:
+      left_column: stat_time
+      right_column: check_time
+    allowed_grains:
+    - cell_day
+    - parameter_item
+    detail_grain: parameter_item
+  expansion_500_to_constriction:
+    left: jd_cell_expansion_day_500
+    right: jd_cell_constriction_day
+    cardinality: one_to_many
+    keys:
+    - - cgi
+      - cgi
+    - - stat_time
+      - stat_time
+    allowed_grains:
+    - cell_day
+    - constriction_record
+    detail_grain: constriction_record
+  expansion_500_to_hour_detail:
+    left: jd_cell_expansion_day_500
+    right: jd_cell_detail_hour_nr
+    cardinality: one_to_many
+    keys:
+    - - cgi
+      - cgi
+    - - stat_time
+      - stat_time
+    allowed_grains:
+    - cell_day
+    - hour
+    detail_grain: hour
+  expansion_500_to_pre_sleep:
+    left: jd_cell_expansion_day_500
+    right: jd_cell_pre_hour_busy
+    cardinality: one_to_many_window
+    keys:
+    - - cgi
+      - cgi
+    date_window:
+      left_column: stat_time
+      right_column: stat_time
+      days_before: 6
+      days_after: 0
+    allowed_grains:
+    - cell_day
+    - hour
+    detail_grain: hour
+  expansion_500_to_nr_prm:
+    left: jd_cell_expansion_day_500
+    right: nr_fix_prm
+    cardinality: many_to_one_latest_snapshot
+    keys:
+    - - cgi
+      - cgi
+    snapshot_column: data_date
+    allowed_grains:
+    - cell_day
+  expansion_500_to_param_check:
+    left: jd_cell_expansion_day_500
     right: eng_check_result
     cardinality: one_to_many_same_day
     keys:

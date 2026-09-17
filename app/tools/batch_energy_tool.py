@@ -16,6 +16,12 @@ from app.services.energy_analysis import (
     parse_optional_float,
 )
 from app.services.energy_evidence import query_neighbor_relations, query_site_types
+from app.services.expansion_levels import (
+    DEFAULT_EXPANSION_LEVEL,
+    EXPANSION_LEVELS,
+    expansion_level_metadata,
+    resolve_expansion_level,
+)
 from app.utils.export_util import export_sheets_to_excel
 from app.utils.sql_helpers import (
     ensure_datetime,
@@ -142,6 +148,12 @@ TOOL_INPUT_SCHEMA = {
                 "enum": [TARGET_ALL, TARGET_EXPANSION, TARGET_CONSTRICTION],
                 "description": "分析目标：all=全量(扩展+收缩)，expansion=仅扩展，constriction=仅收缩",
             },
+            "expansion_level": {
+                "type": "string",
+                "enum": list(EXPANSION_LEVELS),
+                "default": DEFAULT_EXPANSION_LEVEL,
+                "description": "扩展策略：conservative=保守(300M)，moderate=中等(400M)，aggressive=激进(500M)",
+            },
         },
         "required": [],
 }
@@ -155,12 +167,18 @@ async def analyze_batch_cells_energy(
     prod_name: str | None = None,
     stat_time: str | None = None,
     analysis_target: str = TARGET_ALL,
+    expansion_level: str = DEFAULT_EXPANSION_LEVEL,
 ) -> dict[str, Any]:
     """批量诊断5G小区节电情况。"""
     total_started_at = time.perf_counter()
+    try:
+        expansion_config = resolve_expansion_level(expansion_level)
+    except ValueError as exc:
+        return error_response(str(exc))
     logger.info(
-        "批量节电诊断: target=%s province=%s dist=%s county=%s prod=%s time=%s",
+        "批量节电诊断: target=%s province=%s dist=%s county=%s prod=%s time=%s expansion_level=%s table=%s",
         analysis_target, province, dist_name, county_name, prod_name, stat_time,
+        expansion_config.key, expansion_config.table_name,
     )
     try:
         if province and province.strip().lower() not in _SUPPORTED_PROVINCES:
@@ -171,6 +189,7 @@ async def analyze_batch_cells_energy(
             prod_name=prod_name,
             stat_time=stat_time,
             analysis_target=analysis_target,
+            expansion_level=expansion_config.key,
         )
     except Exception as exc:
         logger.exception("批量节电诊断失败")
@@ -190,14 +209,19 @@ async def _do_analyze(
     prod_name: str | None,
     stat_time: str | None,
     analysis_target: str,
+    expansion_level: str = DEFAULT_EXPANSION_LEVEL,
 ) -> dict[str, Any]:
     """核心分析流程。"""
+    expansion_config = resolve_expansion_level(expansion_level)
 
     # ── 1. 解析查询日期（始终先查 DB 最新日期，用户日期超出时自动兜底）──
     need_expansion = analysis_target in (TARGET_ALL, TARGET_EXPANSION)
     need_constriction = analysis_target in (TARGET_ALL, TARGET_CONSTRICTION)
     latest_date_started_at = time.perf_counter()
-    db_latest_date = await _resolve_latest_date(analysis_target)
+    db_latest_date = await _resolve_latest_date(
+        analysis_target,
+        expansion_config.key,
+    )
     _record_batch_stage_timing(
         "latest_date",
         latest_date_started_at,
@@ -242,7 +266,7 @@ async def _do_analyze(
                hour_filter, hour_int, hour_filter_early, hour_int_early,
                deploy_hours, deploy_hours_continuous,
                deploy_hours_early, deploy_hours_continuous_early
-        FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
+        FROM {DB_SCHEMA_AGENT}.{expansion_config.table_name}
         WHERE {where_sql}
     """)
 
@@ -358,7 +382,11 @@ async def _do_analyze(
     excel_started_at = time.perf_counter()
     download_url = export_sheets_to_excel(
         export_sheets,
-        prefix="batch_analysis",
+        prefix=(
+            f"batch_analysis_{expansion_config.traffic_threshold_mbps}m"
+            if need_expansion
+            else "batch_analysis"
+        ),
         column_mapping=ENERGY_EXPORT_COLUMN_MAPPING,
     )
     _record_batch_stage_timing(
@@ -376,15 +404,19 @@ async def _do_analyze(
         prod_name=prod_name,
         analysis_target=analysis_target,
         download_url=download_url,
+        expansion_level=expansion_config.key,
     )
 
-    return {
+    response = {
         "success": True,
         "report_content": report_content,
         "stats": stats,
         "download_url": download_url,
         **({"date_note": date_note} if date_note else {}),
     }
+    if need_expansion:
+        response.update(expansion_level_metadata(expansion_config))
+    return response
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -392,13 +424,20 @@ async def _do_analyze(
 # ═══════════════════════════════════════════════════════════════════
 
 
-async def _resolve_latest_date(analysis_target: str) -> datetime | None:
+async def _resolve_latest_date(
+    analysis_target: str,
+    expansion_level: str = DEFAULT_EXPANSION_LEVEL,
+) -> datetime | None:
     """自动获取最新数据日期（使用独立 session）。
 
     单维度只查询对应表的最大日期；全量取两张表最大日期的较小值。
     """
+    expansion_config = resolve_expansion_level(expansion_level)
     const_sql = text(f"SELECT MAX(stat_time) as max_date FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day")
-    exp_sql = text(f"SELECT MAX(stat_time) as max_date FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day")
+    exp_sql = text(
+        f"SELECT MAX(stat_time) as max_date FROM "
+        f"{DB_SCHEMA_AGENT}.{expansion_config.table_name}"
+    )
     if analysis_target == TARGET_EXPANSION:
         rows = await fetch_rows(exp_sql, {})
         return ensure_datetime(rows[0]["max_date"]) if rows else None
@@ -760,6 +799,7 @@ def _generate_batch_report_markdown(
     prod_name: str | None,
     analysis_target: str,
     download_url: str | None,
+    expansion_level: str = DEFAULT_EXPANSION_LEVEL,
 ) -> str:
     """生成批量分析 Markdown 报告。"""
     title = _build_query_desc(dist_name, county_name, prod_name)
@@ -772,6 +812,10 @@ def _generate_batch_report_markdown(
         mode_label = "扩展与收缩总结"
 
     lines = [f"### 批量分析小区节能{mode_label}（{title}）", ""]
+    expansion_config = resolve_expansion_level(expansion_level)
+    if analysis_target in (TARGET_ALL, TARGET_EXPANSION):
+        lines.append(f"**扩展策略**：{expansion_config.criteria_text}")
+        lines.append("")
     lines.append("**概览结论**：")
     lines.append(f"- 总计涉及小区数量 **{stats.get('total', 0)}** 个。")
 
@@ -796,6 +840,15 @@ def _generate_batch_report_markdown(
     if download_url:
         lines.append("")
         lines.append(f"📥 [点击下载完整批量分析 Excel 报告]({download_url})")
+
+    if (
+        analysis_target in (TARGET_ALL, TARGET_EXPANSION)
+        and expansion_config.key == DEFAULT_EXPANSION_LEVEL
+    ):
+        lines.extend([
+            "",
+            "> 还可选择中等扩展（400M）或激进扩展（500M）查看对应结果。",
+        ])
 
     return "\n".join(lines)
 

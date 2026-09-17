@@ -16,6 +16,12 @@
             "type": "string",
             "enum": ["all", "expansion", "constriction"],
             "description": "分析目标：all=全量(扩展+收缩)，expansion=仅扩展，constriction=仅收缩"
+          },
+          "expansion_level": {
+            "type": "string",
+            "enum": ["conservative", "moderate", "aggressive"],
+            "default": "conservative",
+            "description": "扩展策略：conservative=保守(300M)，moderate=中等(400M)，aggressive=激进(500M)"
           }
         },
         "required": []
@@ -37,7 +43,13 @@
             "enum": ["all", "expansion", "constriction", "pre_sleep_load"],
             "description": "分析目标"
           },
-          "stat_time": {"type": "string", "description": "统计日期 (YYYY-MM-DD)"}
+          "stat_time": {"type": "string", "description": "统计日期 (YYYY-MM-DD)"},
+          "expansion_level": {
+            "type": "string",
+            "enum": ["conservative", "moderate", "aggressive"],
+            "default": "conservative",
+            "description": "扩展策略：conservative=保守(300M)，moderate=中等(400M)，aggressive=激进(500M)"
+          }
         },
         "required": ["analysis_target"]
       }

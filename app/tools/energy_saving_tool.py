@@ -26,6 +26,12 @@ from app.services.energy_analysis import (
 )
 from app.services.energy_report import build_single_cell_energy_report
 from app.services.energy_evidence import query_neighbor_relations, query_site_types
+from app.services.expansion_levels import (
+    DEFAULT_EXPANSION_LEVEL,
+    EXPANSION_LEVELS,
+    expansion_level_metadata,
+    resolve_expansion_level,
+)
 from app.utils.cell_lookup import resolution_error_response
 from app.utils.export_util import truncate_and_export
 from app.utils.sql_helpers import ensure_datetime, error_response, fetch_rows
@@ -167,6 +173,12 @@ TOOL_INPUT_SCHEMA = {
                 "type": "string",
                 "description": "统计日期 (YYYY-MM-DD)",
             },
+            "expansion_level": {
+                "type": "string",
+                "enum": list(EXPANSION_LEVELS),
+                "default": DEFAULT_EXPANSION_LEVEL,
+                "description": "扩展策略：conservative=保守(300M)，moderate=中等(400M)，aggressive=激进(500M)",
+            },
         },
         "required": ["analysis_target"],
 }
@@ -178,6 +190,7 @@ async def analyze_single_cell_energy(
     cgi: str | None = None,
     cell_name: str | None = None,
     stat_time: str | None = None,
+    expansion_level: str = DEFAULT_EXPANSION_LEVEL,
 ) -> dict[str, Any]:
     """分析单个5G小区的节电详情。
 
@@ -185,17 +198,23 @@ async def analyze_single_cell_energy(
     """
     total_started_at = time.perf_counter()
     performance: dict[str, float] = {}
+    try:
+        expansion_config = resolve_expansion_level(expansion_level)
+    except ValueError as exc:
+        return error_response(str(exc))
     cgi = (cgi or "").strip()
     cell_name = (cell_name or "").strip()
     if not cgi and not cell_name:
         return error_response("请提供 CGI 或小区中文名。")
 
     logger.info(
-        "单小区节电分析: cgi=%s, cell_name=%s, target=%s, stat_time=%s",
+        "单小区节电分析: cgi=%s, cell_name=%s, target=%s, stat_time=%s expansion_level=%s table=%s",
         cgi,
         cell_name,
         analysis_target,
         stat_time,
+        expansion_config.key,
+        expansion_config.table_name,
     )
 
     need_expansion = analysis_target in ("all", "expansion")
@@ -212,7 +231,7 @@ async def analyze_single_cell_energy(
     elif analysis_target in {"expansion", "load"}:
         latest_sql = text(f"""
             SELECT MAX(stat_time) as max_date
-            FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
+            FROM {DB_SCHEMA_AGENT}.{expansion_config.table_name}
         """)
     elif analysis_target == "constriction":
         latest_sql = text(f"""
@@ -222,7 +241,7 @@ async def analyze_single_cell_energy(
     else:
         latest_sql = text(f"""
             SELECT LEAST(
-                (SELECT MAX(stat_time) FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day),
+                (SELECT MAX(stat_time) FROM {DB_SCHEMA_AGENT}.{expansion_config.table_name}),
                 (SELECT MAX(stat_time) FROM {DB_SCHEMA_AGENT}.jd_cell_constriction_day)
             ) as max_date
         """)
@@ -278,6 +297,8 @@ async def analyze_single_cell_energy(
         "analysis_target": analysis_target,
         "stat_time": display_date,
     }
+    if need_expansion:
+        result.update(expansion_level_metadata(expansion_config))
     if name_resolution:
         result["cell_name_match"] = {
             "query": name_resolution.query,
@@ -293,7 +314,7 @@ async def analyze_single_cell_energy(
     if need_expansion:
         tasks.append(_run_timed_stage(
             "expansion",
-            _query_expansion_data(cgi, query_date),
+            _query_expansion_data(cgi, query_date, expansion_config.key),
             performance,
         ))
         task_names.append("expansion")
@@ -426,7 +447,12 @@ async def analyze_single_cell_energy(
     if need_load and not need_expansion:
         load_info = await _run_timed_stage(
             "load",
-            _check_high_load_with_base_info(db, cgi, query_date),
+            _check_high_load_with_base_info(
+                db,
+                cgi,
+                query_date,
+                expansion_config.key,
+            ),
             performance,
         )
         result["high_load_type"] = load_info.get("high_load_type", "否")
@@ -614,8 +640,10 @@ def _build_horizontal_detail_rows_table(
 async def _query_expansion_data(
     cgi: str,
     stat_time: datetime,
+    expansion_level: str = DEFAULT_EXPANSION_LEVEL,
 ) -> dict[str, Any]:
     """读取 V1.4 扩展结果，并补齐逐小时过程证据。"""
+    expansion_config = resolve_expansion_level(expansion_level)
     expansion_sql = text(f"""
         SELECT cgi, stat_time, is_highload, jd_type, reason, starttime, endtime,
                is_whitelist,
@@ -625,7 +653,7 @@ async def _query_expansion_data(
                hour_filter_early, hour_int_early,
                deploy_hours, deploy_hours_continuous,
                deploy_hours_early, deploy_hours_continuous_early
-        FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
+        FROM {DB_SCHEMA_AGENT}.{expansion_config.table_name}
         WHERE cgi = :cgi AND stat_time = :stat_time
     """)
     sleep_sql = text(f"""
@@ -940,11 +968,17 @@ def _build_constriction_result_table(rows: list[dict[str, Any]]) -> str:
     )
 
 
-async def _check_high_load_with_base_info(db: AsyncSession, cgi: str, stat_time: datetime) -> dict[str, Any]:
+async def _check_high_load_with_base_info(
+    db: AsyncSession,
+    cgi: str,
+    stat_time: datetime,
+    expansion_level: str = DEFAULT_EXPANSION_LEVEL,
+) -> dict[str, Any]:
     """检查小区是否高负荷，同时获取基础信息。"""
+    expansion_config = resolve_expansion_level(expansion_level)
     sql = text(f"""
         SELECT is_highload, cell_name, dist_name, county_name, prod_name
-        FROM {DB_SCHEMA_AGENT}.jd_cell_expansion_day
+        FROM {DB_SCHEMA_AGENT}.{expansion_config.table_name}
         WHERE cgi = :cgi AND stat_time = :stat_time
     """)
     result = await db.execute(sql, {"cgi": cgi, "stat_time": stat_time})

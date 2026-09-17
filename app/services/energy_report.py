@@ -17,6 +17,8 @@ def _title_and_overview(result: dict[str, Any]) -> list[str]:
         if result.get(key):
             lines.append(f"- {label}：{result[key]}")
     if result.get("analysis_target") in {"all", "expansion"}:
+        if result.get("expansion_criteria"):
+            lines.append(f"- 扩展策略：{result['expansion_criteria']}")
         lines.append(f"- 扩展结论：{_expansion_status(result.get('expansion_result_status'))}")
     if result.get("analysis_target") in {"all", "constriction"}:
         count = result.get("constriction_total_count")
@@ -104,6 +106,18 @@ def _append_expansion(lines: list[str], result: dict[str, Any]) -> None:
     if result.get("expansion_result_status") == "candidate_available":
         _append_table(lines, "扩展候选时段", result.get("expansion_candidate_table"))
         _append_table(lines, "连续部署结果", result.get("expansion_deployment_table"))
+
+
+def _append_expansion_level_tip(
+    lines: list[str],
+    result: dict[str, Any],
+) -> None:
+    if result.get("expansion_level") != "conservative":
+        return
+    lines.extend([
+        "",
+        "> 还可选择中等扩展（400M）或激进扩展（500M）查看对应结果。",
+    ])
 
 
 def _append_constriction(lines: list[str], result: dict[str, Any]) -> None:
@@ -224,6 +238,7 @@ def build_single_cell_energy_report(result: dict[str, Any]) -> str:
         _append_expansion(lines, result)
         _append_param_check(lines, result)
         lines.extend(["", "### 综合扩展建议", _expansion_status(result.get("expansion_result_status"))])
+        _append_expansion_level_tip(lines, result)
     if target in {"all", "constriction"}:
         _append_constriction(lines, result)
         _append_pre_sleep_load(lines, result)

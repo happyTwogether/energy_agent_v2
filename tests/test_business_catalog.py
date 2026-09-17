@@ -145,6 +145,29 @@ async def test_search_matches_alias_and_english_field_fragment(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question", "expected_table"),
+    [
+        ("查询400M扩展表连续部署时段", "jd_cell_expansion_day_400"),
+        ("查询激进扩展连续部署时段", "jd_cell_expansion_day_500"),
+    ],
+)
+async def test_search_selects_explicit_expansion_level_table(
+    policy_path: Path,
+    settings: Settings,
+    question: str,
+    expected_table: str,
+) -> None:
+    store = BusinessCatalogStore(policy_path=policy_path, settings=settings)
+    await store.get_or_load(FakeSession())
+
+    candidates = store.search(question, limit=5)
+
+    assert candidates[0].table.name == expected_table
+    assert store.find_paths([expected_table, "jd_cell_constriction_day"])
+
+
+@pytest.mark.asyncio
 async def test_search_recalls_each_requested_field_from_long_multi_field_question(
     policy_path: Path,
     settings: Settings,

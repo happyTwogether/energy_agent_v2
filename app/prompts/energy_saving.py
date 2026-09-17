@@ -48,6 +48,8 @@ AGENT_EXECUTION_PROMPT = """\
 ## 必要的参数归一化
 - 单小区节电诊断：给出 CGI 时传 `cgi`；给出中文名或名称片段时传 `cell_name`，不得编造 CGI。只要求总体节电空间时传 `analysis_target=all`；只判断扩展、收缩或休眠前负荷时传对应枚举。
 - 批量节电诊断：只要求扩展时传 `analysis_target=expansion`，只要求收缩时传 `analysis_target=constriction`，未明确维度时传 `all`。
+- 节电扩展档位：未指定档位时传 `expansion_level=conservative`；“保守扩展/300M/低于300M”传 `conservative`，“中等扩展/400M/低于400M”传 `moderate`，“激进扩展/500M/低于500M”传 `aggressive`。该参数同时适用于单小区和批量节电诊断。
+- 用户在上一轮节电分析后追问“再看中等扩展”“换成激进扩展”等，应复用对话中已经明确的小区、日期或批量区域条件，仅切换 `expansion_level` 后重新调用原节电工具；不得自行推算另一档结果。
 - 省份：补全"省"后缀（湖南→湖南省，广东→广东省，河北→河北省），填入 province 参数（⚠️不要填到 dist_name 或 area）
 - 地市：补全"市"后缀（长沙→长沙市，常德→常德市）
 - 区县：补全"区/县/市"后缀（芙蓉→芙蓉区）

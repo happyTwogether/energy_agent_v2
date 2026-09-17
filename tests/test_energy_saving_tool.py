@@ -205,11 +205,43 @@ async def test_query_expansion_preserves_unknown_whitelist_flag(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expansion_level", "expected_table"),
+    [
+        ("conservative", "jd_cell_expansion_day"),
+        ("moderate", "jd_cell_expansion_day_400"),
+        ("aggressive", "jd_cell_expansion_day_500"),
+    ],
+)
+async def test_query_expansion_routes_to_selected_table(
+    monkeypatch,
+    expansion_level,
+    expected_table,
+):
+    queries: list[str] = []
+
+    async def fake_fetch_rows(sql, params):
+        queries.append(str(sql))
+        return []
+
+    monkeypatch.setattr(energy_saving_tool, "fetch_rows", fake_fetch_rows)
+
+    await energy_saving_tool._query_expansion_data(
+        "460-00-1-1",
+        datetime(2026, 8, 10),
+        expansion_level,
+    )
+
+    assert f"FROM jd_agent.{expected_table}" in queries[0]
+
+
+@pytest.mark.asyncio
 async def test_single_cell_handler_returns_direct_report_and_stage_performance(
     monkeypatch,
 ):
     """真实 handler 应直出正文，并暴露实际执行阶段的耗时。"""
-    async def fake_query_expansion(cgi, stat_time):
+    async def fake_query_expansion(cgi, stat_time, expansion_level):
+        assert expansion_level == "conservative"
         return {
             "data": [],
             "table": "",
@@ -250,6 +282,10 @@ async def test_single_cell_handler_returns_direct_report_and_stage_performance(
     )
 
     assert "暂不能判断是否需要扩展" in result["report_content"]
+    assert result["expansion_level"] == "conservative"
+    assert result["expansion_threshold_mbps"] == 300
+    assert "保守扩展" in result["report_content"]
+    assert "中等扩展（400M）" in result["report_content"]
     assert result["whitelist_status"] == "unknown"
     for key in (
         "latest_date_ms",
@@ -264,11 +300,24 @@ async def test_single_cell_handler_returns_direct_report_and_stage_performance(
 
 
 @pytest.mark.asyncio
+async def test_single_cell_rejects_unknown_expansion_level():
+    result = await energy_saving_tool.analyze_single_cell_energy(
+        analysis_target="expansion",
+        expansion_level="custom",
+        db=_LatestDateSession(),
+        cgi="460-00-1-1",
+    )
+
+    assert result["success"] is False
+    assert "不支持的扩展档位" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_single_cell_load_handler_reports_state_and_stage_performance(
     monkeypatch,
 ):
     """仅负荷 handler 应直出结论并记录独立查询阶段耗时。"""
-    async def fake_check_high_load(db, cgi, stat_time):
+    async def fake_check_high_load(db, cgi, stat_time, expansion_level):
         return {"high_load_type": "上高", "cell_name": "测试小区"}
 
     monkeypatch.setattr(
@@ -293,7 +342,7 @@ async def test_single_cell_load_handler_reports_state_and_stage_performance(
 @pytest.mark.asyncio
 async def test_single_cell_future_date_fallback_note_is_rendered(monkeypatch):
     """未来日期自动回退说明须保留在结构化结果和直出正文中。"""
-    async def fake_check_high_load(db, cgi, stat_time):
+    async def fake_check_high_load(db, cgi, stat_time, expansion_level):
         return {"high_load_type": "否", "cell_name": "测试小区"}
 
     monkeypatch.setattr(
@@ -326,7 +375,7 @@ async def test_single_cell_response_exposes_expansion_raw_data(monkeypatch):
         "deploy_hours_continuous": "22:00-00:59",
     }
 
-    async def fake_query_expansion(cgi, stat_time):
+    async def fake_query_expansion(cgi, stat_time, expansion_level):
         return {
             "data": [expansion_row],
             "table": "扩展表",
@@ -371,7 +420,7 @@ async def test_single_cell_response_exposes_expansion_raw_data(monkeypatch):
 @pytest.mark.asyncio
 async def test_single_cell_response_preserves_unavailable_param_state(monkeypatch):
     """参数核查异常时不得被默认值伪装成合规。"""
-    async def fake_query_expansion(cgi, stat_time):
+    async def fake_query_expansion(cgi, stat_time, expansion_level):
         return {"data": [], "table": "扩展表", "cell_name": "测试小区"}
 
     async def fake_param_check(db, cgi, stat_time):
@@ -436,7 +485,7 @@ async def test_single_cell_response_normalizes_expansion_whitelist_metadata(
     monkeypatch,
 ):
     """扩展响应必须输出布尔白名单状态和完整有效期。"""
-    async def fake_query_expansion(cgi, stat_time):
+    async def fake_query_expansion(cgi, stat_time, expansion_level):
         return {
             "data": [],
             "table": "扩展表",
@@ -632,7 +681,7 @@ async def test_pre_sleep_detail_tolerates_dirty_text_metrics(monkeypatch):
 @pytest.mark.asyncio
 async def test_all_response_includes_pre_sleep_load(monkeypatch):
     """完整分析必须同时返回休眠前负荷原始结果。"""
-    async def fake_query_expansion(cgi, stat_time):
+    async def fake_query_expansion(cgi, stat_time, expansion_level):
         return {"data": [], "table": "扩展表", "cell_name": "测试小区"}
 
     async def fake_query_constriction(cgi, stat_time):
@@ -834,7 +883,7 @@ async def test_all_response_uses_constriction_whitelist_when_expansion_misses(
     monkeypatch,
 ):
     """扩展未命中时，完整分析仍须保留收缩侧的白名单风险。"""
-    async def fake_query_expansion(cgi, stat_time):
+    async def fake_query_expansion(cgi, stat_time, expansion_level):
         return {
             "data": [],
             "table": "扩展表",
