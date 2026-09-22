@@ -29,7 +29,11 @@ def parse_request_messages(
     if not normalized or normalized[-1].get("role") != "user":
         raise ValueError("最后一条非 system 消息必须是 user")
 
-    history = [_convert_history_message(message) for message in normalized[:-1]]
+    history = []
+    for message in normalized[:-1]:
+        converted = _convert_history_message(message)
+        if converted.role == "user":
+            history.append(converted)
     current_user = UserMsg(
         name="user",
         content=_require_text_content(normalized[-1]),

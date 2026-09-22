@@ -31,6 +31,18 @@
   {
     "type": "function",
     "function": {
+      "name": "answer_general_guidance",
+      "description": "返回固定的能力说明。适用：寒暄、能力询问或没有具体业务目标的问题。不适用：任何数据查询、业务判断、分析、比较或结论。",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "analyze_single_cell_energy",
       "description": "生成单个5G小区的确定性节电诊断报告。适用：判断单个5G小区是否有节电空间、能否扩展、是否需要收缩、休眠是否影响周边负荷或休眠前负荷，并给出业务建议。不适用：仅查询字段值、指标值、表记录、明细或趋势。",
       "parameters": {

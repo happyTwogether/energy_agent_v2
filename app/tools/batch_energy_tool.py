@@ -19,6 +19,7 @@ from app.services.energy_evidence import query_neighbor_relations, query_site_ty
 from app.services.expansion_levels import (
     DEFAULT_EXPANSION_LEVEL,
     EXPANSION_LEVELS,
+    expansion_level_tip,
     expansion_level_metadata,
     resolve_expansion_level,
 )
@@ -841,13 +842,10 @@ def _generate_batch_report_markdown(
         lines.append("")
         lines.append(f"📥 [点击下载完整批量分析 Excel 报告]({download_url})")
 
-    if (
-        analysis_target in (TARGET_ALL, TARGET_EXPANSION)
-        and expansion_config.key == DEFAULT_EXPANSION_LEVEL
-    ):
+    if analysis_target in (TARGET_ALL, TARGET_EXPANSION):
         lines.extend([
             "",
-            "> 还可选择中等扩展（400M）或激进扩展（500M）查看对应结果。",
+            expansion_level_tip(expansion_config.key),
         ])
 
     return "\n".join(lines)

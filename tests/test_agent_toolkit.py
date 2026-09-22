@@ -10,18 +10,27 @@ from agentscope.permission import PermissionBehavior, PermissionContext
 try:
     from app.agent.errors import AgentConfigurationError
     from app.agent.tool_specs import EnergyToolSpec, TOOL_SPECS
-    from app.agent.toolkit import EnergyFunctionTool, build_toolkit
+    from app.agent.toolkit import (
+        GENERAL_GUIDANCE_TEXT,
+        EnergyFunctionTool,
+        GeneralGuidanceTool,
+        build_toolkit,
+    )
 except ModuleNotFoundError:
     EnergyToolSpec = None
     TOOL_SPECS = ()
     EnergyFunctionTool = None
+    GeneralGuidanceTool = None
     build_toolkit = None
 
 
 def load_schema_fixture() -> list[dict]:
-    """读取固化的 8 个 OpenAI function schema。"""
+    """读取固化的 OpenAI function schema。"""
     fixture = Path(__file__).parent / "fixtures" / "tool_schemas.json"
-    return json.loads(fixture.read_text(encoding="utf-8"))
+    return sorted(
+        json.loads(fixture.read_text(encoding="utf-8")),
+        key=lambda item: item["function"]["name"],
+    )
 
 
 class AgentToolkitTest(unittest.IsolatedAsyncioTestCase):
@@ -30,6 +39,7 @@ class AgentToolkitTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.assertIsNotNone(EnergyToolSpec, "AgentScope 工具目录尚未实现")
         self.assertIsNotNone(EnergyFunctionTool, "AgentScope 工具适配器尚未实现")
+        self.assertIsNotNone(GeneralGuidanceTool, "安全兜底工具尚未实现")
         self.assertIsNotNone(build_toolkit, "AgentScope Toolkit 尚未实现")
 
     def test_tool_descriptions_separate_data_lookup_from_business_diagnosis(
@@ -169,6 +179,18 @@ class AgentToolkitTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(PermissionBehavior.ALLOW, decision.behavior)
 
+    async def test_general_guidance_is_fixed_and_contains_no_business_data(
+        self,
+    ) -> None:
+        tool = GeneralGuidanceTool()  # type: ignore[misc]
+
+        chunk = await tool.call()
+
+        self.assertEqual(ToolResultState.SUCCESS, chunk.state)
+        self.assertEqual(GENERAL_GUIDANCE_TEXT, chunk.content[0].text)
+        self.assertEqual(GENERAL_GUIDANCE_TEXT, chunk.metadata["direct_answer"])
+        self.assertFalse(any(character.isdigit() for character in chunk.content[0].text))
+
     async def test_toolkit_schemas_match_the_legacy_fixture(self) -> None:
         actual = sorted(
             await build_toolkit().get_tool_schemas(),  # type: ignore[misc]
@@ -187,6 +209,7 @@ class AgentToolkitTest(unittest.IsolatedAsyncioTestCase):
         expected_names = {
             "analyze_batch_cells_energy",
             "analyze_single_cell_energy",
+            "answer_general_guidance",
             "generate_chart",
             "query_anomaly",
             "query_business_data",

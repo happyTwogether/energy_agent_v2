@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 import unittest
+from unittest.mock import AsyncMock
 
 from agentscope.event import (
     ModelCallStartEvent,
@@ -14,16 +15,19 @@ from agentscope.message import (
     UserMsg,
 )
 from agentscope.state import AgentState
+from agentscope.tool import ToolChoice, Toolkit
 
 try:
     from app.agent.middleware import (
         DirectAnswerMiddleware,
         EnergyPromptMiddleware,
+        GroundedToolChoiceMiddleware,
         build_prompt,
     )
 except ModuleNotFoundError:
     DirectAnswerMiddleware = None
     EnergyPromptMiddleware = None
+    GroundedToolChoiceMiddleware = None
     build_prompt = None
 
 
@@ -38,6 +42,7 @@ class AgentPromptMiddlewareTest(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         agent = SimpleNamespace(
+            toolkit=Toolkit(),
             state=AgentState(
                 context=[
                     UserMsg(name="user", content="查询报表"),
@@ -168,6 +173,146 @@ class DirectAnswerMiddlewareTest(unittest.IsolatedAsyncioTestCase):
             model_next_handler,
         )
         self.assertIs(sentinel, response)
+
+
+class GroundedToolChoiceMiddlewareTest(unittest.IsolatedAsyncioTestCase):
+    """验证本轮必须先有工具证据才能生成文本。"""
+
+    def setUp(self) -> None:
+        self.assertIsNotNone(
+            GroundedToolChoiceMiddleware,
+            "工具证据门禁中间件尚未实现",
+        )
+
+    async def test_requires_tool_before_current_turn_has_a_result(self) -> None:
+        captured: dict = {}
+
+        async def next_handler(**kwargs):
+            captured.update(kwargs)
+            yield ModelCallStartEvent(reply_id="reply-3", model_name="fake")
+
+        agent = SimpleNamespace(
+            toolkit=Toolkit(),
+            state=AgentState(
+                context=[UserMsg(name="user", content="查询湖南能耗")],
+            ),
+        )
+
+        events = [
+            event
+            async for event in GroundedToolChoiceMiddleware().on_reasoning(  # type: ignore[misc]
+                agent,
+                {"tool_choice": None},
+                next_handler,
+            )
+        ]
+
+        self.assertEqual(1, len(events))
+        self.assertIsInstance(captured["tool_choice"], ToolChoice)
+        self.assertEqual("required", captured["tool_choice"].mode)
+
+    async def test_business_request_cannot_choose_general_guidance(self) -> None:
+        captured: dict = {}
+        schemas = [
+            {"function": {"name": "query_report"}},
+            {"function": {"name": "answer_general_guidance"}},
+        ]
+
+        async def next_handler(**kwargs):
+            captured.update(kwargs)
+            yield ModelCallStartEvent(reply_id="reply-5", model_name="fake")
+
+        agent = SimpleNamespace(
+            toolkit=SimpleNamespace(get_tool_schemas=AsyncMock(return_value=schemas)),
+            state=AgentState(
+                context=[UserMsg(name="user", content="查询湖南能耗")],
+            ),
+        )
+
+        events = [
+            event
+            async for event in GroundedToolChoiceMiddleware().on_reasoning(  # type: ignore[misc]
+                agent,
+                {"tool_choice": None},
+                next_handler,
+            )
+        ]
+
+        self.assertEqual(1, len(events))
+        self.assertEqual("required", captured["tool_choice"].mode)
+        self.assertEqual(["query_report"], captured["tool_choice"].tools)
+
+    async def test_greeting_is_forced_to_fixed_guidance_tool(self) -> None:
+        captured: dict = {}
+        schemas = [
+            {"function": {"name": "query_report"}},
+            {"function": {"name": "answer_general_guidance"}},
+        ]
+
+        async def next_handler(**kwargs):
+            captured.update(kwargs)
+            yield ModelCallStartEvent(reply_id="reply-6", model_name="fake")
+
+        agent = SimpleNamespace(
+            toolkit=SimpleNamespace(get_tool_schemas=AsyncMock(return_value=schemas)),
+            state=AgentState(
+                context=[UserMsg(name="user", content="你好！")],
+            ),
+        )
+
+        events = [
+            event
+            async for event in GroundedToolChoiceMiddleware().on_reasoning(  # type: ignore[misc]
+                agent,
+                {"tool_choice": None},
+                next_handler,
+            )
+        ]
+
+        self.assertEqual(1, len(events))
+        self.assertEqual(
+            "answer_general_guidance",
+            captured["tool_choice"].mode,
+        )
+
+    async def test_releases_gate_after_current_turn_tool_result(self) -> None:
+        captured: dict = {}
+
+        async def next_handler(**kwargs):
+            captured.update(kwargs)
+            yield ModelCallStartEvent(reply_id="reply-4", model_name="fake")
+
+        agent = SimpleNamespace(
+            toolkit=Toolkit(),
+            state=AgentState(
+                context=[
+                    UserMsg(name="user", content="查询湖南能耗"),
+                    AssistantMsg(
+                        name="energy_agent",
+                        content=[
+                            ToolResultBlock(
+                                id="call-2",
+                                name="query_report",
+                                output="{}",
+                                state=ToolResultState.SUCCESS,
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        )
+
+        events = [
+            event
+            async for event in GroundedToolChoiceMiddleware().on_reasoning(  # type: ignore[misc]
+                agent,
+                {"tool_choice": None},
+                next_handler,
+            )
+        ]
+
+        self.assertEqual(1, len(events))
+        self.assertIsNone(captured["tool_choice"])
 
 
 if __name__ == "__main__":

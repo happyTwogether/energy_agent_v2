@@ -32,6 +32,7 @@ class ToolCallingModel(ChatModelBase):
             max_retries=0,
         )
         self.calls = 0
+        self.tool_choices = []
 
     async def _call_api(
         self,
@@ -42,6 +43,7 @@ class ToolCallingModel(ChatModelBase):
         **kwargs,
     ) -> ChatResponse:
         self.calls += 1
+        self.tool_choices.append(tool_choice)
         if self.calls == 1:
             content = [
                 ToolCallBlock(
@@ -113,6 +115,7 @@ class AgentScopeIntegrationTest(unittest.IsolatedAsyncioTestCase):
         ]
 
         self.assertEqual(1, model.calls)
+        self.assertEqual("required", model.tool_choices[0].mode)
         self.assertEqual(
             ["message", "agent_thought", "message", "message_end"],
             [payload["event"] for payload in payloads],

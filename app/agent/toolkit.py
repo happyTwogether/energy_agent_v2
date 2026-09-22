@@ -23,6 +23,12 @@ from app.services.database import (
 SessionFactory = Callable[[], AsyncContextManager[Any]]
 logger = get_logger("agent_toolkit")
 
+GENERAL_GUIDANCE_TOOL_NAME = "answer_general_guidance"
+GENERAL_GUIDANCE_TEXT = (
+    "我可以查询能耗、业务指标、节电扩展与收缩、异常、"
+    "参数合规和报表。请具体说明小区、区域或查询目标。"
+)
+
 
 class EnergyFunctionTool(ToolBase):
     """为每次调用创建独立数据库会话的 AgentScope 工具。"""
@@ -95,6 +101,49 @@ class EnergyFunctionTool(ToolBase):
         )
 
 
+class GeneralGuidanceTool(ToolBase):
+    """为寒暄和非数据问题返回固定的安全说明。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.name = GENERAL_GUIDANCE_TOOL_NAME
+        self.description = (
+            "返回固定的能力说明。"
+            "适用：寒暄、能力询问或没有具体业务目标的问题。"
+            "不适用：任何数据查询、业务判断、分析、比较或结论。"
+        )
+        self.input_schema = {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+        self.is_read_only = True
+        self.is_concurrency_safe = True
+
+    async def call(self, **kwargs: Any) -> ToolChunk:
+        """返回不含业务数据的确定性文本。"""
+        return ToolChunk(
+            content=[TextBlock(text=GENERAL_GUIDANCE_TEXT)],
+            state=ToolResultState.SUCCESS,
+            metadata={
+                "tool_name": self.name,
+                "direct_answer": GENERAL_GUIDANCE_TEXT,
+                "download_url": "",
+            },
+        )
+
+    async def check_permissions(
+        self,
+        tool_input: dict[str, Any],
+        context: PermissionContext,
+    ) -> PermissionDecision:
+        """固定说明工具无需交互式授权。"""
+        return PermissionDecision(
+            behavior=PermissionBehavior.ALLOW,
+            message="允许返回固定能力说明",
+        )
+
+
 def extract_direct_answer(payload: dict[str, Any]) -> str | None:
     """提取工具已经生成好的 Markdown，并补充下载链接。"""
     report_content = payload.get("report_content")
@@ -111,7 +160,7 @@ def build_toolkit(
     session_factory: SessionFactory | None = None,
     self_service_session_factory: SessionFactory | None = None,
 ) -> Toolkit:
-    """构建包含 1 个数据查询工具和 7 个专业工具的 Toolkit。"""
+    """构建业务工具和无数据安全兜底工具的 Toolkit。"""
     runtime_session_factory = session_factory or _new_session
     runtime_self_service_factory = (
         self_service_session_factory or _new_self_service_session
@@ -127,7 +176,7 @@ def build_toolkit(
                 ),
             )
             for spec in TOOL_SPECS
-        ],
+        ] + [GeneralGuidanceTool()],
     )
 
 

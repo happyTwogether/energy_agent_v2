@@ -12,9 +12,30 @@ from agentscope.event import (
 from agentscope.message import TextBlock, ToolResultBlock, ToolResultState
 from agentscope.middleware import MiddlewareBase
 from agentscope.model import ChatResponse, ChatUsage
+from agentscope.tool import ToolChoice
 
 from app.core.config import get_settings
+from app.agent.toolkit import GENERAL_GUIDANCE_TOOL_NAME
 from app.prompts.energy_saving import AGENT_EXECUTION_PROMPT, get_synthesis_prompt
+
+
+_GENERAL_GUIDANCE_REQUESTS = frozenset({
+    "hi",
+    "hello",
+    "你好",
+    "您好",
+    "嗨",
+    "在吗",
+    "谢谢",
+    "好的",
+    "帮助",
+    "你能做什么",
+    "你可以做什么",
+    "有什么功能",
+    "怎么用",
+    "如何使用",
+})
+_IGNORED_GENERAL_CHARACTERS = str.maketrans("", "", " \t\r\n，。！？,.!?")
 
 
 class EnergyPromptMiddleware(MiddlewareBase):
@@ -31,6 +52,26 @@ class EnergyPromptMiddleware(MiddlewareBase):
             tool_name=tool_name,
             user_context=self._user_context,
         )
+
+
+class GroundedToolChoiceMiddleware(MiddlewareBase):
+    """本轮尚无工具证据时禁止模型直接作答。"""
+
+    async def on_reasoning(
+        self,
+        agent: Any,
+        input_kwargs: dict[str, Any],
+        next_handler: Any,
+    ) -> AsyncGenerator[AgentEvent, None]:
+        next_kwargs = dict(input_kwargs)
+        current_choice = next_kwargs.get("tool_choice")
+        if not _has_tool_result(agent.state.context) and (
+            current_choice is None or current_choice.mode == "auto"
+        ):
+            next_kwargs["tool_choice"] = await _required_tool_choice(agent)
+
+        async for event in next_handler(**next_kwargs):
+            yield event
 
 
 class DirectAnswerMiddleware(MiddlewareBase):
@@ -120,6 +161,42 @@ def _latest_successful_tool_name(context: list[Any]) -> str | None:
             ):
                 return block.name
     return None
+
+
+def _has_tool_result(context: list[Any]) -> bool:
+    """判断当前请求上下文是否已有工具返回。"""
+    return any(
+        isinstance(block, ToolResultBlock)
+        for message in context
+        for block in message.content
+    )
+
+
+async def _required_tool_choice(agent: Any) -> ToolChoice:
+    """为本轮首次推理构建强制工具白名单。"""
+    schemas = await agent.toolkit.get_tool_schemas()
+    tool_names = [item["function"]["name"] for item in schemas]
+    if (
+        GENERAL_GUIDANCE_TOOL_NAME in tool_names
+        and _is_general_guidance_request(agent.state.context)
+    ):
+        return ToolChoice(mode=GENERAL_GUIDANCE_TOOL_NAME)
+
+    business_tools = [
+        name for name in tool_names if name != GENERAL_GUIDANCE_TOOL_NAME
+    ]
+    return ToolChoice(mode="required", tools=business_tools or None)
+
+
+def _is_general_guidance_request(context: list[Any]) -> bool:
+    """仅允许明确、简短的非业务请求进入固定兜底。"""
+    for message in reversed(context):
+        if message.role == "user":
+            normalized = message.get_text_content().lower().translate(
+                _IGNORED_GENERAL_CHARACTERS,
+            )
+            return normalized in _GENERAL_GUIDANCE_REQUESTS
+    return False
 
 
 def _single_direct_answer(

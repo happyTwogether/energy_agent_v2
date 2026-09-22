@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.expansion_levels import expansion_level_tip
+
 
 def _title_and_overview(result: dict[str, Any]) -> list[str]:
     cell_name = result.get("cell_name") or result.get("cgi") or "未知小区"
@@ -112,11 +114,9 @@ def _append_expansion_level_tip(
     lines: list[str],
     result: dict[str, Any],
 ) -> None:
-    if result.get("expansion_level") != "conservative":
-        return
     lines.extend([
         "",
-        "> 还可选择中等扩展（400M）或激进扩展（500M）查看对应结果。",
+        expansion_level_tip(result.get("expansion_level")),
     ])
 
 

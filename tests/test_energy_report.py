@@ -46,7 +46,7 @@ def test_report_hides_expansion_tables_when_result_is_unavailable():
     assert "0小时" not in report
 
 
-def test_report_displays_selected_level_and_only_prompts_from_conservative():
+def test_report_displays_selected_level_and_prompts_other_levels():
     conservative = build_single_cell_energy_report({
         "analysis_target": "expansion",
         "expansion_result_status": "no_candidate",
@@ -61,11 +61,20 @@ def test_report_displays_selected_level_and_only_prompts_from_conservative():
         "expansion_criteria": "中等扩展（连续不少于15天，低于400M的概率不低于90%）",
         "whitelist_status": "unknown",
     })
+    aggressive = build_single_cell_energy_report({
+        "analysis_target": "expansion",
+        "expansion_result_status": "no_candidate",
+        "expansion_level": "aggressive",
+        "expansion_criteria": "激进扩展（连续不少于15天，低于500M的概率不低于90%）",
+        "whitelist_status": "unknown",
+    })
 
     assert "扩展策略：保守扩展" in conservative
     assert "中等扩展（400M）或激进扩展（500M）" in conservative
     assert "扩展策略：中等扩展" in moderate
-    assert "还可选择" not in moderate
+    assert "保守扩展（300M）或激进扩展（500M）" in moderate
+    assert "扩展策略：激进扩展" in aggressive
+    assert "保守扩展（300M）或中等扩展（400M）" in aggressive
 
 
 def test_report_marks_indeterminate_param_check_as_unavailable():

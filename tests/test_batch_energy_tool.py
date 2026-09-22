@@ -136,7 +136,11 @@ async def test_batch_analysis_uses_selected_expansion_table_and_export_prefix(
     assert f"FROM jd_agent.{expected_table}" in queries[0]
     assert result["expansion_level"] == expansion_level
     assert result["expansion_level_label"] in result["report_content"]
-    assert "还可选择" not in result["report_content"]
+    expected_alternatives = {
+        "moderate": "保守扩展（300M）或激进扩展（500M）",
+        "aggressive": "保守扩展（300M）或中等扩展（400M）",
+    }
+    assert expected_alternatives[expansion_level] in result["report_content"]
     assert prefixes == [expected_prefix]
 
 

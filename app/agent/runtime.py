@@ -9,7 +9,11 @@ from agentscope.state import AgentState
 from agentscope.tool import Toolkit
 
 from app.agent.messages import ParsedRequestMessages, parse_request_messages
-from app.agent.middleware import DirectAnswerMiddleware, EnergyPromptMiddleware
+from app.agent.middleware import (
+    DirectAnswerMiddleware,
+    EnergyPromptMiddleware,
+    GroundedToolChoiceMiddleware,
+)
 from app.agent.model import build_chat_model
 from app.agent.toolkit import build_toolkit
 from app.core.config import Settings, get_settings
@@ -36,6 +40,7 @@ def build_energy_agent(
         toolkit=runtime_toolkit,
         middlewares=[
             DirectAnswerMiddleware(),
+            GroundedToolChoiceMiddleware(),
             EnergyPromptMiddleware(parsed.user_context),
         ],
         state=AgentState(

@@ -65,3 +65,15 @@ def expansion_level_metadata(config: ExpansionLevelConfig) -> dict[str, object]:
         "expansion_threshold_mbps": config.traffic_threshold_mbps,
         "expansion_criteria": config.criteria_text,
     }
+
+
+def expansion_level_tip(expansion_level: str | None) -> str:
+    """生成当前档位以外的两个可查询选项。"""
+    selected = resolve_expansion_level(expansion_level)
+    alternatives = [
+        f"{config.label}（{config.traffic_threshold_mbps}M）"
+        for config in EXPANSION_LEVELS.values()
+        if config.key != selected.key
+    ]
+    alternative_text = "或".join(alternatives)
+    return f"> 还可选择{alternative_text}查看对应结果。"
