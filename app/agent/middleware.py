@@ -111,12 +111,11 @@ class GroundedToolChoiceMiddleware(MiddlewareBase):
     ) -> AsyncGenerator[AgentEvent, None]:
         next_kwargs = dict(input_kwargs)
         current_choice = next_kwargs.get("tool_choice")
-        if (
-            not _has_tool_result(agent.state.context)
-            and not _is_conversation_explanation_request(agent.state.context)
-            and (current_choice is None or current_choice.mode == "auto")
-        ):
-            next_kwargs["tool_choice"] = await _required_tool_choice(agent)
+        if not _has_tool_result(agent.state.context):
+            if _is_conversation_explanation_request(agent.state.context):
+                next_kwargs["tool_choice"] = ToolChoice(mode="none")
+            elif current_choice is None or current_choice.mode == "auto":
+                next_kwargs["tool_choice"] = await _required_tool_choice(agent)
 
         async for event in next_handler(**next_kwargs):
             yield event
