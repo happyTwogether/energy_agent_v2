@@ -10,6 +10,7 @@ from agentscope.tool import Toolkit
 
 from app.agent.messages import ParsedRequestMessages, parse_request_messages
 from app.agent.middleware import (
+    BusinessToolInputMiddleware,
     DirectAnswerMiddleware,
     EnergyPromptMiddleware,
     GroundedToolChoiceMiddleware,
@@ -41,6 +42,14 @@ def build_energy_agent(
         middlewares=[
             DirectAnswerMiddleware(),
             GroundedToolChoiceMiddleware(),
+            BusinessToolInputMiddleware(
+                current_user_text=parsed.current_user.get_text_content(),
+                history_user_texts=[
+                    message.get_text_content()
+                    for message in parsed.history
+                    if message.role == "user"
+                ],
+            ),
             EnergyPromptMiddleware(parsed.user_context),
         ],
         state=AgentState(
