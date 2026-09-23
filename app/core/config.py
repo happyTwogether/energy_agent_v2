@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
     llm_context_size: int = 32768
     llm_max_retries: int = 2
-    llm_parallel_tool_calls: bool = True
+    llm_parallel_tool_calls: bool = False  # 兼容保留；能效 Agent 运行时固定串行
     agent_system_prompt: str = ""
     cors_origins: list[str] = ["*"]
     base_url: str = "http://10.159.55.28:9500/"  # 服务基础URL
