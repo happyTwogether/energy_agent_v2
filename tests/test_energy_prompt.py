@@ -67,7 +67,11 @@ def test_execution_prompt_has_stable_data_and_specialist_boundaries():
     assert "expansion_level" in prompt
     assert "中等扩展/400M/低于400M" in prompt
     assert "激进扩展/500M/低于500M" in prompt
-    assert "复用对话中已经明确的小区、日期或批量区域条件" in prompt
+    assert "日期只来自用户" in prompt
+    assert "不得自行补“今天”“昨天”" in prompt
+    assert "对话解释不查库" in prompt
+    assert "今日日期：" not in prompt
+    assert "昨日日期：" not in prompt
 
 
 def test_business_data_synthesis_uses_structured_rows_for_agent_diagnosis():
