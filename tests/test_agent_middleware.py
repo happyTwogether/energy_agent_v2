@@ -1,6 +1,7 @@
 """AgentScope Prompt 与报告直出中间件测试。"""
 
 from types import SimpleNamespace
+import json
 import unittest
 from unittest.mock import AsyncMock
 
@@ -10,6 +11,7 @@ from agentscope.event import (
 )
 from agentscope.message import (
     AssistantMsg,
+    ToolCallBlock,
     ToolResultBlock,
     ToolResultState,
     UserMsg,
@@ -19,12 +21,14 @@ from agentscope.tool import ToolChoice, Toolkit
 
 try:
     from app.agent.middleware import (
+        BusinessToolInputMiddleware,
         DirectAnswerMiddleware,
         EnergyPromptMiddleware,
         GroundedToolChoiceMiddleware,
         build_prompt,
     )
 except ModuleNotFoundError:
+    BusinessToolInputMiddleware = None
     DirectAnswerMiddleware = None
     EnergyPromptMiddleware = None
     GroundedToolChoiceMiddleware = None
@@ -81,6 +85,81 @@ class AgentPromptMiddlewareTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("省份=湖南省", prompt)
         self.assertNotIn("<tool>", prompt)
         self.assertNotIn("</tool>", prompt)
+
+
+class BusinessToolInputMiddlewareTest(unittest.IsolatedAsyncioTestCase):
+    """验证用户显式档位和日期优先于模型生成参数。"""
+
+    async def _normalize(self, current_user: str, arguments: dict, history=None) -> dict:
+        captured: dict = {}
+
+        async def next_handler(**kwargs):
+            captured.update(kwargs)
+            if False:
+                yield None
+
+        tool_call = ToolCallBlock(
+            id="call-normalize",
+            name="analyze_batch_cells_energy",
+            input=json.dumps(arguments, ensure_ascii=False),
+        )
+        middleware = BusinessToolInputMiddleware(
+            current_user_text=current_user,
+            history_user_texts=history or [],
+        )
+        async for _ in middleware.on_acting(
+            SimpleNamespace(),
+            {"tool_call": tool_call},
+            next_handler,
+        ):
+            pass
+        return json.loads(captured["tool_call"].input)
+
+    async def test_explicit_moderate_overrides_model_conservative(self) -> None:
+        normalized = await self._normalize(
+            "中等扩展",
+            {
+                "dist_name": "长沙市",
+                "expansion_level": "conservative",
+                "stat_time": "2026-09-22",
+            },
+        )
+        self.assertEqual("moderate", normalized["expansion_level"])
+        self.assertNotIn("stat_time", normalized)
+
+    async def test_explicit_aggressive_overrides_model_moderate(self) -> None:
+        normalized = await self._normalize(
+            "激进扩展",
+            {
+                "dist_name": "长沙市",
+                "expansion_level": "moderate",
+            },
+        )
+        self.assertEqual("aggressive", normalized["expansion_level"])
+
+    async def test_explicit_user_date_is_preserved(self) -> None:
+        normalized = await self._normalize(
+            "查询长沙市2026-09-21中等扩展",
+            {
+                "dist_name": "长沙市",
+                "expansion_level": "conservative",
+                "stat_time": "2026-09-22",
+            },
+        )
+        self.assertEqual("moderate", normalized["expansion_level"])
+        self.assertEqual("2026-09-21", normalized["stat_time"])
+
+    async def test_switch_followup_inherits_only_user_specified_date(self) -> None:
+        normalized = await self._normalize(
+            "激进扩展",
+            {
+                "dist_name": "长沙市",
+                "expansion_level": "conservative",
+                "stat_time": "2026-09-22",
+            },
+            history=["查询长沙市2026-09-20节电空间"],
+        )
+        self.assertEqual("2026-09-20", normalized["stat_time"])
 
 
 class DirectAnswerMiddlewareTest(unittest.IsolatedAsyncioTestCase):
@@ -173,6 +252,42 @@ class DirectAnswerMiddlewareTest(unittest.IsolatedAsyncioTestCase):
             model_next_handler,
         )
         self.assertIs(sentinel, response)
+
+
+    async def test_duplicate_same_tool_results_use_last_direct_answer(self) -> None:
+        async def next_handler(**kwargs):
+            for call_id, answer in (("call-a", "中等结果"), ("call-b", "激进结果")):
+                yield ToolResultEndEvent(
+                    reply_id="reply-dup",
+                    tool_call_id=call_id,
+                    state=ToolResultState.SUCCESS,
+                    metadata={
+                        "tool_name": "analyze_batch_cells_energy",
+                        "direct_answer": answer,
+                    },
+                )
+            yield ModelCallStartEvent(reply_id="reply-dup", model_name="fake")
+
+        middleware = DirectAnswerMiddleware()
+        events = [
+            event
+            async for event in middleware.on_reply(
+                SimpleNamespace(state=AgentState(session_id="session-dup")),
+                {},
+                next_handler,
+            )
+        ]
+        self.assertTrue(any(isinstance(event, ModelCallStartEvent) for event in events))
+
+        async def model_next_handler(**kwargs):
+            raise AssertionError("同名重复报告不应再次调用模型")
+
+        response = await middleware.on_model_call(
+            SimpleNamespace(),
+            {},
+            model_next_handler,
+        )
+        self.assertEqual("激进结果", response.content[0].text)
 
 
 class GroundedToolChoiceMiddlewareTest(unittest.IsolatedAsyncioTestCase):
@@ -274,6 +389,36 @@ class GroundedToolChoiceMiddlewareTest(unittest.IsolatedAsyncioTestCase):
             "answer_general_guidance",
             captured["tool_choice"].mode,
         )
+
+    async def test_conversation_explanation_does_not_force_tool(self) -> None:
+        captured: dict = {}
+
+        async def next_handler(**kwargs):
+            captured.update(kwargs)
+            yield ModelCallStartEvent(reply_id="reply-explain", model_name="fake")
+
+        agent = SimpleNamespace(
+            toolkit=Toolkit(),
+            state=AgentState(
+                context=[
+                    UserMsg(name="user", content="长沙市节电空间"),
+                    AssistantMsg(name="assistant", content="扩展策略：保守扩展"),
+                    UserMsg(name="user", content="？那你刚为什么回答保守扩展的"),
+                ],
+            ),
+        )
+
+        events = [
+            event
+            async for event in GroundedToolChoiceMiddleware().on_reasoning(
+                agent,
+                {"tool_choice": None},
+                next_handler,
+            )
+        ]
+
+        self.assertEqual(1, len(events))
+        self.assertEqual("none", captured["tool_choice"].mode)
 
     async def test_releases_gate_after_current_turn_tool_result(self) -> None:
         captured: dict = {}

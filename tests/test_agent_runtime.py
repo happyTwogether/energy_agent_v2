@@ -91,8 +91,8 @@ class AgentRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(first.state, second.state)
         self.assertIsNot(first.state.context, second.state.context)
         self.assertEqual("conversation-1", first.state.session_id)
-        self.assertEqual(1, len(first.state.context))
-        self.assertEqual("user", first.state.context[0].role)
+        self.assertEqual(2, len(first.state.context))
+        self.assertEqual(["user", "assistant"], [m.role for m in first.state.context])
         self.assertNotIn(
             "当前问题",
             [message.get_text_content() for message in first.state.context],

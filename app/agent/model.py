@@ -30,7 +30,8 @@ def build_chat_model(
     parameters = OpenAIChatModel.Parameters(
         max_tokens=runtime_settings.llm_max_tokens,
         temperature=runtime_settings.llm_temperature,
-        parallel_tool_calls=runtime_settings.llm_parallel_tool_calls,
+        # 能效工具会生成报告/文件，强制串行可避免同一轮重复诊断与重复导出。
+        parallel_tool_calls=False,
     )
     return OpenAIChatModel(
         credential=credential,
