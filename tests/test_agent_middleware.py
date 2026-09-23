@@ -418,7 +418,7 @@ class GroundedToolChoiceMiddlewareTest(unittest.IsolatedAsyncioTestCase):
         ]
 
         self.assertEqual(1, len(events))
-        self.assertIsNone(captured["tool_choice"])
+        self.assertEqual("none", captured["tool_choice"].mode)
 
     async def test_releases_gate_after_current_turn_tool_result(self) -> None:
         captured: dict = {}
