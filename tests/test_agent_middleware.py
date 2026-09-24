@@ -420,6 +420,100 @@ class GroundedToolChoiceMiddlewareTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(events))
         self.assertEqual("none", captured["tool_choice"].mode)
 
+    async def test_vendor_value_list_is_forced_to_business_data(self) -> None:
+        captured: dict = {}
+        schemas = [
+            {"function": {"name": "query_business_data"}},
+            {"function": {"name": "query_report"}},
+            {"function": {"name": "resolve_cell_cgi"}},
+        ]
+
+        async def next_handler(**kwargs):
+            captured.update(kwargs)
+            yield ModelCallStartEvent(reply_id="reply-vendor", model_name="fake")
+
+        agent = SimpleNamespace(
+            toolkit=SimpleNamespace(get_tool_schemas=AsyncMock(return_value=schemas)),
+            state=AgentState(
+                context=[UserMsg(name="user", content="那邵阳有哪些厂家可以看")],
+            ),
+        )
+
+        events = [
+            event
+            async for event in GroundedToolChoiceMiddleware().on_reasoning(  # type: ignore[misc]
+                agent,
+                {"tool_choice": None},
+                next_handler,
+            )
+        ]
+
+        self.assertEqual(1, len(events))
+        self.assertEqual("query_business_data", captured["tool_choice"].mode)
+
+    async def test_vendor_value_correction_keeps_business_data_route(self) -> None:
+        captured: dict = {}
+        schemas = [
+            {"function": {"name": "query_business_data"}},
+            {"function": {"name": "query_report"}},
+            {"function": {"name": "resolve_cell_cgi"}},
+        ]
+
+        async def next_handler(**kwargs):
+            captured.update(kwargs)
+            yield ModelCallStartEvent(reply_id="reply-correction", model_name="fake")
+
+        agent = SimpleNamespace(
+            toolkit=SimpleNamespace(get_tool_schemas=AsyncMock(return_value=schemas)),
+            state=AgentState(context=[
+                UserMsg(name="user", content="那邵阳有哪些厂家可以看"),
+                UserMsg(name="user", content="？我没问你，我只问有哪些"),
+            ]),
+        )
+
+        events = [
+            event
+            async for event in GroundedToolChoiceMiddleware().on_reasoning(  # type: ignore[misc]
+                agent,
+                {"tool_choice": None},
+                next_handler,
+            )
+        ]
+
+        self.assertEqual(1, len(events))
+        self.assertEqual("query_business_data", captured["tool_choice"].mode)
+
+    async def test_explicit_energy_report_is_forced_to_report_tool(self) -> None:
+        captured: dict = {}
+        schemas = [
+            {"function": {"name": "query_business_data"}},
+            {"function": {"name": "query_report"}},
+            {"function": {"name": "resolve_cell_cgi"}},
+        ]
+
+        async def next_handler(**kwargs):
+            captured.update(kwargs)
+            yield ModelCallStartEvent(reply_id="reply-report", model_name="fake")
+
+        agent = SimpleNamespace(
+            toolkit=SimpleNamespace(get_tool_schemas=AsyncMock(return_value=schemas)),
+            state=AgentState(
+                context=[UserMsg(name="user", content="全省中兴能耗报表")],
+            ),
+        )
+
+        events = [
+            event
+            async for event in GroundedToolChoiceMiddleware().on_reasoning(  # type: ignore[misc]
+                agent,
+                {"tool_choice": None},
+                next_handler,
+            )
+        ]
+
+        self.assertEqual(1, len(events))
+        self.assertEqual("query_report", captured["tool_choice"].mode)
+
     async def test_releases_gate_after_current_turn_tool_result(self) -> None:
         captured: dict = {}
 
@@ -458,6 +552,45 @@ class GroundedToolChoiceMiddlewareTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(1, len(events))
         self.assertIsNone(captured["tool_choice"])
+
+    async def test_failed_tool_forces_answer_instead_of_switching_tools(self) -> None:
+        captured: dict = {}
+
+        async def next_handler(**kwargs):
+            captured.update(kwargs)
+            yield ModelCallStartEvent(reply_id="reply-failed", model_name="fake")
+
+        agent = SimpleNamespace(
+            toolkit=Toolkit(),
+            state=AgentState(
+                context=[
+                    UserMsg(name="user", content="邵阳有哪些厂家"),
+                    AssistantMsg(
+                        name="energy_agent",
+                        content=[
+                            ToolResultBlock(
+                                id="call-failed",
+                                name="query_business_data",
+                                output='{"success": false}',
+                                state=ToolResultState.ERROR,
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        )
+
+        events = [
+            event
+            async for event in GroundedToolChoiceMiddleware().on_reasoning(  # type: ignore[misc]
+                agent,
+                {"tool_choice": None},
+                next_handler,
+            )
+        ]
+
+        self.assertEqual(1, len(events))
+        self.assertEqual("none", captured["tool_choice"].mode)
 
 
 if __name__ == "__main__":

@@ -141,6 +141,11 @@ class FakePlanner:
         )
 
 
+class FailingPlanner:
+    async def plan(self, question, candidates, relationships):
+        raise AssertionError("维度枚举不应调用模型规划器")
+
+
 class FakeExecutor:
     def __init__(self) -> None:
         self.calls = 0
@@ -208,6 +213,76 @@ async def test_service_plans_executes_once_and_returns_structured_three_table_da
         for column in payload["columns"]
     )
     assert payload["database_ms"] == 12.5
+
+
+@pytest.mark.asyncio
+async def test_service_merges_dimension_values_from_4g_and_5g_without_model() -> None:
+    settings = Settings(_env_file=None)
+    snapshot = get_nr_summary_snapshot()
+    original_nr_table = snapshot.tables["nr_report_day_collect"]
+    nr_table = original_nr_table.model_copy(update={
+        "columns": {
+            **original_nr_table.columns,
+            "prod_name": CatalogColumn(
+                name="prod_name",
+                label="厂家",
+                data_type="character varying",
+            ),
+        },
+    })
+    lte_table = nr_table.model_copy(update={
+        "name": "lte_report_day_collect",
+        "label": "4G网络日汇总",
+    })
+    snapshot = snapshot.model_copy(update={
+        "tables": {
+            **snapshot.tables,
+            nr_table.name: nr_table,
+            lte_table.name: lte_table,
+        },
+    })
+    catalog = FakeCatalog(snapshot)
+    calls: list[str] = []
+
+    async def vendor_executor(db, validated, current_snapshot, current_settings):
+        table_name = validated.plan.base_table
+        calls.append(table_name)
+        values = {
+            "lte_report_day_collect": ["中兴", "爱立信"],
+            "nr_report_day_collect": ["中兴", "华为"],
+        }[table_name]
+        return BusinessQueryResult(
+            rows=[{f"{table_name}__prod_name": value} for value in values],
+            column_order=(f"{table_name}__prod_name",),
+            selected_tables=(table_name,),
+            relationship_ids=(),
+            result_grain="summary_day",
+            applied_defaults=("最近7天",),
+            database_ms=2.0,
+        )
+
+    service = BusinessDataQueryService(
+        catalog=catalog,
+        planner=FailingPlanner(),
+        executor=vendor_executor,
+        settings=settings,
+    )
+
+    payload = await service.query(db=object(), question="那邵阳有哪些厂家可以看")
+
+    assert calls == ["lte_report_day_collect", "nr_report_day_collect"]
+    assert payload["success"] is True
+    assert payload["rows"] == [
+        {"厂家": "中兴"},
+        {"厂家": "爱立信"},
+        {"厂家": "华为"},
+    ]
+    assert payload["row_count"] == 3
+    assert payload["result_grain"] == "dimension_value"
+    assert payload["tables"] == [
+        "lte_report_day_collect",
+        "nr_report_day_collect",
+    ]
 
 
 @pytest.mark.asyncio

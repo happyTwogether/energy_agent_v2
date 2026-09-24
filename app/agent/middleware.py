@@ -82,6 +82,16 @@ _EXPLICIT_DATE_PATTERN = re.compile(
     r"(?<!\d)(20\d{2})[年\-/.](\d{1,2})[月\-/.](\d{1,2})日?",
 )
 _MONTH_DAY_PATTERN = re.compile(r"(?<!\d)(\d{1,2})月(\d{1,2})日")
+_DIMENSION_PATTERN = re.compile(
+    r"设备厂家|设备厂商|厂家|厂商|设备商|频段|站点类型|站型|区域类型|区域|地市|市州",
+)
+_DIMENSION_VALUE_PATTERN = re.compile(
+    r"有哪些|有什么|能看哪些|可以看哪些|可选值",
+)
+_REPORT_REQUEST_PATTERN = re.compile(
+    r"(?:能耗|节耗电|节电).{0,8}报表|"
+    r"报表.{0,8}(?:能耗|节耗电|节电)",
+)
 
 
 class EnergyPromptMiddleware(MiddlewareBase):
@@ -111,11 +121,15 @@ class GroundedToolChoiceMiddleware(MiddlewareBase):
     ) -> AsyncGenerator[AgentEvent, None]:
         next_kwargs = dict(input_kwargs)
         current_choice = next_kwargs.get("tool_choice")
-        if not _has_tool_result(agent.state.context):
-            if _is_conversation_explanation_request(agent.state.context):
+        is_auto = current_choice is None or current_choice.mode == "auto"
+        if is_auto:
+            if _latest_current_turn_tool_failed(agent.state.context):
                 next_kwargs["tool_choice"] = ToolChoice(mode="none")
-            elif current_choice is None or current_choice.mode == "auto":
-                next_kwargs["tool_choice"] = await _required_tool_choice(agent)
+            elif not _has_tool_result(agent.state.context):
+                if _is_conversation_explanation_request(agent.state.context):
+                    next_kwargs["tool_choice"] = ToolChoice(mode="none")
+                else:
+                    next_kwargs["tool_choice"] = await _required_tool_choice(agent)
 
         async for event in next_handler(**next_kwargs):
             yield event
@@ -284,6 +298,25 @@ def _has_tool_result(context: list[Any]) -> bool:
     )
 
 
+def _latest_current_turn_tool_failed(context: list[Any]) -> bool:
+    """当前轮工具失败后禁止改调其他工具。"""
+    latest_user_index = max(
+        (
+            index
+            for index, message in enumerate(context)
+            if message.role == "user"
+        ),
+        default=-1,
+    )
+    results = [
+        block
+        for message in context[latest_user_index + 1:]
+        for block in message.content
+        if isinstance(block, ToolResultBlock)
+    ]
+    return bool(results and results[-1].state == ToolResultState.ERROR)
+
+
 async def _required_tool_choice(agent: Any) -> ToolChoice:
     """为本轮首次推理构建强制工具白名单。"""
     schemas = await agent.toolkit.get_tool_schemas()
@@ -293,6 +326,16 @@ async def _required_tool_choice(agent: Any) -> ToolChoice:
         and _is_general_guidance_request(agent.state.context)
     ):
         return ToolChoice(mode=GENERAL_GUIDANCE_TOOL_NAME)
+    if (
+        "query_business_data" in tool_names
+        and _is_dimension_value_request(agent.state.context)
+    ):
+        return ToolChoice(mode="query_business_data")
+    if (
+        "query_report" in tool_names
+        and _is_report_request(agent.state.context)
+    ):
+        return ToolChoice(mode="query_report")
 
     business_tools = [
         name for name in tool_names if name != GENERAL_GUIDANCE_TOOL_NAME
@@ -379,6 +422,42 @@ def _latest_requested_date(history_user_texts: list[str]) -> str | None:
         if requested_date := _resolve_requested_date(text):
             return requested_date
     return None
+
+
+def _is_dimension_value_request(context: list[Any]) -> bool:
+    """维度值枚举不是完整报表，始终交给通用数据查询。"""
+    user_texts = [
+        message.get_text_content().lower().translate(_IGNORED_GENERAL_CHARACTERS)
+        for message in context
+        if message.role == "user"
+    ]
+    if not user_texts:
+        return False
+    if _is_dimension_value_text(user_texts[-1]):
+        return True
+    is_correction = "只问有哪些" in user_texts[-1]
+    return is_correction and any(
+        _is_dimension_value_text(text)
+        for text in reversed(user_texts[:-1])
+    )
+
+
+def _is_dimension_value_text(text: str) -> bool:
+    return bool(
+        _DIMENSION_PATTERN.search(text)
+        and _DIMENSION_VALUE_PATTERN.search(text)
+    )
+
+
+def _is_report_request(context: list[Any]) -> bool:
+    """明确要求能耗报表时限定到固定报表工具。"""
+    for message in reversed(context):
+        if message.role == "user":
+            normalized = message.get_text_content().lower().translate(
+                _IGNORED_GENERAL_CHARACTERS,
+            )
+            return bool(_REPORT_REQUEST_PATTERN.search(normalized))
+    return False
 
 
 def _select_direct_answer(

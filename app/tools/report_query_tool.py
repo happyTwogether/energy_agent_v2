@@ -640,9 +640,18 @@ TOOL_DESCRIPTION = (
 TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {
-            "province": {"type": "string", "description": "省份名称，未传默认湖南省"},
-            "dist_name": {"type": "string", "description": "地市名称，未传默认全网"},
-            "prod_name": {"type": "string", "description": "设备厂家"},
+            "province": {
+                "type": "string",
+                "description": "省份名称；Agent 调用时必传，未指定传湖南省",
+            },
+            "dist_name": {
+                "type": "string",
+                "description": "地市名称；Agent 调用时必传，未指定传全网",
+            },
+            "prod_name": {
+                "type": "string",
+                "description": "设备厂家；Agent 调用时必传，未指定传全网",
+            },
             "freq_band": {
                 "type": "string",
                 "description": "频段",
@@ -664,7 +673,7 @@ TOOL_INPUT_SCHEMA = {
                 "description": "结束日期 (YYYY-MM-DD)",
             },
         },
-        "required": [],
+        "required": ["province", "dist_name", "prod_name"],
 }
 
 

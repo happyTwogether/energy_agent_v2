@@ -10,7 +10,11 @@ from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.self_service import get_business_catalog_store
 from app.self_service.catalog import BusinessCatalogStore
-from app.self_service.direct_planner import build_direct_lookup_plan
+from app.self_service.direct_planner import (
+    DimensionValueLookup,
+    build_dimension_value_lookup,
+    build_direct_lookup_plan,
+)
 from app.self_service.metrics import calculate_metric, get_metric
 from app.self_service.planner import (
     BusinessQueryPlanner,
@@ -52,6 +56,15 @@ class BusinessDataQueryService:
         started = perf_counter()
         try:
             snapshot = await self._catalog.get_or_load(db)
+            dimension_lookup = build_dimension_value_lookup(question, snapshot)
+            if dimension_lookup is not None:
+                return await self._query_dimension_values(
+                    db=db,
+                    lookup=dimension_lookup,
+                    snapshot=snapshot,
+                    started=started,
+                    export_excel=export_excel,
+                )
             candidates = self._catalog.search(
                 question,
                 limit=self._settings.self_service_catalog_candidates,
@@ -180,6 +193,90 @@ class BusinessDataQueryService:
                 "业务数据查询暂时失败，请稍后重试。",
                 success=False,
             )
+
+    async def _query_dimension_values(
+        self,
+        db: Any,
+        lookup: DimensionValueLookup,
+        snapshot: Any,
+        started: float,
+        export_excel: bool,
+    ) -> dict[str, Any]:
+        """合并 4G/5G 报表来源中的维度唯一值。"""
+        values: list[str] = []
+        seen_values: set[str] = set()
+        selected_tables: list[str] = []
+        applied_defaults: list[str] = []
+        database_ms = 0.0
+        max_rows = (
+            self._settings.self_service_export_max_rows
+            if export_excel
+            else self._settings.self_service_max_limit
+        )
+        for plan in lookup.plans:
+            plan = plan.model_copy(update={"limit": max_rows})
+            validated = validate_query_plan(
+                plan,
+                snapshot,
+                self._settings,
+                max_rows=max_rows,
+            )
+            result = await self._executor(
+                db,
+                validated,
+                snapshot,
+                self._settings,
+            )
+            selected_tables.extend(result.selected_tables)
+            applied_defaults.extend(result.applied_defaults)
+            database_ms += result.database_ms
+            source_key = f"{plan.base_table}__{lookup.dimension}"
+            for row in result.rows:
+                value = str(row.get(source_key) or "").strip()
+                if value and value != "全网" and value not in seen_values:
+                    values.append(value)
+                    seen_values.add(value)
+
+        first_table = snapshot.tables[lookup.plans[0].base_table]
+        column = first_table.columns[lookup.dimension]
+        rows = [{column.label: value} for value in values]
+        download_url = None
+        if export_excel and rows:
+            download_url = export_to_excel(
+                rows[:self._settings.self_service_export_max_rows],
+                prefix=f"business_dimension_{lookup.dimension}",
+                column_mapping={},
+            )
+        logger.info(
+            "报表维度枚举完成: dimension=%s tables=%s values=%d "
+            "total_ms=%.1f database_ms=%.1f",
+            lookup.dimension,
+            selected_tables,
+            len(rows),
+            _elapsed_ms(started),
+            database_ms,
+        )
+        return {
+            "success": True,
+            "rows": rows,
+            "columns": [{
+                "id": lookup.dimension,
+                "label": column.label,
+                "type": column.data_type,
+                "unit": column.unit,
+            }],
+            "download_url": download_url,
+            "tables": list(dict.fromkeys(selected_tables)),
+            "relationships": [],
+            "metrics": [],
+            "metric_definitions": [],
+            "result_grain": "dimension_value",
+            "actual_date_range": {},
+            "applied_defaults": list(dict.fromkeys(applied_defaults)),
+            "data_quality": {"complete": True, "missing_fields": []},
+            "row_count": len(rows),
+            "database_ms": database_ms,
+        }
 
 
 def _public_response(

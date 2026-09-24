@@ -113,7 +113,7 @@
     "type": "function",
     "function": {
       "name": "query_business_data",
-      "description": "唯一通用数据查询入口，使用自然语言读取授权物理字段和确定性计算指标。适用：仅查询字段值或指标值，以及单/多小区明细、多表记录、统计、趋势、分组、比较、排序、Top N和导出；最多使用3张有审核关系的表，不接受SQL。不适用：直接生成节电空间、扩展收缩决策、异常诊断、参数合规结论或固定报告。",
+      "description": "唯一通用数据查询入口，使用自然语言读取授权物理字段和确定性计算指标。适用：仅查询字段值或指标值（包括厂家、频段、站型、区域等维度可选值），以及单/多小区明细、多表记录、统计、趋势、分组、比较、排序、Top N和导出；最多使用3张有审核关系的表，不接受SQL。不适用：直接生成节电空间、扩展收缩决策、异常诊断、参数合规结论或固定报告。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -151,16 +151,16 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "province": {"type": "string", "description": "省份名称，未传默认湖南省"},
-          "dist_name": {"type": "string", "description": "地市名称，未传默认全网"},
-          "prod_name": {"type": "string", "description": "设备厂家"},
+          "province": {"type": "string", "description": "省份名称；Agent 调用时必传，未指定传湖南省"},
+          "dist_name": {"type": "string", "description": "地市名称；Agent 调用时必传，未指定传全网"},
+          "prod_name": {"type": "string", "description": "设备厂家；Agent 调用时必传，未指定传全网"},
           "freq_band": {"type": "string", "description": "频段"},
           "site_type": {"type": "string", "description": "站型"},
           "area": {"type": "string", "description": "区域类型（一般城区/主城区/乡镇/农村/县城/全网）"},
           "date_start": {"type": "string", "description": "开始日期 (YYYY-MM-DD)"},
           "date_end": {"type": "string", "description": "结束日期 (YYYY-MM-DD)"}
         },
-        "required": []
+        "required": ["province", "dist_name", "prod_name"]
       }
     }
   },

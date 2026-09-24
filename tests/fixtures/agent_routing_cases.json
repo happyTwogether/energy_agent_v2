@@ -54,7 +54,12 @@
   {
     "name": "fixed_energy_report",
     "question": "生成长沙市2026年8月24日的4G和5G网络能耗汇总报告",
-    "expected_tool": "query_report"
+    "expected_tool": "query_report",
+    "expected_arguments": {
+      "province": "湖南省",
+      "dist_name": "长沙市",
+      "prod_name": "全网"
+    }
   },
   {
     "name": "cell_name_to_cgi",
@@ -65,5 +70,33 @@
     "name": "chart_requires_data_first",
     "question": "查询长沙市5G网络最近7天的能耗趋势并生成折线图",
     "expected_tool": "query_business_data"
+  },
+  {
+    "name": "available_vendors_are_dimension_values",
+    "question": "那邵阳有哪些厂家可以看",
+    "expected_tool": "query_business_data",
+    "expected_arguments": {
+      "question": "那邵阳有哪些厂家可以看"
+    }
+  },
+  {
+    "name": "province_vendor_energy_report_has_complete_scope",
+    "question": "全省中兴能耗报表",
+    "expected_tool": "query_report",
+    "expected_arguments": {
+      "province": "湖南省",
+      "dist_name": "全网",
+      "prod_name": "中兴"
+    }
+  },
+  {
+    "name": "city_vendor_energy_report_has_complete_scope",
+    "question": "邵阳华为能耗报表",
+    "expected_tool": "query_report",
+    "expected_arguments": {
+      "province": "湖南省",
+      "dist_name": "邵阳市",
+      "prod_name": "华为"
+    }
   }
 ]

@@ -5,6 +5,7 @@ from typing import Any, Sequence
 
 from agentscope.message import SystemMsg, UserMsg
 from agentscope.model import ChatModelBase
+from pydantic import ValidationError
 
 from app.agent.model import build_chat_model
 from app.core.logging import get_logger
@@ -33,27 +34,46 @@ class BusinessQueryPlanner:
         candidates: Sequence[CatalogCandidate],
         relationships: Sequence[CatalogRelationship],
     ) -> BusinessQueryPlan:
-        try:
-            response = await self._model.generate_structured_output(
-                messages=build_planner_messages(
-                    question,
-                    candidates[:5],
-                    relationships,
-                ),
-                structured_model=BusinessQueryPlan,
-            )
-            return BusinessQueryPlan.model_validate(response.content)
-        except Exception as exc:
-            logger.warning("业务查询结构化规划失败: %s", type(exc).__name__)
-            raise BusinessQueryPlanningError(
-                "暂时无法理解该数据查询，请换一种说法或明确表名和字段。",
-            ) from exc
+        validation_feedback: str | None = None
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                response = await self._model.generate_structured_output(
+                    messages=build_planner_messages(
+                        question,
+                        candidates[:5],
+                        relationships,
+                        validation_feedback=validation_feedback,
+                    ),
+                    structured_model=BusinessQueryPlan,
+                )
+                return BusinessQueryPlan.model_validate(response.content)
+            except ValidationError as exc:
+                last_error = exc
+                if attempt == 0:
+                    validation_feedback = str(exc)
+                    logger.info("业务查询规划校验失败，携带反馈重试一次")
+                    continue
+            except Exception as exc:
+                last_error = exc
+            break
+
+        assert last_error is not None
+        logger.warning(
+            "业务查询结构化规划失败: %s: %s",
+            type(last_error).__name__,
+            last_error,
+        )
+        raise BusinessQueryPlanningError(
+            "暂时无法理解该数据查询，请换一种说法或明确表名和字段。",
+        ) from last_error
 
 
 def build_planner_messages(
     question: str,
     candidates: Sequence[CatalogCandidate],
     relationships: Sequence[CatalogRelationship],
+    validation_feedback: str | None = None,
 ) -> list[Any]:
     catalog = {
         "tables": [
@@ -99,11 +119,13 @@ def build_planner_messages(
         "计算指标可以用于分组结果的排序，此时 order_by 使用 metric_id。"
         "用户没有明确要求逐条或逐小时等明细时，result_grain 留空。"
         "一次只能选择一种明细粒度。CGI 使用 eq；名称允许 contains。"
+        "用户询问某字段有哪些、可选值或唯一值时，"
+        "将该字段同时放入 select 和 group_by，地理范围等条件只放入 filters。"
         "候选字段只是检索子集，不是物理表的完整 Schema；"
         "未识别到目标字段时应请求用户换一种说法，不得声称物理表不存在该字段。"
         "没有日期时不要虚构日期。存在歧义时填写 clarification，不执行猜测。"
     )
-    return [
+    messages = [
         SystemMsg(name="system", content=rules),
         UserMsg(
             name="user",
@@ -113,6 +135,15 @@ def build_planner_messages(
             ),
         ),
     ]
+    if validation_feedback:
+        messages.append(UserMsg(
+            name="user",
+            content=(
+                "上一次结构化计划未通过校验，请仅修正计划结构后重试。"
+                f"\n校验反馈：{validation_feedback}"
+            ),
+        ))
+    return messages
 
 
 def _planner_columns(

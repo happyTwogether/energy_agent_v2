@@ -72,6 +72,11 @@ def test_execution_prompt_has_stable_data_and_specialist_boundaries():
     assert "对话解释不查库" in prompt
     assert "今日日期：" not in prompt
     assert "昨日日期：" not in prompt
+    assert "复用对话中已经明确的小区、日期或批量区域条件" in prompt
+    assert "有哪些厂家/厂商、频段、站型或区域可以看" in prompt
+    assert "省略对象的纠正性追问" in prompt
+    assert "总是显式传入 `province`、`dist_name`、`prod_name`" in prompt
+    assert "失败不换意图" in prompt
 
 
 def test_business_data_synthesis_uses_structured_rows_for_agent_diagnosis():
@@ -82,6 +87,7 @@ def test_business_data_synthesis_uses_structured_rows_for_agent_diagnosis():
     assert "比较、诊断" in prompt
     assert "不得声称数据库没有该字段" in prompt
     assert "原样返回 `report_content`" not in prompt
+    assert "只问“有哪些”" in prompt
 
 
 def test_synthesis_prompts_keep_deterministic_reports_and_data_results_separate():

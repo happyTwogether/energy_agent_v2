@@ -74,6 +74,30 @@ class FakeStructuredModel:
         )
 
 
+class RetryStructuredModel:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.messages = []
+
+    async def generate_structured_output(self, messages, structured_model):
+        self.calls += 1
+        self.messages.append(messages)
+        if self.calls == 1:
+            return StructuredResponse(content={"tables": []})
+        return StructuredResponse(content={
+            "base_table": "nr_report_day_collect",
+            "tables": ["nr_report_day_collect"],
+            "select": [{
+                "table": "nr_report_day_collect",
+                "field": "prod_name",
+            }],
+            "group_by": [{
+                "table": "nr_report_day_collect",
+                "field": "prod_name",
+            }],
+        })
+
+
 def candidate(name: str, label: str, columns: list[str]) -> CatalogCandidate:
     return CatalogCandidate(
         table=CatalogTable(
@@ -142,6 +166,40 @@ async def test_planner_calls_internal_model_once_with_relationship_ids() -> None
     assert "expansion_to_constriction" in prompt
     assert "只能选择关系 ID" in prompt
     assert "不得输出 SQL" in prompt
+
+
+@pytest.mark.asyncio
+async def test_planner_retries_once_with_validation_feedback() -> None:
+    model = RetryStructuredModel()
+    planner = BusinessQueryPlanner(model=model)
+    candidate_item = candidate(
+        "nr_report_day_collect",
+        "5G网络日汇总",
+        ["data_date", "dist_name", "prod_name"],
+    )
+
+    plan = await planner.plan("邵阳有哪些厂家", [candidate_item], [])
+
+    assert model.calls == 2
+    assert plan.select == plan.group_by
+    assert "校验反馈" in str(model.messages[1])
+
+
+def test_planner_prompt_defines_dimension_value_plan_shape() -> None:
+    candidate_item = candidate(
+        "nr_report_day_collect",
+        "5G网络日汇总",
+        ["data_date", "dist_name", "prod_name"],
+    )
+
+    prompt = str(build_planner_messages(
+        "邵阳有哪些厂家",
+        [candidate_item],
+        [],
+    ))
+
+    assert "同时放入 select 和 group_by" in prompt
+    assert "地理范围等条件只放入 filters" in prompt
 
 
 def test_planner_prompt_limits_wide_table_columns_to_relevant_subset() -> None:
