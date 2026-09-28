@@ -58,6 +58,7 @@
     "expected_arguments": {
       "province": "湖南省",
       "dist_name": "长沙市",
+      "county_name": "全网",
       "prod_name": "全网"
     }
   },
@@ -86,6 +87,7 @@
     "expected_arguments": {
       "province": "湖南省",
       "dist_name": "全网",
+      "county_name": "全网",
       "prod_name": "中兴"
     }
   },
@@ -96,6 +98,7 @@
     "expected_arguments": {
       "province": "湖南省",
       "dist_name": "邵阳市",
+      "county_name": "全网",
       "prod_name": "华为"
     }
   }

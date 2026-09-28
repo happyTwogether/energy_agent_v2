@@ -153,6 +153,7 @@
         "properties": {
           "province": {"type": "string", "description": "省份名称；Agent 调用时必传，未指定传湖南省"},
           "dist_name": {"type": "string", "description": "地市名称；Agent 调用时必传，未指定传全网"},
+          "county_name": {"type": "string", "description": "区县名称；Agent 调用时必传，未指定传全网"},
           "prod_name": {"type": "string", "description": "设备厂家；Agent 调用时必传，未指定传全网"},
           "freq_band": {"type": "string", "description": "频段"},
           "site_type": {"type": "string", "description": "站型"},
@@ -160,7 +161,7 @@
           "date_start": {"type": "string", "description": "开始日期 (YYYY-MM-DD)"},
           "date_end": {"type": "string", "description": "结束日期 (YYYY-MM-DD)"}
         },
-        "required": ["province", "dist_name", "prod_name"]
+        "required": ["province", "dist_name", "county_name", "prod_name"]
       }
     }
   },

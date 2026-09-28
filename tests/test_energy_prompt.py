@@ -75,7 +75,7 @@ def test_execution_prompt_has_stable_data_and_specialist_boundaries():
     assert "复用对话中已经明确的小区、日期或批量区域条件" in prompt
     assert "有哪些厂家/厂商、频段、站型或区域可以看" in prompt
     assert "省略对象的纠正性追问" in prompt
-    assert "总是显式传入 `province`、`dist_name`、`prod_name`" in prompt
+    assert "总是显式传入 `province`、`dist_name`、`county_name`、`prod_name`" in prompt
     assert "失败不换意图" in prompt
 
 

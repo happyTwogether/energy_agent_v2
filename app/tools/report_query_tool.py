@@ -18,10 +18,32 @@ DB_SCHEMA = get_settings().db_schema          # PostgreSQL 的 schema 名
 BASELINE_LOOKBACK_DAYS: int = 7               # 基线回溯 7 天
 ANOMALY_THRESHOLD: float = 0.1              # 偏移 10% 以上算异常（双向）
 
+
 def to_pct(numerator: float | None, denominator: float | None) -> str:
     """安全计算百分比，返回格式如 "12.34%"，分母为 0 返回 "0.00%"."""
     ratio = safe_div(float(numerator or 0) * 100, denominator)
     return f"{ratio:.2f}%"
+
+
+def _split_target_and_baseline(
+    rows: list[dict[str, Any]], target_date: str,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """按日期精确拆分，完整维度口径每日必须唯一。"""
+    rows_by_date: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        key = str(row.get("data_date"))[:10]
+        if key in rows_by_date:
+            raise ValueError(
+                f"完整报表维度在 {key} 返回多条记录",
+            )
+        rows_by_date[key] = row
+    target = rows_by_date.get(target_date)
+    baseline = [
+        rows_by_date[key]
+        for key in sorted(rows_by_date, reverse=True)
+        if key < target_date
+    ]
+    return target, baseline
 
 # ---------------------------------------------------------------------------
 # 数据获取（通用：参数化表名消除 LTE/NR 重复）
@@ -32,6 +54,7 @@ async def _fetch_data_with_baseline(
     table: str,
     province: str,
     dist_name: str,
+    county_name: str,
     prod_name: str,
     freq_band: str,
     site_type: str,
@@ -39,11 +62,12 @@ async def _fetch_data_with_baseline(
     query_start: str,
     date_end: str,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    """拉取指定表数据并分离目标日（第一条）和基线数据（其余）。"""
+    """按省、市、县区、厂家、频段、站型和区域拉取唯一日报。"""
     sql = text(f"""
         SELECT * FROM {DB_SCHEMA}.{table}
         WHERE province = :province
           AND dist_name = :dist_name
+          AND county_name = :county_name
           AND prod_name = :prod_name
           AND freq_band = :freq_band
           AND site_type = :site_type
@@ -57,6 +81,7 @@ async def _fetch_data_with_baseline(
         {
             "province": province,
             "dist_name": dist_name,
+            "county_name": county_name,
             "prod_name": prod_name,
             "freq_band": freq_band,
             "site_type": site_type,
@@ -65,15 +90,12 @@ async def _fetch_data_with_baseline(
             "date_end": date_end,
         },
     )
-    rows = result.mappings().all()
+    rows = [dict(row) for row in result.mappings().all()]
 
     if not rows:
         return None, []
 
-    target_data = dict(rows[0])
-    baseline_data = [dict(row) for row in rows[1:]]
-
-    return target_data, baseline_data
+    return _split_target_and_baseline(rows, date_end)
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +670,10 @@ TOOL_INPUT_SCHEMA = {
                 "type": "string",
                 "description": "地市名称；Agent 调用时必传，未指定传全网",
             },
+            "county_name": {
+                "type": "string",
+                "description": "区县名称；Agent 调用时必传，未指定传全网",
+            },
             "prod_name": {
                 "type": "string",
                 "description": "设备厂家；Agent 调用时必传，未指定传全网",
@@ -673,7 +699,7 @@ TOOL_INPUT_SCHEMA = {
                 "description": "结束日期 (YYYY-MM-DD)",
             },
         },
-        "required": ["province", "dist_name", "prod_name"],
+        "required": ["province", "dist_name", "county_name", "prod_name"],
 }
 
 
@@ -681,6 +707,7 @@ async def query_report(
     db: AsyncSession,
     province: str | None = None,
     dist_name: str | None = None,
+    county_name: str | None = None,
     prod_name: str | None = None,
     freq_band: str | None = None,
     site_type: str | None = None,
@@ -694,6 +721,7 @@ async def query_report(
         db: 数据库会话。
         province: 省份名称，未传时默认全网。
         dist_name: 地市名称，未传时默认全网。
+        county_name: 区县名称，未传时默认全网。
         prod_name: 设备厂家，未传时默认全网。
         freq_band: 频段，未传时默认全网。
         site_type: 站型，未传时默认全网。
@@ -706,6 +734,7 @@ async def query_report(
     """
     province = province or "湖南省"
     dist_name = dist_name or "全网"
+    county_name = county_name or "全网"
     prod_name = prod_name or "全网"
     freq_band = freq_band or "全网"
     site_type = site_type or "全网"
@@ -727,9 +756,10 @@ async def query_report(
         date_end = db_latest
 
     logger.info(
-        "报表查询: province=%s, dist_name=%s, prod_name=%s, freq_band=%s, site_type=%s, area=%s, date_range=%s~%s",
+        "报表查询: province=%s, dist_name=%s, county_name=%s, prod_name=%s, freq_band=%s, site_type=%s, area=%s, date_range=%s~%s",
         province,
         dist_name,
+        county_name,
         prod_name,
         freq_band,
         site_type,
@@ -748,7 +778,8 @@ async def query_report(
 
         # 2. 串行拉取 4G/5G 原始数据。AsyncSession 不允许并发共享。
         fetch_kwargs = dict(
-            db=db, province=province, dist_name=dist_name, prod_name=prod_name,
+            db=db, province=province, dist_name=dist_name,
+            county_name=county_name, prod_name=prod_name,
             freq_band=freq_band, site_type=site_type, area=area,
             query_start=query_start, date_end=date_end,
         )

@@ -57,7 +57,7 @@ AGENT_EXECUTION_PROMPT = """\
 - 区县：补全"区/县/市"后缀（芙蓉→芙蓉区）
 - area 参数含义：区域类型（一般城区/主城区/乡镇/农村/县城/全网），不是省份/地理区域，省份请用 province 参数
 - 厂家：统一中文（Huawei→华为，ZTE→中兴，Ericsson→爱立信，Nokia→诺基亚）
-- 调用 `query_report` 时总是显式传入 `province`、`dist_name`、`prod_name`；未指定省份时传“湖南省”，未指定地市或厂家时分别传“全网”。
+- 调用 `query_report` 时总是显式传入 `province`、`dist_name`、`county_name`、`prod_name`；未指定省份时传“湖南省”，未指定地市、区县或厂家时分别传“全网”。
 - 对 `query_report` 以外的工具，dist_name、county_name、prod_name 等筛选参数只传具体值；“全部/所有/全网”不作为筛选值传入。只有 `analysis_target` 可以使用 `all`。
 - 用户要求参数合规报表或 Excel 时，只调用 `query_energy_param_check` 并传 `export_excel=true`，不要调用能耗汇总工具 `query_report`。
 """

@@ -56,7 +56,7 @@ Middleware 是 Agent 生命周期的拦截器，不是另一个业务 Agent。
 
 本次通过 JSON Schema 收紧必填参数，不在 Middleware 里补参数：
 
-- `province`、`dist_name`、`prod_name`为必填字段。
+- `province`、`dist_name`、`county_name`、`prod_name`为必填字段。
 - 用户未限定的维度由模型显式传入“全网”，工具不再因为空参数静默放大范围。
 - `freq_band`、`site_type`、`area` 继续可选，未指定时使用现有“全网”默认值。
 - 提示词和 Schema 字段说明明确“全省”对应 `dist_name=全网`，地市名规范化后传入 `dist_name`。
@@ -123,8 +123,8 @@ Middleware 是 Agent 生命周期的拦截器，不是另一个业务 Agent。
 
 评测样本至少覆盖：
 
-1. `全省中兴能耗报表` -> `query_report(province=湖南省, dist_name=全网, prod_name=中兴)`。
-2. `邵阳华为能耗报表` -> `query_report(province=湖南省, dist_name=邵阳市, prod_name=华为)`。
+1. `全省中兴能耗报表` -> `query_report(province=湖南省, dist_name=全网, county_name=全网, prod_name=中兴)`。
+2. `邵阳华为能耗报表` -> `query_report(province=湖南省, dist_name=邵阳市, county_name=全网, prod_name=华为)`。
 3. `邵阳有哪些厂家可以看` -> `query_business_data(question=原问题)`。
 4. `我没问你，我只问有哪些` -> 复用最近的用户问题，重新调用 `query_business_data`。
 
@@ -135,7 +135,7 @@ Middleware 是 Agent 生命周期的拦截器，不是另一个业务 Agent。
 实现和离线测试不需要生产数据。端到端验证时，若无法连接目标数据库，只需导出最近 7 天、邵阳市、以下字段的脱敏结果：
 
 - 表：`lte_report_day_collect`、`nr_report_day_collect`。
-- 字段：`data_date`、`province`、`dist_name`、`prod_name`、`freq_band`、`site_type`、`area`。
+- 字段：`data_date`、`province`、`dist_name`、`county_name`、`prod_name`、`freq_band`、`site_type`、`area`。
 - 可只保留去重后的维度组合，不需要能耗数值、小区名、CGI、基站号或用户数据。
 
 只有在离线与生产同款模型路由测试通过后，才请求这份数据，避免用生产数据弥补代码设计缺陷。
