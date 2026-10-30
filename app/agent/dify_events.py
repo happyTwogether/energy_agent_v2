@@ -5,21 +5,28 @@ from dataclasses import dataclass, field
 import json
 import time
 from typing import Any
+import httpx
+from openai import APITimeoutError
 
 from agentscope.event import (
     AgentEvent,
     ModelCallEndEvent,
+    ModelCallStartEvent,
     ReplyEndEvent,
     TextBlockDeltaEvent,
+    ThinkingBlockDeltaEvent,
     ToolCallDeltaEvent,
     ToolCallStartEvent,
     ToolResultEndEvent,
     ToolResultStartEvent,
     ToolResultTextDeltaEvent,
 )
+from agentscope.message import ToolResultState
 from agentscope.types import ReplyFinishedReason
 
 from app.core.config import get_settings
+from app.agent.context import AgentStateEvent, current_task
+from agentscope.state import AgentState
 from app.core.json_utils import dumps_decimal
 from app.core.logging import get_logger
 from app.agent.errors import (
@@ -27,6 +34,10 @@ from app.agent.errors import (
     PUBLIC_INTERRUPTED_ERROR,
     PUBLIC_MAX_ITERS_ERROR,
     PUBLIC_MODEL_ERROR,
+    PUBLIC_MODEL_TIMEOUT_ERROR,
+    PUBLIC_MODEL_PROTOCOL_ERROR,
+    ModelDeadlineExceeded,
+    ModelProtocolError,
 )
 
 
@@ -47,6 +58,10 @@ class DifyRunResult:
     )
     error: str | None = None
     completed: bool = False
+    task_context: dict[str, Any] | None = None
+    agent_state: dict[str, Any] | None = None
+    state_version: int = 0
+    session_existed: bool = False
 
     # ── 性能指标 ──
     first_model_token_ms: float | None = None  # 首模型响应(含 tool_call)延迟
@@ -85,6 +100,9 @@ class DifyEventAdapter:
         self._first_text_token_at: float | None = None
         self._max_input_tokens = 0
         self._context_size = get_settings().llm_context_size
+        self._model_call_count = 0
+        self._model_started_at: float | None = None
+        self._model_output_counts = {"text_chars": 0, "thinking_chars": 0, "tool_calls": 0}
 
     async def stream(
         self,
@@ -95,7 +113,23 @@ class DifyEventAdapter:
 
         try:
             async for event in events:
-                if isinstance(event, TextBlockDeltaEvent):
+                if isinstance(event, AgentStateEvent):
+                    self.result.agent_state = event.agent_state
+                    self.result.state_version = event.expected_version
+                    self.result.session_existed = event.session_existed
+                    task = current_task(AgentState.model_validate(event.agent_state))
+                    self.result.task_context = task.snapshot() if task else None
+                elif isinstance(event, ModelCallStartEvent):
+                    self._model_call_count += 1
+                    self._model_started_at = time.perf_counter()
+                    self._model_output_counts = {"text_chars": 0, "thinking_chars": 0, "tool_calls": 0}
+                    logger.info("agent_model_call_start call=%s", self._model_call_count)
+
+                elif isinstance(event, ThinkingBlockDeltaEvent):
+                    self._model_output_counts["thinking_chars"] += len(event.delta)
+
+                elif isinstance(event, TextBlockDeltaEvent):
+                    self._model_output_counts["text_chars"] += len(event.delta)
                     now = time.perf_counter()
                     if self._first_text_token_at is None:
                         self._first_text_token_at = now
@@ -106,10 +140,21 @@ class DifyEventAdapter:
 
                 elif isinstance(event, ModelCallEndEvent):
                     self._add_usage(event.input_tokens, event.output_tokens)
-                    if event.input_tokens > self._max_input_tokens:
-                        self._max_input_tokens = event.input_tokens
+                    peak_input = event.metadata.get("peak_attempt_input_tokens", event.input_tokens)
+                    if peak_input > self._max_input_tokens:
+                        self._max_input_tokens = peak_input
+                    elapsed_ms = (
+                        round((time.perf_counter() - self._model_started_at) * 1000, 2)
+                        if self._model_started_at is not None else 0
+                    )
+                    logger.info(
+                        "agent_model_call_end call=%s elapsed_ms=%s finish=%s input_tokens=%s output_tokens=%s counts=%s",
+                        self._model_call_count, elapsed_ms, event.finished_reason,
+                        event.input_tokens, event.output_tokens, self._model_output_counts,
+                    )
 
                 elif isinstance(event, ToolCallStartEvent):
+                    self._model_output_counts["tool_calls"] += 1
                     self._thought_position += 1
                     self._tool_calls[event.tool_call_id] = {
                         "name": event.tool_call_name,
@@ -133,6 +178,12 @@ class DifyEventAdapter:
                     call["observation"] += event.delta
 
                 elif isinstance(event, ToolResultEndEvent):
+                    if event.state == ToolResultState.SUCCESS and isinstance(event.metadata.get("task_context"), dict):
+                        self.result.task_context = event.metadata["task_context"]
+                    effective_input = event.metadata.get("effective_input")
+                    if isinstance(effective_input, dict):
+                        call = self._ensure_tool_call(event.tool_call_id)
+                        call["arguments"] = dumps_decimal(effective_input, ensure_ascii=False)
                     yield self._thought_envelope(event.tool_call_id)
 
                 elif isinstance(event, ReplyEndEvent):
@@ -154,6 +205,14 @@ class DifyEventAdapter:
                 self.result.error = PUBLIC_MODEL_ERROR
                 yield self._error_envelope(PUBLIC_MODEL_ERROR)
 
+        except (httpx.TimeoutException, APITimeoutError, ModelDeadlineExceeded):
+            logger.warning("模型服务响应超时: model_call=%s", self._model_call_count)
+            self.result.error = PUBLIC_MODEL_TIMEOUT_ERROR
+            yield self._error_envelope(PUBLIC_MODEL_TIMEOUT_ERROR, code="model_timeout", status=504)
+        except ModelProtocolError:
+            logger.warning("模型工具协议无效: model_call=%s", self._model_call_count)
+            self.result.error = PUBLIC_MODEL_PROTOCOL_ERROR
+            yield self._error_envelope(PUBLIC_MODEL_PROTOCOL_ERROR, code="model_protocol_error", status=502)
         except Exception:
             logger.exception("AgentScope 事件适配异常")
             message = PUBLIC_INTERNAL_ERROR
@@ -162,11 +221,11 @@ class DifyEventAdapter:
         finally:
             self._finalize_metrics()
 
-    def error_envelope(self, message: str = PUBLIC_INTERNAL_ERROR) -> dict[str, str]:
+    def error_envelope(self, message: str = PUBLIC_INTERNAL_ERROR, *, code: str = "agent_error", status: int = 500) -> dict[str, str]:
         """构建已脱敏的 Dify error envelope。"""
         self.result.completed = False
         self.result.error = message
-        return self._error_envelope(message)
+        return self._error_envelope(message, code=code, status=status)
 
     def _add_usage(self, input_tokens: int, output_tokens: int) -> None:
         self.result.usage["prompt_tokens"] += input_tokens
@@ -276,7 +335,9 @@ class DifyEventAdapter:
             },
         )
 
-    def _error_envelope(self, message: str) -> dict[str, str]:
+    def _error_envelope(
+        self, message: str, *, code: str = "internal_error", status: int = 500,
+    ) -> dict[str, str]:
         return self._envelope(
             "error",
             {
@@ -285,8 +346,8 @@ class DifyEventAdapter:
                 "message_id": self.message_id,
                 "conversation_id": self.conversation_id,
                 "message": message,
-                "code": "internal_error",
-                "status": 500,
+                "code": code,
+                "status": status,
             },
         )
 

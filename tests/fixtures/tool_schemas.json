@@ -7,10 +7,10 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "province": {"type": "string", "description": "省份名称，当前仅支持湖南省"},
-          "dist_name": {"type": "string", "description": "地市名称"},
-          "county_name": {"type": "string", "description": "区县名称"},
-          "prod_name": {"type": "string", "description": "厂家名称"},
+          "province": {"type": "string", "minLength": 1, "description": "省份名称，当前仅支持湖南省；未指定传湖南省"},
+          "dist_name": {"type": "string", "minLength": 1, "description": "用户指定的地市全名，必须保留用户地区；全省或未限定地市时显式传全网"},
+          "county_name": {"type": "string", "minLength": 1, "description": "用户指定的区县名称；未限定时显式传全网，不能把县级市当作地市"},
+          "prod_name": {"type": "string", "minLength": 1, "description": "用户指定的厂家名称；未限定时显式传全网"},
           "stat_time": {"type": "string", "description": "统计日期 (YYYY-MM-DD)"},
           "analysis_target": {
             "type": "string",

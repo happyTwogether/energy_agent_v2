@@ -4,19 +4,22 @@ FastAPI 应用入口模块。
 使用工厂模式创建 FastAPI 实例，集中注册路由、中间件和生命周期事件。
 """
 
+import asyncio
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import AsyncGenerator
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.api.routes import router
+from app.agent.errors import AgentPublicError
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.self_service import warm_business_catalog
-from app.services.database import dispose_self_service_engine, init_db
+from app.services.database import check_session_storage, dispose_self_service_engine, init_db
+from app.services.database_readiness import DatabaseReadiness
 
 logger = get_logger("main")
 
@@ -25,16 +28,31 @@ logger = get_logger("main")
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期管理。"""
     logger.info("AI Agent 微服务启动中...")
-    await init_db()
-    if get_settings().self_service_enabled:
-        try:
-            await warm_business_catalog()
-        except Exception:
-            logger.exception("自助查询目录预热失败，专业工具仍可使用")
-    logger.info("服务已就绪，等待请求")
+    initialized = False
+
+    async def check_database():
+        nonlocal initialized
+        if initialized:
+            await check_session_storage()
+        else:
+            await init_db()
+            initialized = True
+
+    status = DatabaseReadiness(
+        check_database,
+        on_ready=warm_business_catalog if get_settings().self_service_enabled else None,
+    )
+    if app is not None:
+        app.state.database_readiness = status
+    await status.check()
+    recovery_task = asyncio.create_task(status.run(), name="database-readiness")
+    logger.info("HTTP 服务启动，数据库就绪=%s；未就绪时自动重试并拒绝业务请求", status.ready)
     try:
         yield
     finally:
+        recovery_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await recovery_task
         await dispose_self_service_engine()
         logger.info("AI Agent 微服务正在关闭...")
 
@@ -49,6 +67,22 @@ def create_app() -> FastAPI:
     )
 
     settings = get_settings()
+
+    @application.middleware("http")
+    async def require_database_readiness(request: Request, call_next):
+        status = getattr(request.app.state, "database_readiness", None)
+        path = request.url.path.rstrip("/")
+        if (
+            status is not None and not status.ready and request.method != "OPTIONS"
+            and path.startswith("/api/v1/")
+            and path not in {"/api/v1/health", "/api/v1/health/live"}
+        ):
+            return JSONResponse(
+                status_code=503, content={"code": status.code, "message": status.message},
+                headers={"Retry-After": "5", "Cache-Control": "no-store"},
+            )
+        return await call_next(request)
+
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -58,6 +92,10 @@ def create_app() -> FastAPI:
     )
 
     application.include_router(router, prefix="/api/v1")
+
+    @application.exception_handler(AgentPublicError)
+    async def handle_agent_public_error(request: Request, exc: AgentPublicError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"message": str(exc), "code": exc.code})
 
     # 静态文件目录
     export_dir = os.path.join(os.getcwd(), settings.export_dir)

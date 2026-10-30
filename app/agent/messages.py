@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from agentscope.message import AssistantMsg, Msg, UserMsg
+from agentscope.state import AgentState
+from app.services.query_scope import TaskContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,6 +15,11 @@ class ParsedRequestMessages:
     history: list[Msg]
     current_user: Msg
     user_context: str | None
+    task_context: TaskContext | None = None
+    has_task_context: bool = False
+    agent_state: dict[str, Any] | None = None
+    state_version: int = 0
+    session_existed: bool = False
 
 
 def parse_request_messages(
@@ -21,9 +28,13 @@ def parse_request_messages(
     """严格拆分持久化历史与当前用户输入。"""
     normalized = list(messages)
     user_context: str | None = None
+    stored = None
+    session_existed = False
 
     if normalized and normalized[0].get("role") == "system":
         user_context = _require_text_content(normalized[0])
+        stored = normalized[0].get("agent_state")
+        session_existed = bool(normalized[0].get("session_existed"))
         normalized = normalized[1:]
 
     if not normalized or normalized[-1].get("role") != "user":
@@ -37,10 +48,27 @@ def parse_request_messages(
         name="user",
         content=_require_text_content(normalized[-1]),
     )
+    task_context = None
+    has_task_context = False
+    # 只读取服务端持久化的独立字段，不从助手正文或用户文本抽取记忆。
+    for message in reversed(normalized[:-1]):
+        if message.get("role") == "assistant" and "agent_context" in message:
+            has_task_context = True
+            task_context = TaskContext.restore(message["agent_context"])
+            break
+    if stored is not None:
+        from app.agent.context import current_task
+        task_context = current_task(AgentState.model_validate(stored["state"]))
+        has_task_context = True
     return ParsedRequestMessages(
         history=history,
         current_user=current_user,
         user_context=user_context,
+        task_context=task_context,
+        has_task_context=has_task_context,
+        agent_state=stored["state"] if stored is not None else None,
+        state_version=stored["version"] if stored is not None else 0,
+        session_existed=session_existed,
     )
 
 

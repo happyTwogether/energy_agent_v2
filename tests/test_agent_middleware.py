@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 
 from agentscope.event import (
     ModelCallStartEvent,
+    ToolCallStartEvent,
+    TextBlockDeltaEvent,
     ToolResultEndEvent,
 )
 from agentscope.message import (
@@ -21,14 +23,12 @@ from agentscope.tool import ToolChoice, Toolkit
 
 try:
     from app.agent.middleware import (
-        BusinessToolInputMiddleware,
         DirectAnswerMiddleware,
         EnergyPromptMiddleware,
         GroundedToolChoiceMiddleware,
         build_prompt,
     )
 except ModuleNotFoundError:
-    BusinessToolInputMiddleware = None
     DirectAnswerMiddleware = None
     EnergyPromptMiddleware = None
     GroundedToolChoiceMiddleware = None
@@ -86,34 +86,27 @@ class AgentPromptMiddlewareTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("<tool>", prompt)
         self.assertNotIn("</tool>", prompt)
 
+    async def test_previous_turn_tool_does_not_select_current_synthesis_prompt(self):
+        agent = SimpleNamespace(state=AgentState(context=[
+            UserMsg(name="user", content="长沙能耗报表"),
+            AssistantMsg(name="assistant", content=[ToolResultBlock(
+                id="old", name="query_report", output="{}", state=ToolResultState.SUCCESS,
+            )]),
+            UserMsg(name="user", content="湘潭市的节电空间"),
+        ]))
+        prompt = await EnergyPromptMiddleware(None).on_system_prompt(agent, "base")
+        self.assertIn("原生 function calling", prompt)
 
-class BusinessToolInputMiddlewareTest(unittest.IsolatedAsyncioTestCase):
+
+class AnalysisArgumentsTest(unittest.IsolatedAsyncioTestCase):
     """验证用户显式档位和日期优先于模型生成参数。"""
 
     async def _normalize(self, current_user: str, arguments: dict, history=None) -> dict:
-        captured: dict = {}
-
-        async def next_handler(**kwargs):
-            captured.update(kwargs)
-            if False:
-                yield None
-
-        tool_call = ToolCallBlock(
-            id="call-normalize",
-            name="analyze_batch_cells_energy",
-            input=json.dumps(arguments, ensure_ascii=False),
+        from app.services.query_scope import ToolRequestContext, normalize_analysis_arguments
+        return normalize_analysis_arguments(
+            "analyze_batch_cells_energy", arguments,
+            ToolRequestContext(current_user, tuple(history or [])),
         )
-        middleware = BusinessToolInputMiddleware(
-            current_user_text=current_user,
-            history_user_texts=history or [],
-        )
-        async for _ in middleware.on_acting(
-            SimpleNamespace(),
-            {"tool_call": tool_call},
-            next_handler,
-        ):
-            pass
-        return json.loads(captured["tool_call"].input)
 
     async def test_explicit_moderate_overrides_model_conservative(self) -> None:
         normalized = await self._normalize(
@@ -163,131 +156,36 @@ class BusinessToolInputMiddlewareTest(unittest.IsolatedAsyncioTestCase):
 
 
 class DirectAnswerMiddlewareTest(unittest.IsolatedAsyncioTestCase):
-    """验证 report_content 仅在单工具成功时短路第二次模型调用。"""
+    """真实事件顺序：完整批次成功即结束，无须等待下轮模型。"""
 
-    def setUp(self) -> None:
-        self.assertIsNotNone(DirectAnswerMiddleware, "报告直出中间件尚未实现")
-
-    async def test_short_circuits_single_direct_answer(self) -> None:
-        async def next_handler(**kwargs):
-            yield ToolResultEndEvent(
-                reply_id="reply-1",
-                tool_call_id="call-1",
-                state=ToolResultState.SUCCESS,
-                metadata={"direct_answer": "# report"},
-            )
-            yield ModelCallStartEvent(
-                reply_id="reply-1",
-                model_name="qwen3.6_27b",
-            )
-
-        agent = SimpleNamespace(state=AgentState(session_id="session-1"))
-        middleware = DirectAnswerMiddleware()
-        events = [
-            event
-            async for event in middleware.on_reply(  # type: ignore[misc]
-                agent,
-                {},
-                next_handler,
-            )
-        ]
-
-        downstream_called = False
-
-        async def model_next_handler(**kwargs):
-            nonlocal downstream_called
-            downstream_called = True
-
-        response = await middleware.on_model_call(
-            agent,
-            {},
-            model_next_handler,
-        )
-
-        self.assertTrue(any(isinstance(event, ModelCallStartEvent) for event in events))
-        self.assertFalse(downstream_called)
-        self.assertEqual("# report", response.content[0].text)
-        self.assertTrue(response.is_last)
-
-    async def test_multiple_tool_results_continue_to_model(self) -> None:
-        async def next_handler(**kwargs):
-            yield ToolResultEndEvent(
-                reply_id="reply-2",
-                tool_call_id="call-1",
-                state=ToolResultState.SUCCESS,
-                metadata={"direct_answer": "first"},
-            )
-            yield ToolResultEndEvent(
-                reply_id="reply-2",
-                tool_call_id="call-2",
-                state=ToolResultState.SUCCESS,
-                metadata={"direct_answer": "second"},
-            )
-            yield ModelCallStartEvent(
-                reply_id="reply-2",
-                model_name="qwen3.6_27b",
-            )
-
-        agent = SimpleNamespace(state=AgentState(session_id="session-2"))
-        middleware = DirectAnswerMiddleware()
-        events = [
-            event
-            async for event in middleware.on_reply(  # type: ignore[misc]
-                agent,
-                {},
-                next_handler,
-            )
-        ]
-
-        self.assertTrue(any(isinstance(event, ModelCallStartEvent) for event in events))
-
-        sentinel = object()
-
-        async def model_next_handler(**kwargs):
-            return sentinel
-
-        response = await middleware.on_model_call(
-            agent,
-            {},
-            model_next_handler,
-        )
-        self.assertIs(sentinel, response)
-
-
-    async def test_duplicate_same_tool_results_use_last_direct_answer(self) -> None:
-        async def next_handler(**kwargs):
-            for call_id, answer in (("call-a", "中等结果"), ("call-b", "激进结果")):
+    async def _run(self, results):
+        async def downstream(**kwargs):
+            for index, _, _ in results:
+                yield ToolCallStartEvent(reply_id="r", tool_call_id=index, tool_call_name="query_report")
+            for index, tool, answer in results:
                 yield ToolResultEndEvent(
-                    reply_id="reply-dup",
-                    tool_call_id=call_id,
-                    state=ToolResultState.SUCCESS,
-                    metadata={
-                        "tool_name": "analyze_batch_cells_energy",
-                        "direct_answer": answer,
-                    },
+                    reply_id="r", tool_call_id=index, state=ToolResultState.SUCCESS,
+                    metadata={"tool_name": tool, "direct_answer": answer},
                 )
-            yield ModelCallStartEvent(reply_id="reply-dup", model_name="fake")
+            yield ModelCallStartEvent(reply_id="r", model_name="fake")
+        return [event async for event in DirectAnswerMiddleware().on_reply(
+            SimpleNamespace(name="energy_agent", state=AgentState(session_id="s")), {}, downstream,
+        )]
 
-        middleware = DirectAnswerMiddleware()
-        events = [
-            event
-            async for event in middleware.on_reply(
-                SimpleNamespace(state=AgentState(session_id="session-dup")),
-                {},
-                next_handler,
-            )
-        ]
+    async def test_short_circuits_single_direct_answer(self):
+        events = await self._run([("a", "query_report", "# report")])
+        self.assertFalse(any(isinstance(event, ModelCallStartEvent) for event in events))
+        self.assertEqual("# report", "".join(event.delta for event in events if isinstance(event, TextBlockDeltaEvent)))
+
+    async def test_multiple_tool_results_continue_to_model(self):
+        events = await self._run([("a", "query_report", "first"), ("b", "query_anomaly", "second")])
         self.assertTrue(any(isinstance(event, ModelCallStartEvent) for event in events))
+        self.assertFalse(any(isinstance(event, TextBlockDeltaEvent) for event in events))
 
-        async def model_next_handler(**kwargs):
-            raise AssertionError("同名重复报告不应再次调用模型")
-
-        response = await middleware.on_model_call(
-            SimpleNamespace(),
-            {},
-            model_next_handler,
-        )
-        self.assertEqual("激进结果", response.content[0].text)
+    async def test_duplicate_same_tool_results_use_last_direct_answer(self):
+        events = await self._run([("a", "query_report", "中等结果"), ("b", "query_report", "激进结果")])
+        self.assertFalse(any(isinstance(event, ModelCallStartEvent) for event in events))
+        self.assertEqual("激进结果", "".join(event.delta for event in events if isinstance(event, TextBlockDeltaEvent)))
 
 
 class GroundedToolChoiceMiddlewareTest(unittest.IsolatedAsyncioTestCase):
@@ -298,6 +196,39 @@ class GroundedToolChoiceMiddlewareTest(unittest.IsolatedAsyncioTestCase):
             GroundedToolChoiceMiddleware,
             "工具证据门禁中间件尚未实现",
         )
+
+    async def test_new_data_request_is_not_mistaken_for_explaining_old_answer(self):
+        for text in (
+            "刚才你查的是全省，重新查询湘潭市的节电空间",
+            "生成湘潭市的节电空间报表",
+        ):
+            captured = {}
+
+            async def next_handler(**kwargs):
+                captured.update(kwargs)
+                if False:
+                    yield None
+
+            agent = SimpleNamespace(
+                toolkit=SimpleNamespace(get_tool_schemas=AsyncMock(return_value=[
+                    {"function": {"name": "analyze_batch_cells_energy"}},
+                    {"function": {"name": "query_report"}},
+                ])),
+                state=AgentState(context=[
+                    UserMsg(name="user", content="长沙能耗报表"),
+                    AssistantMsg(name="assistant", content=[ToolResultBlock(
+                        id="old", name="query_report", output="{}", state=ToolResultState.SUCCESS,
+                    )]),
+                    UserMsg(name="user", content=text),
+                ]),
+            )
+            async for _ in GroundedToolChoiceMiddleware().on_reasoning(
+                agent, {"tool_choice": None}, next_handler,
+            ):
+                pass
+            with self.subTest(text=text):
+                self.assertIsNotNone(captured["tool_choice"])
+                self.assertEqual("analyze_batch_cells_energy", captured["tool_choice"].mode)
 
     async def test_requires_tool_before_current_turn_has_a_result(self) -> None:
         captured: dict = {}

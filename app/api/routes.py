@@ -6,10 +6,10 @@ import time
 from typing import Any, AsyncGenerator
 import uuid
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
-from sqlalchemy import delete as sa_delete, text
+from sqlalchemy import text
 
 from app.agent.dify_events import DifyEventAdapter
 from app.agent.errors import (
@@ -28,11 +28,12 @@ from app.models.schemas import (
     DifyChatRequest,
 )
 from app.services.database import (
-    Conversation,
+    delete_owned_conversation,
     get_conversation_title,
     get_session_factory,
     list_conversations,
     load_conversation,
+    load_agent_state,
     save_conversation,
 )
 from app.services.message_store import store_message
@@ -47,6 +48,9 @@ async def _save_answer_to_db(
     user_id: str,
     user_query: str,
     answer: str,
+    agent_state: dict[str, Any] | None = None,
+    state_version: int = 0,
+    session_existed: bool = False,
 ) -> None:
     """保存且仅保存一组本轮 user/assistant 消息。"""
     if not answer:
@@ -61,6 +65,9 @@ async def _save_answer_to_db(
         ],
         title=user_query[:TITLE_MAX_LENGTH],
         replace=False,
+        agent_state=agent_state,
+        expected_state_version=state_version,
+        allow_create=not session_existed,
     )
 
 
@@ -72,6 +79,9 @@ async def _persist_answer_and_notify(
     answer: str,
     token_usage: dict[str, int],
     source: int = 0,
+    agent_state: dict[str, Any] | None = None,
+    state_version: int = 0,
+    session_existed: bool = False,
 ) -> None:
     """持久化已完成回答，并异步通知外部消息存储。"""
     await _save_answer_to_db(
@@ -80,6 +90,7 @@ async def _persist_answer_and_notify(
         user_id,
         user_query,
         answer,
+        agent_state=agent_state, state_version=state_version, session_existed=session_existed,
     )
     if not answer:
         return
@@ -206,13 +217,23 @@ def _new_dify_adapter(
 
 
 @router.get("/health")
-async def health_check() -> dict[str, str]:
-    """健康检查端点。"""
-    return {"status": "ok"}
+async def health_check(request: Request) -> JSONResponse:
+    """依赖未就绪时返回503，不把 HTTP 存活当成业务恢复。"""
+    status = getattr(request.app.state, "database_readiness", None)
+    ready = status is None or status.ready
+    content = {"status": "ok" if ready else "not_ready"}
+    if status is not None:
+        content["database"] = status.snapshot()
+    return JSONResponse(status_code=200 if ready else 503, content=content, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/health/live")
+async def liveness_check() -> dict[str, str]:
+    return {"status": "alive"}
 
 
 @router.get("/conversations", response_model=ConversationListResponse)
-async def get_conversations(user_id: str) -> ConversationListResponse:
+async def get_conversations(user_id: str = Query(min_length=1, max_length=128)) -> ConversationListResponse:
     """获取指定用户的会话列表。"""
     session_factory = get_session_factory()
     async with session_factory() as db:
@@ -226,30 +247,25 @@ async def get_conversations(user_id: str) -> ConversationListResponse:
     "/conversations/{conversation_id}",
     response_model=ConversationDetailResponse,
 )
-async def get_conversation(conversation_id: str) -> ConversationDetailResponse:
+async def get_conversation(conversation_id: str, user_id: str = Query(min_length=1, max_length=128)) -> ConversationDetailResponse:
     """获取指定会话的完整消息历史。"""
     session_factory = get_session_factory()
     async with session_factory() as db:
-        messages = await load_conversation(db, conversation_id)
-        title = await get_conversation_title(db, conversation_id)
+        messages = await load_conversation(db, conversation_id, user_id)
+        title = await get_conversation_title(db, conversation_id, user_id)
     return ConversationDetailResponse(
         conversation_id=conversation_id,
         title=title,
-        messages=messages,
+        messages=[{"role": item["role"], "content": item["content"]} for item in messages],
     )
 
 
 @router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: str) -> dict[str, str]:
+async def delete_conversation(conversation_id: str, user_id: str = Query(min_length=1, max_length=128)) -> dict[str, str]:
     """删除指定会话。"""
     session_factory = get_session_factory()
     async with session_factory() as db:
-        await db.execute(
-            sa_delete(Conversation).where(
-                Conversation.conversation_id == conversation_id,
-            ),
-        )
-        await db.commit()
+        await delete_owned_conversation(db, conversation_id, user_id)
     logger.info("会话已删除: %s", conversation_id)
     return {"status": "ok"}
 
@@ -260,7 +276,8 @@ async def _build_messages_from_dify(
 ) -> tuple[str, list[dict[str, Any]]]:
     """构建受控 system 上下文、持久化历史和本轮用户输入。"""
     conversation_id = request.conversation_id or str(uuid.uuid4())
-    history = await load_conversation(db, conversation_id)
+    history = await load_conversation(db, conversation_id, request.user, allow_missing=not bool(request.conversation_id))
+    stored = await load_agent_state(db, conversation_id, request.user) if request.conversation_id else None
     system_content = ""
     if request.inputs:
         system_content = (
@@ -269,8 +286,8 @@ async def _build_messages_from_dify(
         )
 
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system_content},
-        *history,
+        {"role": "system", "content": system_content, "agent_state": stored, "session_existed": bool(request.conversation_id)},
+        *(history if stored is None else []),
         {"role": "user", "content": request.query},
     ]
     return conversation_id, messages
@@ -296,11 +313,12 @@ async def _dify_stream_generator(
             yield envelope
 
     result = adapter.result
-    await _persist_metrics(conversation_id, user, source, result)
     if not result.completed or result.error:
+        await _persist_metrics(conversation_id, user, source, result)
         return
     if not result.answer:
         yield adapter.error_envelope(PUBLIC_MODEL_ERROR)
+        await _persist_metrics(conversation_id, user, source, result)
         return
 
     try:
@@ -314,12 +332,19 @@ async def _dify_stream_generator(
                 result.answer,
                 result.usage,
                 source=source,
+                agent_state=result.agent_state, state_version=result.state_version, session_existed=result.session_existed,
             )
+    except AgentPublicError as exc:
+        yield adapter.error_envelope(str(exc), code=exc.code, status=exc.status_code)
+        await _persist_metrics(conversation_id, user, source, result)
+        return
     except Exception:
         logger.exception("流式回答持久化失败: cid=%s", conversation_id)
         yield adapter.error_envelope()
+        await _persist_metrics(conversation_id, user, source, result)
         return
 
+    await _persist_metrics(conversation_id, user, source, result)
     if terminal_envelope is not None:
         yield terminal_envelope
 
@@ -339,25 +364,29 @@ async def _run_blocking(
         pass
 
     result = adapter.result
-    await _persist_metrics(conversation_id, user, 0, result)
     if result.error:
+        await _persist_metrics(conversation_id, user, 0, result)
         raise AgentPublicError(result.error)
     if not result.completed:
+        await _persist_metrics(conversation_id, user, 0, result)
         raise AgentPublicError(PUBLIC_MODEL_ERROR)
     if not result.answer:
+        adapter.error_envelope(PUBLIC_MODEL_ERROR)
+        await _persist_metrics(conversation_id, user, 0, result)
         raise AgentPublicError(PUBLIC_MODEL_ERROR)
 
     session_factory = get_session_factory()
-    async with session_factory() as db:
-        await _persist_answer_and_notify(
-            db,
-            conversation_id,
-            user,
-            user_query,
-            result.answer,
-            result.usage,
-            source=0,
-        )
+    try:
+        async with session_factory() as db:
+            await _persist_answer_and_notify(
+                db, conversation_id, user, user_query, result.answer, result.usage,
+                source=0, agent_state=result.agent_state, state_version=result.state_version, session_existed=result.session_existed,
+            )
+    except Exception:
+        adapter.error_envelope()
+        raise
+    finally:
+        await _persist_metrics(conversation_id, user, 0, result)
     return {
         "event": "message",
         "task_id": adapter.task_id,
@@ -445,10 +474,10 @@ async def dify_chat_messages(
     except AgentPublicError as exc:
         logger.warning("Dify Agent 安全错误: type=%s", type(exc).__name__)
         return JSONResponse(
-            status_code=500,
+            status_code=exc.status_code,
             content={
                 "message": str(exc),
-                "code": "agent_error",
+                "code": exc.code,
                 "type": "agent_runtime_error",
             },
         )

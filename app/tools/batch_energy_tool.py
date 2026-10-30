@@ -73,7 +73,7 @@ TARGET_EXPANSION = "expansion"
 TARGET_CONSTRICTION = "constriction"
 
 # ── 筛选参数通配值（应跳过 WHERE 过滤）──
-_FILTER_ALL = frozenset({"all", "全部", "所有"})
+_FILTER_ALL = frozenset({"all", "全部", "所有", "全网", "全省"})
 _SUPPORTED_PROVINCES = frozenset({"湖南", "湖南省", "全省", "全网", "all", "全部", "所有"})
 
 # ── 高负荷 枚举值 ──
@@ -139,10 +139,10 @@ TOOL_DESCRIPTION = (
 TOOL_INPUT_SCHEMA = {
         "type": "object",
         "properties": {
-            "province": {"type": "string", "description": "省份名称，当前仅支持湖南省"},
-            "dist_name": {"type": "string", "description": "地市名称"},
-            "county_name": {"type": "string", "description": "区县名称"},
-            "prod_name": {"type": "string", "description": "厂家名称"},
+            "province": {"type": "string", "minLength": 1, "description": "省份名称，当前仅支持湖南省；未指定传湖南省"},
+            "dist_name": {"type": "string", "minLength": 1, "description": "用户指定的地市全名，必须保留用户地区；全省或未限定地市时显式传全网"},
+            "county_name": {"type": "string", "minLength": 1, "description": "用户指定的区县名称；未限定时显式传全网，不能把县级市当作地市"},
+            "prod_name": {"type": "string", "minLength": 1, "description": "用户指定的厂家名称；未限定时显式传全网"},
             "stat_time": {"type": "string", "description": "统计日期 (YYYY-MM-DD)"},
             "analysis_target": {
                 "type": "string",
@@ -213,6 +213,9 @@ async def _do_analyze(
     expansion_level: str = DEFAULT_EXPANSION_LEVEL,
 ) -> dict[str, Any]:
     """核心分析流程。"""
+    dist_name = _normalize_filter(dist_name)
+    county_name = _normalize_filter(county_name)
+    prod_name = _normalize_filter(prod_name)
     expansion_config = resolve_expansion_level(expansion_level)
 
     # ── 1. 解析查询日期（始终先查 DB 最新日期，用户日期超出时自动兜底）──
@@ -423,6 +426,14 @@ async def _do_analyze(
 # ═══════════════════════════════════════════════════════════════════
 # 查询辅助
 # ═══════════════════════════════════════════════════════════════════
+
+
+def _normalize_filter(value: str | None) -> str | None:
+    """批量明细中的全网表示不加筛选，不查询名为“全网”的明细记录。"""
+    if value is None:
+        return None
+    value = value.strip()
+    return None if not value or value.lower() in _FILTER_ALL else value
 
 
 async def _resolve_latest_date(

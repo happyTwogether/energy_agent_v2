@@ -113,6 +113,9 @@ class AgentRoutesTest(unittest.IsolatedAsyncioTestCase):
     """验证路由只依赖 AgentScope 事件和统一 Dify 适配器。"""
 
     def setUp(self) -> None:
+        state_loader = patch.object(routes, "load_agent_state", AsyncMock(return_value=None))
+        state_loader.start()
+        self.addCleanup(state_loader.stop)
         self.assertIsNotNone(routes, "旧路由仍依赖已移除的 LiteLLM")
         self.assertTrue(
             hasattr(routes, "stream_agent_events"),  # type: ignore[arg-type]

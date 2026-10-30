@@ -7,7 +7,7 @@
 
 from typing import Literal, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ConversationItem(BaseModel):
@@ -52,5 +52,12 @@ class DifyChatRequest(BaseModel):
     query: str = Field(..., min_length=1, description="用户消息")
     response_mode: Literal["blocking", "streaming"] = Field(default="blocking", description="响应模式")
     conversation_id: str | None = Field(default=None, description="会话ID，空则创建新会话")
-    user: str = Field(..., description="用户唯一标识")
+    user: str = Field(..., min_length=1, max_length=128, description="上游已验证的用户手机号/唯一标识")
+
+    @field_validator("user")
+    @classmethod
+    def require_user(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("user 不能为空")
+        return value.strip()
 

@@ -101,5 +101,29 @@
       "county_name": "全网",
       "prod_name": "华为"
     }
+  },
+  {
+    "name": "xiangtan_energy_potential_keeps_city",
+    "question": "湘潭市的节电空间",
+    "expected_tool": "analyze_batch_cells_energy",
+    "expected_arguments": {"dist_name": "湘潭市"}
+  },
+  {
+    "name": "xiangtan_short_name_energy_potential",
+    "question": "帮我看一下湘潭的节电空间",
+    "expected_tool": "analyze_batch_cells_energy",
+    "expected_arguments": {"dist_name": "湘潭市"}
+  },
+  {
+    "name": "county_is_not_same_named_city",
+    "question": "湘潭县的节电空间",
+    "expected_tool": "analyze_batch_cells_energy",
+    "expected_arguments": {"county_name": "湘潭县"}
+  },
+  {
+    "name": "energy_potential_report_is_not_energy_consumption_report",
+    "question": "生成湘潭市的节电空间报表",
+    "expected_tool": "analyze_batch_cells_energy",
+    "expected_arguments": {"dist_name": "湘潭市"}
   }
 ]

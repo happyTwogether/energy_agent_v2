@@ -5,11 +5,14 @@ services:
     image: energy_agent:v1.0.0
     container_name: energy
     restart: always
+    working_dir: /app
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
     - "9500:8000"
     volumes:
-      - /home/sunlu/energy_angent/docker_run:/app
-      - /home/sunlu/energy_angent/docker_runlogs:/app/logs
+      # 本文件放在项目根目录：与远端当前 energy_agent_v1 -> /app 一致。
+      # app 从 /app/.env 读取业务配置；修改代码后受控重启，不启用 --reload。
+      - .:/app
     environment:
       - TZ=Asia/Shanghai
 
@@ -19,6 +22,7 @@ services:
     image: energy_agent:v1.0.0
     container_name: energy-load-test
     restart: unless-stopped
+    working_dir: /app
     command: >
       python scripts/load_test.py
       --url http://energy:8000
@@ -32,8 +36,7 @@ services:
       --log-file logs/load_test.log
       --skip-health-check
     volumes:
-      - /home/sunlu/energy_angent/docker_run:/app
-      - /home/sunlu/energy_angent/docker_runlogs:/app/logs
+      - .:/app
     environment:
       - TZ=Asia/Shanghai
     depends_on:

@@ -43,6 +43,7 @@ class AgentModelFactoryTest(unittest.TestCase):
         self.assertEqual(32768, model.context_size)
         self.assertEqual(1, model.max_retries)
         self.assertEqual(45.0, model.client_kwargs["timeout"])
+        self.assertEqual(0, model.client_kwargs["max_retries"])
         self.assertNotIn("test-token-not-secret", repr(model.credential))
         self.assertNotIn("test-token-not-secret", repr(settings))
 

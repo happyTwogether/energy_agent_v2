@@ -922,6 +922,7 @@
           <polyline points="9 18 15 12 9 6"></polyline>
         </svg>
       </button>
+      <div id="service-status" role="status" aria-live="polite" style="padding:12px 20px;color:#b45309;background:rgba(245,158,11,.12);font-size:14px;">正在检查服务状态…</div>
       <div id="chat-container">
         <div id="welcome">
           <div class="welcome-icon">⚡</div>
@@ -1030,7 +1031,10 @@ const API_URL = `${BASE_URL}/api/v1/chat/stream`; // 'BASE_URL/api/v1/chat/strea
 // ============================================================
 // 状态
 // ============================================================
-let userId = 'default-user';
+// 身份由已登录的上游平台传入；不再把所有直接打开页面的用户合并为 default-user。
+const identityParams = new URLSearchParams(window.location.search);
+const userId = (identityParams.get('user') || identityParams.get('user_id') || '').trim();
+let serviceReady = false;
 
 let conversationId = null;        // 当前激活的会话ID
 let conversations = [];           // 会话列表缓存
@@ -1340,6 +1344,7 @@ function appendToolResult(thinkingContent, data) {
 // 会话管理
 // ============================================================
 async function loadConversationList() {
+  if (!userId) return;
   try {
     const resp = await fetch(`${BASE_URL}/api/v1/conversations?user_id=${encodeURIComponent(userId)}`);
     if (!resp.ok) return;
@@ -1373,7 +1378,7 @@ async function switchConversation(cid) {
   if (isStreaming) { abortController?.abort(); }
   conversationId = cid;
   try {
-    const resp = await fetch(`${BASE_URL}/api/v1/conversations/${cid}`);
+    const resp = await fetch(`${BASE_URL}/api/v1/conversations/${encodeURIComponent(cid)}?user_id=${encodeURIComponent(userId)}`);
     if (!resp.ok) throw new Error('加载失败');
     const data = await resp.json();
     conversationHistory = data.messages || [];
@@ -1435,9 +1440,11 @@ function newConversation() {
 async function deleteConversation(cid) {
   const isCurrent = cid === conversationId;
   try {
-    await fetch(`${BASE_URL}/api/v1/conversations/${cid}`, { method: 'DELETE' });
+    const response = await fetch(`${BASE_URL}/api/v1/conversations/${encodeURIComponent(cid)}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error('删除失败');
   } catch (err) {
     console.error('[deleteConversation]', err);
+    return;
   }
   if (isCurrent) {
     newConversation();
@@ -1555,7 +1562,7 @@ function processSseEvent(eventStr, ctx) {
 }
 
 async function streamChat(userMessage) {
-  if (isStreaming) return;
+  if (isStreaming || !userId || !serviceReady) return;
   isStreaming = true;
   abortController = new AbortController();
   sendBtn.style.display = 'none';
@@ -1595,8 +1602,8 @@ async function streamChat(userMessage) {
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`HTTP ${response.status}: ${errText}`);
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.message || `请求失败（HTTP ${response.status}）`);
     }
 
     const reader = response.body.getReader();
@@ -1681,6 +1688,7 @@ userInput.addEventListener('input', () => {
 // 事件绑定
 // ============================================================
 function handleSend() {
+  if (!serviceReady) return;
   const text = userInput.value.trim();
   if (!text) return;
   if (isStreaming) {
@@ -1716,7 +1724,13 @@ userInput.addEventListener('keydown', (e) => {
 });
 
 // 页面加载后聚焦输入框
-userInput.focus();
+if (userId) {
+  userInput.focus();
+} else {
+  userInput.disabled = true;
+  sendBtn.disabled = true;
+  userInput.placeholder = '请从已登录的平台进入，缺少用户标识';
+}
 
 // 新对话按钮
 document.getElementById('new-conv-btn').addEventListener('click', newConversation);
@@ -1724,8 +1738,31 @@ document.getElementById('new-conv-btn').addEventListener('click', newConversatio
 // 绑定主题切换按钮
 document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
 
-// 页面加载时获取会话列表
-loadConversationList();
+// 依赖恢复后自动开放输入和加载历史，用户不需要刷新或重启容器。
+async function refreshServiceStatus() {
+  const banner = document.getElementById('service-status');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  const wasReady = serviceReady;
+  try {
+    const response = await fetch(`${BASE_URL}/api/v1/health`, { cache: 'no-store', signal: controller.signal });
+    const status = await response.json();
+    serviceReady = response.ok && status.status === 'ok';
+    banner.hidden = serviceReady;
+    banner.textContent = status.database?.message || '服务暂未就绪，正在自动重试';
+    if (serviceReady && !wasReady) loadConversationList();
+  } catch (error) {
+    serviceReady = false;
+    banner.hidden = false;
+    banner.textContent = '服务连接暂不可用，正在自动重试';
+  } finally {
+    clearTimeout(timeout);
+    sendBtn.disabled = !userId || !serviceReady;
+    setTimeout(refreshServiceStatus, serviceReady ? 30000 : 5000);
+  }
+}
+sendBtn.disabled = true;
+refreshServiceStatus();
 </script>
 </body>
 </html>

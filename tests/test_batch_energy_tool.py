@@ -9,6 +9,29 @@ from app.tools import batch_energy_tool
 
 
 @pytest.mark.asyncio
+async def test_batch_wildcards_do_not_become_literal_city_or_county_filters(monkeypatch):
+    queries = []
+
+    async def fake_fetch_rows(sql, params):
+        if "MAX(stat_time)" in str(sql):
+            return [{"max_date": datetime(2026, 10, 28)}]
+        queries.append((str(sql), params))
+        return []
+
+    monkeypatch.setattr(batch_energy_tool, "fetch_rows", fake_fetch_rows)
+    await batch_energy_tool._do_analyze(
+        dist_name=" 全网 ", county_name="全网", prod_name="ALL",
+        stat_time=None, analysis_target="expansion",
+    )
+    assert len(queries) == 1
+    sql, params = queries[0]
+    assert "dist_name =" not in sql
+    assert "county_name =" not in sql
+    assert "prod_name =" not in sql
+    assert set(params) == {"stat_time"}
+
+
+@pytest.mark.asyncio
 async def test_batch_tool_accepts_hunan_province_without_retry(monkeypatch):
     """省级批量请求应一次进入分析流程，不能因 province 参数报错后重试。"""
     received = {}

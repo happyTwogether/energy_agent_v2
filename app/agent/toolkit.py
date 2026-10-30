@@ -19,6 +19,14 @@ from app.services.database import (
     get_self_service_session_factory,
     get_session_factory,
 )
+from app.services.query_scope import (
+    SCOPED_TOOL_NAMES,
+    QueryScopeError,
+    ToolRequestContext,
+    TaskContext,
+    normalize_tool_scope,
+    normalize_analysis_arguments,
+)
 
 SessionFactory = Callable[[], AsyncContextManager[Any]]
 logger = get_logger("agent_toolkit")
@@ -37,10 +45,12 @@ class EnergyFunctionTool(ToolBase):
         self,
         spec: EnergyToolSpec,
         session_factory: SessionFactory,
+        request_context: ToolRequestContext | None = None,
     ) -> None:
         super().__init__()
         self._spec = spec
         self._session_factory = session_factory
+        self._request_context = request_context
         self.name = spec.name
         self.description = spec.description
         self.input_schema = spec.input_schema
@@ -49,9 +59,24 @@ class EnergyFunctionTool(ToolBase):
 
     async def call(self, **kwargs: Any) -> ToolChunk:
         """调用业务函数并保留结构化结果及直出元数据。"""
+        effective_input: dict[str, Any] | None = None
         try:
+            if self._request_context is not None:
+                normalized = normalize_tool_scope(self.name, normalize_analysis_arguments(self.name, kwargs, self._request_context), self._request_context)
+                changed_fields = sorted(
+                    key for key in set(kwargs) | set(normalized)
+                    if kwargs.get(key) != normalized.get(key)
+                )
+                if changed_fields:
+                    logger.info("tool_scope_normalized tool=%s fields=%s", self.name, changed_fields)
+                kwargs = normalized
+                if self.name in SCOPED_TOOL_NAMES | {"analyze_single_cell_energy"}:
+                    effective_input = normalized
             async with self._session_factory() as db:
                 payload = await self._spec.handler(db=db, **kwargs)
+        except QueryScopeError as exc:
+            logger.info("tool_scope_rejected tool=%s", self.name)
+            payload = {"success": False, "requires_clarification": True, "error": str(exc)}
         except AgentConfigurationError:
             logger.warning("业务工具运行配置缺失: tool=%s", self.name)
             public_message = (
@@ -73,6 +98,11 @@ class EnergyFunctionTool(ToolBase):
             }
 
         direct_answer = extract_direct_answer(payload)
+        task_context = None
+        if payload.get("success") is not False and self.name in SCOPED_TOOL_NAMES | {"analyze_single_cell_energy"}:
+            task = self._request_context.task if self._request_context else None
+            goal = task.goal if task and task.tool_name == self.name else (self._request_context.current_user_text if self._request_context else self.name)
+            task_context = TaskContext(self.name, dict(kwargs), goal[:2000]).snapshot()
         return ToolChunk(
             content=[
                 TextBlock(text=dumps_decimal(payload, ensure_ascii=False)),
@@ -86,6 +116,9 @@ class EnergyFunctionTool(ToolBase):
                 "tool_name": self.name,
                 "direct_answer": direct_answer or "",
                 "download_url": payload.get("download_url") or "",
+                **({"effective_input": effective_input} if effective_input is not None else {}),
+                **({"task_context": task_context} if task_context is not None else {}),
+                **({"clarification": payload["error"]} if payload.get("requires_clarification") else {}),
             },
         )
 
@@ -159,6 +192,7 @@ def extract_direct_answer(payload: dict[str, Any]) -> str | None:
 def build_toolkit(
     session_factory: SessionFactory | None = None,
     self_service_session_factory: SessionFactory | None = None,
+    request_context: ToolRequestContext | None = None,
 ) -> Toolkit:
     """构建业务工具和无数据安全兜底工具的 Toolkit。"""
     runtime_session_factory = session_factory or _new_session
@@ -169,6 +203,7 @@ def build_toolkit(
         tools=[
             EnergyFunctionTool(
                 spec=spec,
+                request_context=request_context,
                 session_factory=(
                     runtime_self_service_factory
                     if spec.session_scope == "self_service"

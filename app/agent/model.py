@@ -40,5 +40,6 @@ def build_chat_model(
         stream=stream,
         max_retries=runtime_settings.llm_max_retries,
         context_size=runtime_settings.llm_context_size,
-        client_kwargs={"timeout": runtime_settings.llm_timeout_seconds},
+        # 重试统一交给 AgentScope；避免 OpenAI SDK 与外层重试相乘。
+        client_kwargs={"timeout": runtime_settings.llm_timeout_seconds, "max_retries": 0},
     )

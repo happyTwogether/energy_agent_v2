@@ -2,6 +2,7 @@
 
 import json
 import unittest
+import httpx
 
 from agentscope.event import (
     ModelCallEndEvent,
@@ -206,6 +207,21 @@ class DifyEventAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["message", "error"], [payload["event"] for payload in payloads])
         self.assertEqual("服务器内部错误，请稍后重试", payloads[-1]["message"])
         self.assertNotIn("do-not-expose", payloads[-1]["message"])
+
+    async def test_model_read_timeout_is_reported_as_timeout_without_internal_details(self):
+        adapter = DifyEventAdapter(conversation_id="timeout", message_id="m", task_id="t", created_at=1)
+
+        async def broken_stream():
+            raise httpx.ReadTimeout("https://secret-key@internal-model/v1")
+            yield
+
+        payloads = [decode(item) async for item in adapter.stream(broken_stream())]
+        self.assertEqual("error", payloads[-1]["event"])
+        self.assertEqual("model_timeout", payloads[-1]["code"])
+        self.assertEqual(504, payloads[-1]["status"])
+        self.assertIn("超时", payloads[-1]["message"])
+        self.assertNotIn("secret-key", payloads[-1]["message"])
+        self.assertFalse(adapter.result.completed)
 
     async def test_eof_without_reply_end_becomes_safe_error(self) -> None:
         adapter = DifyEventAdapter(  # type: ignore[misc]

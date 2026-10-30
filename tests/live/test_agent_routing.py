@@ -4,15 +4,17 @@ import json
 import os
 from pathlib import Path
 import unittest
+from types import SimpleNamespace
 
 import httpx
 from agentscope.message import SystemMsg, ToolCallBlock, UserMsg
 from agentscope.model import ChatResponse
-from agentscope.tool import ToolChoice
+from agentscope.state import AgentState
 
-from app.agent.middleware import build_prompt
+from app.agent.middleware import _required_tool_choice, build_prompt
 from app.agent.model import build_chat_model
 from app.agent.tool_specs import TOOL_SPECS
+from app.agent.toolkit import build_toolkit
 
 
 RUN_LIVE = os.getenv("RUN_AGENT_ROUTING_EVAL") == "1"
@@ -79,13 +81,17 @@ class AgentRoutingLiveTest(unittest.IsolatedAsyncioTestCase):
 
         for case in _load_cases():
             with self.subTest(case=case["name"]):
+                user_message = UserMsg(name="user", content=case["question"])
+                choice = await _required_tool_choice(SimpleNamespace(
+                    toolkit=build_toolkit(), state=AgentState(context=[user_message]),
+                ))
                 response = await self.model(
                     messages=[
                         SystemMsg(name="system", content=system_prompt),
-                        UserMsg(name="user", content=case["question"]),
+                        user_message,
                     ],
                     tools=_tool_schemas(),
-                    tool_choice=ToolChoice(mode="required"),
+                    tool_choice=choice,
                 )
 
                 self.assertIsInstance(response, ChatResponse)

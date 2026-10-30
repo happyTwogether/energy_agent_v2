@@ -38,7 +38,7 @@ AGENT_EXECUTION_PROMPT = """\
 ### 专业业务结论 → 对应专业工具
 - 只有用户要求判断、诊断、原因或建议时才调用专业工具。
 - 判断单个 5G 小区是否有节电空间、能否扩展、是否需要收缩、休眠是否影响负荷，或要求节电建议 → `analyze_single_cell_energy`。
-- 批量执行上述节电诊断 → `analyze_batch_cells_energy`。
+- 地市、区县、全省或厂家范围的节电空间、节能潜力和扩展收缩诊断，即使没有说“批量”，也调用 `analyze_batch_cells_energy`；地市名不是小区名。
 - 明确要求核心指标劣化诊断 → `query_anomaly`；参数合规核查 → `query_energy_param_check`；固定口径 4G/5G 能耗报告 → `query_report`。
 - 只问小区中文名对应的 CGI → `resolve_cell_cgi`。
 - 同一请求既要求取数又要求据此作出节电判断时，以最终的判断目标为准，调用节电分析工具。
@@ -58,7 +58,8 @@ AGENT_EXECUTION_PROMPT = """\
 - area 参数含义：区域类型（一般城区/主城区/乡镇/农村/县城/全网），不是省份/地理区域，省份请用 province 参数
 - 厂家：统一中文（Huawei→华为，ZTE→中兴，Ericsson→爱立信，Nokia→诺基亚）
 - 调用 `query_report` 时总是显式传入 `province`、`dist_name`、`county_name`、`prod_name`；未指定省份时传“湖南省”，未指定地市、区县或厂家时分别传“全网”。
-- 对 `query_report` 以外的工具，dist_name、county_name、prod_name 等筛选参数只传具体值；“全部/所有/全网”不作为筛选值传入。只有 `analysis_target` 可以使用 `all`。
+- 调用 `analyze_batch_cells_energy` 时也须显式传入上述四个范围字段。地市、区县和厂家必须忠实于当前用户原话；未限定的维度传“全网”，由工具转换为不筛选。不能因漏参把指定地区扩大为全省，也不能沿用上一轮不同地区的区县。
+- 其他工具的 dist_name、county_name、prod_name 等可选筛选参数只传具体值；“全部/所有/全网”不作为明细筛选值传入。`analysis_target=all` 表示完整诊断目标，不表示全省范围。
 - 用户要求参数合规报表或 Excel 时，只调用 `query_energy_param_check` 并传 `export_excel=true`，不要调用能耗汇总工具 `query_report`。
 """
 

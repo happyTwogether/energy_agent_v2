@@ -8,7 +8,7 @@
 from functools import lru_cache
 from urllib.parse import quote_plus
 
-from pydantic import SecretStr, computed_field
+from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,7 +17,6 @@ TITLE_MAX_LENGTH: int = 20          # 对话标题最大长度
 MAX_RETURN_ITEMS: int = 50          # 单次查询最大返回条数
 DB_POOL_SIZE: int = 10              # 数据库连接池大小
 DB_MAX_OVERFLOW: int = 20           # 数据库连接池溢出上限
-MAX_HISTORY_MESSAGES: int = 20      # 对话历史最大保存条数
 DATA_REFRESH_HOUR: int = 15         # 数据刷新截止时间（小时）
 
 class Settings(BaseSettings):
@@ -31,6 +30,7 @@ class Settings(BaseSettings):
     db_schema: str = "public"  # PostgreSQL schema，默认 public
     db_schema_rule: str = "energysavingrules"  # 规则表所在 schema，默认 energysavingrules
     db_schema_agent: str = "jd_agent"  # 代理表所在 schema，默认 jd_agent
+    db_auto_create_tables: bool = False  # 生产由管理员建表；应用启动默认只检查结构
 
     @computed_field
     @property
@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     message_store_enabled: bool = True
     message_store_timeout: int = 5
     agent_max_steps: int = 5  # AgentScope 最大推理-行动轮数
+    agent_model_budget_seconds: float = Field(default=60.0, gt=0)  # 本次请求所有模型调用累计等待预算
+    agent_context_trigger_ratio: float = Field(default=0.75, gt=0, lt=0.9)
+    agent_context_reserve_ratio: float = Field(default=0.2, gt=0, lt=0.9)
+    agent_tool_result_token_limit: int = Field(default=8000, gt=0)
     agent_bot_id: int = 2064169133542531073  # 能效智能体 Dify Bot ID
     model_config = SettingsConfigDict(
         env_file=".env",
